@@ -1,0 +1,3257 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chatify - Dashboard</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="styles.css?v=20260908-frame-cutout-v3">
+    <script src="/socket.io/socket.io.js"></script>
+    <style>
+        :root {
+            --bg-primary: #0f0f1a;
+            --bg-secondary: #1a1a2e;
+            --bg-card: #16162a;
+            --bg-hover: #252540;
+            --accent: #7c3aed;
+            --accent-hover: #6d28d9;
+            --accent-light: #a78bfa;
+            --text-primary: #ffffff;
+            --text-secondary: #94a3b8;
+            --border: rgba(255,255,255,0.08);
+            --success: #10b981;
+            --danger: #ef4444;
+            --warning: #f59e0b;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+
+        body {
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+            overflow-x: hidden;
+        }
+
+        .app-container {
+            display: flex;
+            min-height: 100vh;
+        }
+
+        /* ===== SIDEBAR ===== */
+        .sidebar {
+            width: 260px;
+            background: var(--bg-secondary);
+            border-left: 1px solid var(--border);
+            display: flex;
+            flex-direction: column;
+            padding: 20px 0;
+            position: fixed;
+            right: 0;
+            top: 0;
+            height: 100vh;
+            z-index: 1000;
+            transition: transform 0.3s ease;
+        }
+
+        .sidebar-header {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            padding: 0 20px 25px;
+            border-bottom: 1px solid var(--border);
+            margin-bottom: 15px;
+        }
+
+        .sidebar-header i {
+            font-size: 28px;
+            color: var(--accent-light);
+        }
+
+        .sidebar-header h2 {
+            font-size: 22px;
+            font-weight: 700;
+            letter-spacing: -0.5px;
+        }
+
+        .nav-menu {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            padding: 0 12px;
+        }
+
+        .nav-item {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            padding: 14px 18px;
+            border-radius: 12px;
+            color: var(--text-secondary);
+            text-decoration: none;
+            font-size: 15px;
+            font-weight: 500;
+            transition: all 0.2s ease;
+            cursor: pointer;
+        }
+
+        .nav-item i {
+            font-size: 18px;
+            width: 24px;
+            text-align: center;
+        }
+
+        .nav-item:hover {
+            background: var(--bg-hover);
+            color: var(--text-primary);
+        }
+
+        .nav-item.active {
+            background: linear-gradient(135deg, var(--accent), #9333ea);
+            color: white;
+            box-shadow: 0 4px 15px rgba(124, 58, 237, 0.3);
+        }
+
+        .logout-section {
+            padding: 15px 12px 0;
+            border-top: 1px solid var(--border);
+            margin-top: auto;
+        }
+
+        .logout-btn {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            padding: 14px 18px;
+            border-radius: 12px;
+            color: #ef4444;
+            text-decoration: none;
+            font-size: 15px;
+            font-weight: 500;
+            transition: all 0.2s ease;
+            cursor: pointer;
+        }
+
+        .logout-btn:hover {
+            background: rgba(239, 68, 68, 0.1);
+        }
+
+        /* ===== MAIN CONTENT ===== */
+        .main-content {
+            flex: 1;
+            margin-right: 260px;
+            padding: 25px 30px;
+            min-height: 100vh;
+            transition: margin-right 0.3s ease;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .top-bar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 25px;
+        }
+
+        .menu-toggle {
+            display: none;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            color: var(--text-primary);
+            width: 42px;
+            height: 42px;
+            border-radius: 12px;
+            font-size: 18px;
+            cursor: pointer;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s;
+        }
+
+        .menu-toggle:hover {
+            background: var(--bg-hover);
+        }
+
+        /* ===== WELCOME CARD ===== */
+        .welcome-card {
+            background: linear-gradient(135deg, var(--bg-card) 0%, #1e1e3f 100%);
+            border: 1px solid var(--border);
+            border-radius: 20px;
+            padding: 25px 30px;
+            display: flex;
+            align-items: center;
+            gap: 20px;
+            margin-bottom: 25px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.2);
+        }
+
+        .user-avatar {
+            width: 65px;
+            height: 65px;
+            border-radius: 50%;
+            border: 3px solid var(--accent);
+            object-fit: cover;
+        }
+
+        .welcome-text h1 {
+            font-size: 22px;
+            font-weight: 700;
+            margin-bottom: 6px;
+        }
+
+        .welcome-text p {
+            color: var(--text-secondary);
+            font-size: 14px;
+        }
+
+        /* ===== STATS GRID ===== */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .stat-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 22px;
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            transition: transform 0.2s, border-color 0.2s;
+        }
+
+        .stat-card:hover {
+            transform: translateY(-2px);
+            border-color: rgba(124, 58, 237, 0.3);
+        }
+
+        .stat-icon {
+            width: 50px;
+            height: 50px;
+            background: linear-gradient(135deg, rgba(124,58,237,0.2), rgba(147,51,234,0.1));
+            border-radius: 14px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 20px;
+            color: var(--accent-light);
+        }
+
+        .stat-card h3 {
+            font-size: 26px;
+            font-weight: 700;
+            margin-bottom: 4px;
+        }
+
+        .stat-card p {
+            color: var(--text-secondary);
+            font-size: 13px;
+        }
+
+        /* ===== QUICK ACTIONS ===== */
+        .quick-actions h2 {
+            font-size: 20px;
+            font-weight: 700;
+            margin-bottom: 20px;
+        }
+
+        .action-cards {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 20px;
+        }
+
+        .action-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 20px;
+            padding: 28px;
+            position: relative;
+            overflow: hidden;
+            transition: transform 0.2s, border-color 0.2s;
+        }
+
+        .action-card:hover {
+            transform: translateY(-2px);
+            border-color: rgba(124, 58, 237, 0.3);
+        }
+
+        .action-card .card-icon {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            font-size: 24px;
+            color: var(--accent-light);
+            background: rgba(124,58,237,0.15);
+            width: 48px;
+            height: 48px;
+            border-radius: 14px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .action-card h3 {
+            font-size: 18px;
+            font-weight: 700;
+            margin-bottom: 12px;
+            margin-top: 10px;
+        }
+
+        .action-card p {
+            color: var(--text-secondary);
+            font-size: 13px;
+            margin-bottom: 18px;
+            line-height: 1.6;
+        }
+
+        .input-group {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+
+        .input-group.row {
+            flex-direction: row;
+        }
+
+        .custom-input, .custom-select {
+            background: var(--bg-primary);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 12px 16px;
+            color: var(--text-primary);
+            font-size: 14px;
+            outline: none;
+            transition: border-color 0.2s;
+            width: 100%;
+        }
+
+        .custom-input:focus, .custom-select:focus {
+            border-color: var(--accent);
+        }
+
+        .custom-input::placeholder {
+            color: #64748b;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, var(--accent), #9333ea);
+            color: white;
+            border: none;
+            border-radius: 12px;
+            padding: 13px 24px;
+            font-size: 15px;
+            font-weight: 600;
+            cursor: pointer;
+            width: 100%;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 6px 20px rgba(124, 58, 237, 0.4);
+        }
+
+        .btn-secondary {
+            background: var(--bg-hover);
+            color: var(--text-primary);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 13px 24px;
+            font-size: 15px;
+            font-weight: 600;
+            cursor: pointer;
+            width: 100%;
+            transition: all 0.2s;
+        }
+
+        .btn-secondary:hover {
+            background: var(--accent);
+            border-color: var(--accent);
+        }
+
+        /* ===== SECTIONS ===== */
+        .content-section {
+            animation: fadeIn 0.3s ease;
+            flex: 1;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .section-title {
+            font-size: 22px;
+            font-weight: 700;
+            margin-bottom: 20px;
+        }
+
+        .search-bar-container {
+            position: relative;
+            margin-bottom: 20px;
+        }
+
+        .search-icon {
+            position: absolute;
+            right: 16px;
+            top: 50%;
+            transform: translateY(-50%);
+            color: var(--text-secondary);
+            font-size: 16px;
+        }
+
+        .search-input {
+            padding-right: 45px !important;
+        }
+
+        .results-header {
+            color: var(--text-secondary);
+            font-size: 13px;
+            margin-bottom: 12px;
+            font-weight: 500;
+        }
+
+        .user-list {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .user-card-item {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            padding: 16px 20px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            transition: border-color 0.2s;
+        }
+
+        .user-card-item:hover {
+            border-color: rgba(124, 58, 237, 0.3);
+        }
+
+        .user-info {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+        }
+
+        .avatar-sm {
+            width: 44px;
+            height: 44px;
+            border-radius: 50%;
+            object-fit: cover;
+        }
+
+        .user-info h4 {
+            font-size: 15px;
+            font-weight: 600;
+            margin-bottom: 4px;
+        }
+
+        .status-online {
+            color: var(--success);
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .status-offline {
+            color: var(--text-secondary);
+            font-size: 12px;
+        }
+
+        .btn-action {
+            padding: 8px 18px;
+            border-radius: 10px;
+            border: none;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            transition: all 0.2s;
+        }
+
+        .btn-action.btn-primary {
+            width: auto;
+            padding: 8px 18px;
+        }
+
+        .btn-action.btn-disabled {
+            background: var(--bg-hover);
+            color: var(--text-secondary);
+            cursor: not-allowed;
+            opacity: 0.7;
+        }
+
+        .btn-danger {
+            background: rgba(239, 68, 68, 0.15);
+            color: var(--danger);
+            border: none;
+            border-radius: 10px;
+            padding: 8px 16px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .btn-danger:hover {
+            background: rgba(239, 68, 68, 0.25);
+        }
+
+        .actions {
+            display: flex;
+            gap: 10px;
+        }
+
+        .empty-msg {
+            color: var(--text-secondary);
+            text-align: center;
+            padding: 40px 20px;
+            font-size: 14px;
+        }
+
+        .section-desc {
+            color: var(--text-secondary);
+            margin-bottom: 20px;
+            font-size: 14px;
+        }
+
+        .sidebar-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.5);
+            z-index: 999;
+        }
+
+        .sidebar-overlay.active {
+            display: block;
+        }
+
+        /* ===== CHAT SECTION UI ===== */
+        .chat-container {
+            display: flex;
+            flex-direction: column;
+            height: calc(100vh - 120px);
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            overflow: hidden;
+        }
+
+        .chat-header {
+            padding: 15px 20px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: rgba(0,0,0,0.2);
+        }
+
+        .chat-header-info h2 {
+            font-size: 18px;
+            margin-bottom: 4px;
+        }
+
+        .chat-header-info span {
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+
+        .chat-header-actions {
+            display: flex;
+            gap: 10px;
+        }
+
+        .chat-messages {
+            flex: 1;
+            padding: 20px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+
+        .message-bubble {
+            max-width: 75%;
+            padding: 12px 16px;
+            border-radius: 16px;
+            font-size: 14px;
+            line-height: 1.5;
+            position: relative;
+        }
+
+        .msg-self {
+            align-self: flex-start; /* اليمين في اتجاه RTL */
+            background: linear-gradient(135deg, var(--accent), #9333ea);
+            color: white;
+            border-bottom-right-radius: 4px;
+        }
+
+        .msg-other {
+            align-self: flex-end; /* اليسار في اتجاه RTL */
+            background: var(--bg-hover);
+            color: var(--text-primary);
+            border-bottom-left-radius: 4px;
+        }
+
+        .msg-sender {
+            font-size: 11px;
+            opacity: 0.7;
+            margin-bottom: 6px;
+            display: block;
+            font-weight: bold;
+        }
+
+        .msg-time {
+            font-size: 10px;
+            opacity: 0.6;
+            display: block;
+            text-align: left;
+            margin-top: 5px;
+        }
+
+        .chat-input-wrapper {
+            padding: 15px;
+            border-top: 1px solid var(--border);
+            display: flex;
+            gap: 10px;
+            background: rgba(0,0,0,0.2);
+        }
+
+
+        /* ===== CHATS WINDOW / HISTORY ===== */
+        .chats-page-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 16px;
+            margin-bottom: 20px;
+        }
+
+        .chats-page-header .section-title {
+            margin-bottom: 4px;
+        }
+
+        .chats-page-subtitle {
+            color: var(--text-secondary);
+            font-size: 13px;
+        }
+
+        .chats-actions-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+
+        .chat-action-box {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 18px;
+            padding: 20px;
+        }
+
+        .chat-action-box h3 {
+            font-size: 16px;
+            margin-bottom: 8px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .chat-action-box > p {
+            color: var(--text-secondary);
+            font-size: 12px;
+            line-height: 1.7;
+            margin-bottom: 14px;
+        }
+
+        .chat-action-box .room-form-row {
+            display: grid;
+            grid-template-columns: 1fr 150px;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+
+        .chat-history-toolbar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            margin: 10px 0 14px;
+        }
+
+        .chat-history-toolbar h3 {
+            font-size: 17px;
+        }
+
+        .chat-history-count {
+            color: var(--text-secondary);
+            font-size: 12px;
+        }
+
+        .chat-history-list {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .chat-history-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 15px 18px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 14px;
+            cursor: pointer;
+            transition: transform 0.2s, border-color 0.2s, background 0.2s;
+        }
+
+        .chat-history-card:hover {
+            transform: translateY(-1px);
+            border-color: rgba(124, 58, 237, 0.45);
+            background: #191930;
+        }
+
+        .chat-history-main {
+            min-width: 0;
+            flex: 1;
+            display: flex;
+            align-items: center;
+            gap: 13px;
+        }
+
+        .chat-history-icon {
+            width: 46px;
+            height: 46px;
+            border-radius: 14px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex: 0 0 auto;
+            background: rgba(124, 58, 237, 0.14);
+            color: var(--accent-light);
+            font-size: 18px;
+        }
+
+        .chat-history-text {
+            min-width: 0;
+            flex: 1;
+        }
+
+        .chat-history-title {
+            font-size: 15px;
+            font-weight: 700;
+            margin-bottom: 5px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .chat-history-last-message {
+            color: var(--text-secondary);
+            font-size: 12px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            max-width: 650px;
+        }
+
+        .chat-history-meta {
+            display: flex;
+            align-items: flex-end;
+            flex-direction: column;
+            gap: 7px;
+            flex: 0 0 auto;
+        }
+
+        .chat-type-badge {
+            border-radius: 999px;
+            padding: 5px 9px;
+            font-size: 11px;
+            background: var(--bg-hover);
+            color: var(--text-secondary);
+        }
+
+        .chat-type-badge.public {
+            color: #c4b5fd;
+            background: rgba(124, 58, 237, 0.14);
+        }
+
+        .chat-type-badge.private {
+            color: #6ee7b7;
+            background: rgba(16, 185, 129, 0.12);
+        }
+
+        .chat-room-code {
+            direction: ltr;
+            font-size: 11px;
+            color: var(--text-secondary);
+            font-family: Consolas, monospace;
+        }
+
+        .chat-empty-state {
+            background: var(--bg-card);
+            border: 1px dashed rgba(167, 139, 250, 0.35);
+            border-radius: 18px;
+            padding: 44px 20px;
+            text-align: center;
+        }
+
+        .chat-empty-state i {
+            font-size: 42px;
+            color: var(--accent-light);
+            margin-bottom: 16px;
+        }
+
+        .chat-empty-state h3 {
+            margin-bottom: 8px;
+            font-size: 18px;
+        }
+
+        .chat-empty-state p {
+            color: var(--text-secondary);
+            font-size: 13px;
+            line-height: 1.7;
+        }
+
+        .chat-list-loading {
+            color: var(--text-secondary);
+            text-align: center;
+            padding: 32px;
+        }
+
+        /* ===== ROOM OWNER CONTROLS ===== */
+        .room-owner-panel {
+            border-bottom: 1px solid var(--border);
+            background: rgba(124, 58, 237, 0.06);
+            padding: 14px 18px;
+        }
+
+        .owner-panel-top {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            margin-bottom: 12px;
+        }
+
+        .owner-panel-title {
+            font-size: 14px;
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .owner-limit-control {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .owner-limit-control .custom-input {
+            width: 100px;
+            padding: 9px 10px;
+        }
+
+        .owner-limit-control .btn-secondary {
+            width: auto;
+            padding: 9px 14px;
+        }
+
+        .room-members-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+
+        .room-member-chip {
+            background: var(--bg-hover);
+            border: 1px solid var(--border);
+            border-radius: 999px;
+            padding: 7px 10px;
+            display: flex;
+            align-items: center;
+            gap: 7px;
+            font-size: 12px;
+        }
+
+        .room-member-chip button {
+            border: 0;
+            background: transparent;
+            color: var(--danger);
+            cursor: pointer;
+            font-size: 12px;
+        }
+
+        @media (max-width: 700px) {
+            .chats-actions-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .chat-action-box .room-form-row {
+                grid-template-columns: 1fr;
+            }
+
+            .chat-history-card {
+                align-items: flex-start;
+            }
+
+            .chat-history-meta {
+                align-items: flex-start;
+            }
+
+            .owner-panel-top {
+                flex-direction: column;
+                align-items: stretch;
+            }
+        }
+
+        /* ===== RESPONSIVE ===== */
+        @media (max-width: 900px) {
+            .stats-grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
+            .action-cards {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        @media (max-width: 768px) {
+            .sidebar {
+                transform: translateX(100%);
+            }
+            .sidebar.open {
+                transform: translateX(0);
+            }
+            .main-content {
+                margin-right: 0;
+                padding: 20px;
+            }
+            .menu-toggle {
+                display: flex;
+            }
+            .stats-grid {
+                grid-template-columns: 1fr;
+            }
+            .welcome-card {
+                flex-direction: column;
+                text-align: center;
+            }
+            .chat-container {
+                height: calc(100vh - 90px);
+            }
+        }
+
+        @media (max-width: 480px) {
+            .user-card-item {
+                flex-direction: column;
+                gap: 12px;
+                text-align: center;
+            }
+            .user-info {
+                flex-direction: column;
+            }
+            .actions {
+                width: 100%;
+                justify-content: center;
+            }
+        }
+
+
+        /* ===== PLATFORM IDENTITY / BADGES ===== */
+        .platform-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            padding: 3px 8px;
+            border-radius: 999px;
+            font-size: 10px;
+            font-weight: 700;
+            vertical-align: middle;
+            margin-right: 6px;
+            white-space: nowrap;
+        }
+        .platform-badge.owner {
+            background: rgba(239,68,68,.16);
+            color: #fca5a5;
+            border: 1px solid rgba(239,68,68,.28);
+        }
+        .platform-badge.admin {
+            background: rgba(168,85,247,.16);
+            color: #d8b4fe;
+            border: 1px solid rgba(168,85,247,.28);
+        }
+        .platform-badge.moderator {
+            background: rgba(245,158,11,.14);
+            color: #fcd34d;
+            border: 1px solid rgba(245,158,11,.25);
+        }
+        .user-name-line {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            flex-wrap: wrap;
+        }
+        .user-handle {
+            color: var(--text-secondary);
+            font-size: 11px;
+            margin-top: 2px;
+        }
+        .user-card-actions {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            flex-wrap: wrap;
+            justify-content: flex-end;
+        }
+        .btn-report {
+            background: rgba(148,163,184,.10);
+            color: #cbd5e1;
+            border: 1px solid rgba(148,163,184,.18);
+            border-radius: 10px;
+            padding: 8px 12px;
+            cursor: pointer;
+            font-size: 12px;
+        }
+        .btn-report:hover {
+            background: rgba(148,163,184,.18);
+        }
+
+        /* ===== ADMIN DASHBOARD ===== */
+        .admin-page-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            margin-bottom: 18px;
+        }
+        .admin-panel-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 18px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        .admin-card-title {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 17px;
+            font-weight: 700;
+            margin-bottom: 8px;
+        }
+        .admin-card-title i { color: var(--accent-light); }
+        .admin-form-grid {
+            display: grid;
+            grid-template-columns: repeat(2,minmax(0,1fr));
+            gap: 10px;
+            margin-bottom: 12px;
+        }
+        .permission-checks {
+            display: grid;
+            grid-template-columns: repeat(3,minmax(0,1fr));
+            gap: 8px;
+            margin: 12px 0 16px;
+        }
+        .permission-chip {
+            display: flex;
+            align-items: center;
+            gap: 7px;
+            background: var(--bg-primary);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 9px 10px;
+            color: var(--text-secondary);
+            font-size: 12px;
+        }
+        .permission-chip input { accent-color: var(--accent); }
+        .admin-tabs {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 16px;
+            flex-wrap: wrap;
+        }
+        .admin-tab-btn {
+            border: 1px solid var(--border);
+            background: var(--bg-card);
+            color: var(--text-secondary);
+            padding: 10px 14px;
+            border-radius: 10px;
+            cursor: pointer;
+            font-size: 13px;
+        }
+        .admin-tab-btn.active {
+            background: linear-gradient(135deg,var(--accent),#9333ea);
+            color: #fff;
+            border-color: transparent;
+        }
+        .admin-pane { display: none; }
+        .admin-pane.active { display: block; }
+        .admin-toolbar {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 14px;
+            max-width: 300px;
+        }
+        .admin-list {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        .admin-user-card, .report-card, .platform-ban-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 15px;
+            padding: 15px;
+        }
+        .admin-user-head, .report-card-head, .platform-ban-head {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 12px;
+        }
+        .admin-user-meta, .report-meta, .ban-meta {
+            color: var(--text-secondary);
+            font-size: 12px;
+            line-height: 1.7;
+            margin-top: 4px;
+        }
+        .admin-user-actions, .report-actions, .ban-actions {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin-top: 12px;
+        }
+        .admin-user-actions button,
+        .report-actions button,
+        .ban-actions button {
+            width: auto;
+        }
+        .permissions-editor {
+            margin-top: 12px;
+            padding-top: 12px;
+            border-top: 1px solid var(--border);
+        }
+        .report-evidence {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            margin-top: 8px;
+            color: var(--accent-light);
+            text-decoration: none;
+            font-size: 12px;
+        }
+        .status-pill {
+            display: inline-flex;
+            padding: 4px 8px;
+            border-radius: 999px;
+            font-size: 10px;
+            font-weight: 700;
+            background: var(--bg-hover);
+            color: var(--text-secondary);
+        }
+        .status-pill.pending { color: #fcd34d; background: rgba(245,158,11,.12); }
+        .status-pill.reviewing { color: #93c5fd; background: rgba(59,130,246,.12); }
+        .status-pill.actioned { color: #6ee7b7; background: rgba(16,185,129,.12); }
+        .status-pill.dismissed { color: #fca5a5; background: rgba(239,68,68,.12); }
+
+        /* ===== MODALS ===== */
+        .dashboard-modal-overlay {
+            display: none;
+            position: fixed;
+            inset: 0;
+            z-index: 5000;
+            background: rgba(0,0,0,.72);
+            align-items: center;
+            justify-content: center;
+            padding: 16px;
+        }
+        .dashboard-modal-box {
+            width: 100%;
+            max-width: 430px;
+            max-height: 90vh;
+            overflow-y: auto;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 20px;
+            padding: 18px;
+            box-shadow: 0 20px 60px rgba(0,0,0,.5);
+        }
+        .dashboard-modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 10px;
+            padding-bottom: 12px;
+            margin-bottom: 12px;
+            border-bottom: 1px solid var(--border);
+        }
+        .dashboard-modal-header h3 {
+            font-size: 17px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .modal-close-btn {
+            border: none;
+            background: transparent;
+            color: var(--text-secondary);
+            font-size: 18px;
+            cursor: pointer;
+        }
+        .modal-target-label {
+            color: var(--accent-light);
+            font-size: 13px;
+            margin-bottom: 12px;
+        }
+        .modal-label {
+            display: block;
+            color: var(--text-secondary);
+            font-size: 12px;
+            margin: 10px 0 6px;
+        }
+        .modal-textarea {
+            min-height: 90px;
+            resize: vertical;
+        }
+        .modal-helper {
+            color: var(--text-secondary);
+            font-size: 11px;
+            margin-top: 6px;
+            min-height: 16px;
+        }
+        .modal-actions {
+            display: flex;
+            gap: 8px;
+            margin-top: 16px;
+        }
+        .modal-actions > * { flex: 1; }
+
+        .dashboard-toast {
+            position: fixed;
+            left: 24px;
+            bottom: 24px;
+            z-index: 7000;
+            background: #1f2937;
+            border: 1px solid rgba(255,255,255,.10);
+            color: #fff;
+            padding: 12px 16px;
+            border-radius: 12px;
+            box-shadow: 0 12px 35px rgba(0,0,0,.4);
+            opacity: 0;
+            transform: translateY(10px);
+            pointer-events: none;
+            transition: all .2s ease;
+            max-width: 360px;
+            font-size: 13px;
+        }
+        .dashboard-toast.show {
+            opacity: 1;
+            transform: translateY(0);
+        }
+        .dashboard-toast.error {
+            border-color: rgba(239,68,68,.35);
+            color: #fecaca;
+        }
+
+        @media (max-width: 800px) {
+            .permission-checks { grid-template-columns: repeat(2,minmax(0,1fr)); }
+        }
+        @media (max-width: 600px) {
+            .admin-page-header { align-items: flex-start; }
+            .admin-form-grid { grid-template-columns: 1fr; }
+            .permission-checks { grid-template-columns: 1fr; }
+            .admin-user-head, .report-card-head, .platform-ban-head {
+                flex-direction: column;
+            }
+            .user-card-actions { width: 100%; justify-content: center; }
+            .dashboard-toast { left: 12px; right: 12px; bottom: 12px; max-width: none; }
+        }
+
+    </style>
+</head>
+
+<body>
+    <div class="app-container">
+        <!-- Overlay for mobile -->
+        <div class="sidebar-overlay" id="sidebarOverlay"></div>
+
+        <!-- القائمة الجانبية -->
+        <aside class="sidebar" id="sidebar">
+            <div class="sidebar-header">
+                <i class="fa-solid fa-comments"></i>
+                <h2>Chatify</h2>
+            </div>
+
+            <nav class="nav-menu">
+                <a href="#" id="navHome" class="nav-item active">
+                    <i class="fa-solid fa-house"></i>
+                    <span>الرئيسية</span>
+                </a>
+                <a href="#" id="navSearch" class="nav-item">
+                    <i class="fa-solid fa-magnifying-glass"></i>
+                    <span>البحث عن أشخاص</span>
+                </a>
+                <a href="#" id="navRequests" class="nav-item">
+                    <i class="fa-solid fa-clock-rotate-left"></i>
+                    <span>طلبات المراسلة</span>
+                </a>
+                <a href="#" id="navChatMenu" class="nav-item">
+                    <i class="fa-solid fa-comment-dots"></i>
+                    <span>نافذة الدردشة</span>
+                </a>
+                <a href="#" id="navFriends" class="nav-item">
+                    <i class="fa-solid fa-user-group"></i>
+                    <span>الأصدقاء</span>
+                </a>
+                <a href="#" id="navAdmin" class="nav-item" style="display:none;">
+                    <i class="fa-solid fa-shield-halved"></i>
+                    <span>لوحة الإدارة</span>
+                </a>
+                <a href="settings.html" class="nav-item" id="navSettings">
+                    <i class="fa-solid fa-gear"></i>
+                    <span>الإعدادات</span>
+                </a>
+            </nav>
+
+            <div class="logout-section">
+                <a href="#" id="logoutBtn" class="logout-btn">
+                    <i class="fa-solid fa-right-from-bracket"></i>
+                    <span>تسجيل خروج</span>
+                </a>
+            </div>
+        </aside>
+
+        <!-- المحتوى الرئيسي -->
+        <main class="main-content" id="mainContent">
+            <!-- الشريط العلوي -->
+            <div class="top-bar">
+                <button class="menu-toggle" id="menuToggle">
+                    <i class="fa-solid fa-bars"></i>
+                </button>
+            </div>
+
+            <!-- 1. الرئيسية -->
+            <div id="sectionHome" class="content-section">
+                <div class="welcome-card">
+                    <div class="avatar-frame-wrap avatar-frame-wrap-lg" id="myAvatarWrap">
+                        <img src="https://ui-avatars.com/api/?name=User&background=6c5ce7&color=fff" id="userAvatar" alt="Avatar" class="user-avatar">
+                        <img id="userAvatarFrame" class="avatar-frame-overlay" alt="" aria-hidden="true" style="display:none;">
+                    </div>
+                    <div class="welcome-text">
+                        <h1>
+                            مرحباً بك، <span id="displayUsername">مستخدم</span>
+                            <span id="myPlatformBadge"></span>
+                        </h1>
+                        <p id="welcomeSubtitle">تواصل مع أصدقائك وشارِك لحظاتك بكل سهولة.</p>
+                    </div>
+                </div>
+
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <div class="stat-icon"><i class="fa-solid fa-users"></i></div>
+                        <div>
+                            <h3 id="onlineFriendsCount">0</h3>
+                            <p>أصدقاء متصلون</p>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon"><i class="fa-solid fa-user-plus"></i></div>
+                        <div>
+                            <h3 id="friendRequestsCount">0</h3>
+                            <p>طلبات المراسلة</p>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon"><i class="fa-solid fa-comments"></i></div>
+                        <div>
+                            <h3 id="activeChatsCount">0</h3>
+                            <p>محادثة نشطة</p>
+                        </div>
+                    </div>
+                </div>
+
+                <section class="quick-actions">
+                    <h2>كيف تريد البدء؟</h2>
+                    <div class="action-cards">
+                        <div class="action-card">
+                            <div class="card-icon"><i class="fa-solid fa-plus"></i></div>
+                            <h3>إنشاء غرفة محادثة (عامة)</h3>
+                            <div class="input-group row">
+                                <select id="maxUsersSelect" class="custom-select" style="flex:1">
+                                    <option value="2">2 مستخدمين</option>
+                                    <option value="4" selected>4 مستخدمين</option>
+                                    <option value="8">8 مستخدمين</option>
+                                    <option value="12">12 مستخدم</option>
+                                </select>
+                                <input type="text" id="homeRoomNameInput" maxlength="40" placeholder="اسم الغرفة العامة" class="custom-input" style="flex:1">
+                            </div>
+                            <button id="createRoom" class="btn-primary">إنشاء غرفة جديدة</button>
+                        </div>
+
+                        <div class="action-card">
+                            <div class="card-icon"><i class="fa-solid fa-arrow-right-to-bracket"></i></div>
+                            <h3>الانضمام لغرفة (عامة)</h3>
+                            <p>أدخل رمز الغرفة (ID) الذي شاركه المالك معك للانضمام.</p>
+                            <div class="input-group">
+                                <input type="text" id="roomIdInput" placeholder="أدخل رمز الغرفة (Room ID)..." class="custom-input">
+                            </div>
+                            <button id="joinRoom" class="btn-secondary">دخول الغرفة</button>
+                        </div>
+                    </div>
+                </section>
+            </div>
+
+            <!-- 2. البحث -->
+            <div id="sectionSearch" class="content-section" style="display: none;">
+                <h2 class="section-title">البحث عن أشخاص</h2>
+                <div class="search-bar-container">
+                    <i class="fa-solid fa-magnifying-glass search-icon"></i>
+                    <input type="text" id="searchInput" placeholder="ابحث عن اسم أو اسم مستخدم..." class="custom-input search-input">
+                </div>
+                <div class="results-header">نتائج البحث</div>
+                <div id="searchResultsList" class="user-list">
+                    <p class="empty-msg">ابدأ الكتابة للبحث عن المستخدمين...</p>
+                </div>
+            </div>
+
+            <!-- 3. طلبات المراسلة -->
+            <div id="sectionRequests" class="content-section" style="display: none;">
+                <h2 class="section-title">طلبات المراسلة</h2>
+                <p class="section-desc">هذه الطلبات من أشخاص ليسوا في قائمة أصدقائك.</p>
+                <div id="requestsList" class="user-list">
+                    <p class="empty-msg">لا توجد طلبات مراسلة حالياً.</p>
+                </div>
+            </div>
+
+            <!-- 4. الأصدقاء -->
+            <div id="sectionFriends" class="content-section" style="display: none;">
+                <h2 class="section-title">الأصدقاء</h2>
+                <div class="search-bar-container">
+                    <i class="fa-solid fa-magnifying-glass search-icon"></i>
+                    <input type="text" id="friendsSearchInput" placeholder="ابحث في أصدقائك..." class="custom-input search-input">
+                </div>
+                <div id="friendsList" class="user-list">
+                    <p class="empty-msg">لا يوجد أصدقاء مضافون بعد.</p>
+                </div>
+            </div>
+
+            <!-- 5. نافذة المحادثات: السجل + إنشاء/انضمام -->
+            <div id="sectionChatList" class="content-section" style="display: none;">
+                <div class="chats-page-header">
+                    <div>
+                        <h2 class="section-title">نافذة المحادثات</h2>
+                        <p class="chats-page-subtitle">هنا تظهر كل محادثات الأصدقاء والغرف العامة التي شاركت بها.</p>
+                    </div>
+                    <button id="refreshChatsBtn" class="btn-action btn-secondary" title="تحديث سجل المحادثات">
+                        <i class="fa-solid fa-rotate"></i>
+                    </button>
+                </div>
+
+                <div class="chats-actions-grid">
+                    <div class="chat-action-box">
+                        <h3><i class="fa-solid fa-plus"></i> إنشاء غرفة عامة</h3>
+                        <p>أنشئ أكثر من غرفة عامة، وسيقوم السيرفر بإرجاع رمز الغرفة الذي يمكن مشاركته مع الآخرين.</p>
+
+                        <div class="room-form-row">
+                            <input type="text" id="chatListRoomName" class="custom-input" maxlength="40"
+                                   placeholder="اسم الغرفة (اختياري)">
+                            <select id="chatListMaxUsers" class="custom-select">
+                                <option value="2">2 أعضاء</option>
+                                <option value="4" selected>4 أعضاء</option>
+                                <option value="8">8 أعضاء</option>
+                                <option value="12">12 عضو</option>
+                                <option value="24">24 عضو</option>
+                            </select>
+                        </div>
+
+                        <button id="chatListCreateRoomBtn" class="btn-primary">
+                            <i class="fa-solid fa-comments"></i>
+                            إنشاء غرفة والحصول على رمز
+                        </button>
+                    </div>
+
+                    <div class="chat-action-box">
+                        <h3><i class="fa-solid fa-key"></i> الدخول بواسطة رمز</h3>
+                        <p>أدخل رمز غرفة عامة تمت مشاركته معك. الغرف الخاصة لا يمكن الدخول إليها بواسطة رمز.</p>
+
+                        <div class="input-group">
+                            <input type="text" id="chatListJoinCode" class="custom-input"
+                                   placeholder="أدخل رمز الغرفة...">
+                        </div>
+
+                        <button id="chatListJoinRoomBtn" class="btn-secondary">
+                            <i class="fa-solid fa-arrow-right-to-bracket"></i>
+                            دخول الغرفة
+                        </button>
+                    </div>
+                </div>
+
+                <div class="search-bar-container">
+                    <i class="fa-solid fa-magnifying-glass search-icon"></i>
+                    <input type="text" id="chatHistorySearchInput"
+                           placeholder="ابحث في سجل المحادثات..."
+                           class="custom-input search-input">
+                </div>
+
+                <div class="chat-history-toolbar">
+                    <h3>سجل المحادثات</h3>
+                    <span id="chatHistoryCount" class="chat-history-count">0 محادثة</span>
+                </div>
+
+                <div id="chatHistoryList" class="chat-history-list">
+                    <div class="chat-list-loading">
+                        <i class="fa-solid fa-spinner fa-spin"></i>
+                        جاري تحميل المحادثات...
+                    </div>
+                </div>
+            </div>
+
+
+            <!-- 6. لوحة إدارة المنصة -->
+            <div id="sectionAdmin" class="content-section" style="display: none;">
+                <div class="admin-page-header">
+                    <div>
+                        <h2 class="section-title">لوحة إدارة المنصة</h2>
+                        <p class="section-desc">الأدوات التي تظهر هنا تعتمد على الصلاحيات التي منحها مالك المنصة لحسابك.</p>
+                    </div>
+                    <button id="adminRefreshBtn" class="btn-action btn-secondary" type="button">
+                        <i class="fa-solid fa-rotate"></i> تحديث
+                    </button>
+                </div>
+
+                <div id="adminOwnerCreateBox" class="admin-panel-card" style="display:none;">
+                    <div class="admin-card-title"><i class="fa-solid fa-user-shield"></i> إنشاء حساب مشرف مميز</div>
+                    <p class="section-desc">هذه الميزة لمالك المنصة فقط، ويمكن من خلالها إنشاء Username قصير أو مميز للمشرفين.</p>
+                    <div class="admin-form-grid">
+                        <input id="staffUsernameInput" class="custom-input" maxlength="32" placeholder="Username للمشرف">
+                        <input id="staffDisplayNameInput" class="custom-input" maxlength="60" placeholder="الاسم المعروض">
+                        <input id="staffPasswordInput" type="password" class="custom-input" placeholder="كلمة المرور">
+                        <select id="staffRoleSelect" class="custom-select">
+                            <option value="moderator">مشرف</option>
+                            <option value="admin">Admin</option>
+                        </select>
+                    </div>
+                    <div id="staffPermissionsBox" class="permission-checks"></div>
+                    <button id="createStaffBtn" class="btn-primary" type="button">
+                        <i class="fa-solid fa-user-plus"></i> إنشاء الحساب المميز
+                    </button>
+                </div>
+
+                <div class="admin-tabs">
+                    <button class="admin-tab-btn active" data-admin-pane="adminUsersPane" id="adminUsersTabBtn">
+                        <i class="fa-solid fa-users-gear"></i> المستخدمون
+                    </button>
+                    <button class="admin-tab-btn" data-admin-pane="adminReportsPane" id="adminReportsTabBtn">
+                        <i class="fa-solid fa-flag"></i> البلاغات
+                    </button>
+                    <button class="admin-tab-btn" data-admin-pane="adminBansPane" id="adminBansTabBtn">
+                        <i class="fa-solid fa-ban"></i> المحظورون
+                    </button>
+                </div>
+
+                <div id="adminUsersPane" class="admin-pane active">
+                    <div class="search-bar-container">
+                        <i class="fa-solid fa-magnifying-glass search-icon"></i>
+                        <input id="adminUsersSearchInput" class="custom-input search-input" placeholder="ابحث في المستخدمين...">
+                    </div>
+                    <div id="adminUsersList" class="admin-list">
+                        <p class="empty-msg">جاري تحميل المستخدمين...</p>
+                    </div>
+                </div>
+
+                <div id="adminReportsPane" class="admin-pane">
+                    <div class="admin-toolbar">
+                        <select id="reportsStatusFilter" class="custom-select">
+                            <option value="pending">قيد الانتظار</option>
+                            <option value="reviewing">قيد المراجعة</option>
+                            <option value="actioned">تم اتخاذ إجراء</option>
+                            <option value="dismissed">مرفوض</option>
+                            <option value="all">الكل</option>
+                        </select>
+                    </div>
+                    <div id="reportsList" class="admin-list">
+                        <p class="empty-msg">جاري تحميل البلاغات...</p>
+                    </div>
+                </div>
+
+                <div id="adminBansPane" class="admin-pane">
+                    <div id="platformBansList" class="admin-list">
+                        <p class="empty-msg">جاري تحميل قائمة المحظورين...</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 7. المحادثة المفتوحة -->
+            <div id="sectionChat" class="content-section" style="display: none;">
+                <div class="chat-container">
+                    <div class="chat-header">
+                        <div class="chat-header-info">
+                            <h2 id="chatTitle">اسم الغرفة / الصديق</h2>
+                            <span id="chatSubtitle">جاري التحميل...</span>
+                        </div>
+                        <div class="chat-header-actions">
+                            <button class="btn-action btn-secondary" id="manageRoomBtn" title="إدارة الغرفة" style="display:none;">
+                                <i class="fa-solid fa-user-gear"></i>
+                            </button>
+                            <button class="btn-action btn-secondary" id="copyRoomCodeBtn" title="نسخ رمز الغرفة">
+                                <i class="fa-solid fa-copy"></i>
+                            </button>
+                            <button class="btn-action btn-danger" id="leaveChatBtn">
+                                <i class="fa-solid fa-arrow-right"></i> رجوع
+                            </button>
+                        </div>
+                    </div>
+
+                    <div id="roomOwnerPanel" class="room-owner-panel" style="display:none;">
+                        <div class="owner-panel-top">
+                            <div class="owner-panel-title">
+                                <i class="fa-solid fa-crown"></i>
+                                تحكم مالك الغرفة
+                            </div>
+
+                            <div class="owner-limit-control">
+                                <input id="ownerMaxUsersInput" type="number" min="2" max="100"
+                                       class="custom-input" placeholder="الحد">
+                                <button id="updateRoomLimitBtn" class="btn-secondary">
+                                    تحديث العدد
+                                </button>
+                            </div>
+                        </div>
+
+                        <div id="roomMembersList" class="room-members-list">
+                            <span class="status-offline">جاري تحميل الأعضاء...</span>
+                        </div>
+                    </div>
+
+                    <div class="chat-messages" id="chatMessagesArea">
+                        <!-- الرسائل تظهر هنا -->
+                    </div>
+
+                    <div class="chat-input-wrapper">
+                        <input type="text" id="chatMessageInput" class="custom-input"
+                               placeholder="اكتب رسالتك هنا..." style="flex: 1;">
+                        <button class="btn-primary" id="sendMessageBtn" style="width: auto; padding: 0 20px;">
+                            <i class="fa-solid fa-paper-plane"></i>
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+        </main>
+    </div>
+
+
+    <!-- Report user modal -->
+    <div id="reportUserModal" class="dashboard-modal-overlay">
+        <div class="dashboard-modal-box">
+            <div class="dashboard-modal-header">
+                <h3><i class="fa-solid fa-flag"></i> إرسال بلاغ</h3>
+                <button type="button" class="modal-close-btn" id="closeReportModalBtn">✕</button>
+            </div>
+            <div id="reportTargetLabel" class="modal-target-label"></div>
+            <label class="modal-label" for="reportReasonInput">سبب البلاغ</label>
+            <select id="reportReasonInput" class="custom-select">
+                <option value="">اختر السبب...</option>
+                <option value="إساءة أو مضايقة">إساءة أو مضايقة</option>
+                <option value="رسائل مزعجة">رسائل مزعجة / Spam</option>
+                <option value="انتحال شخصية">انتحال شخصية</option>
+                <option value="محتوى مخالف">محتوى مخالف</option>
+                <option value="سبب آخر">سبب آخر</option>
+            </select>
+            <label class="modal-label" for="reportDetailsInput">التفاصيل</label>
+            <textarea id="reportDetailsInput" class="custom-input modal-textarea" maxlength="2000" placeholder="اشرح ما حدث..."></textarea>
+            <label class="modal-label" for="reportAttachmentInput">صورة إثبات (اختياري)</label>
+            <input id="reportAttachmentInput" type="file" accept="image/*" class="custom-input">
+            <div id="reportAttachmentStatus" class="modal-helper"></div>
+            <div class="modal-actions">
+                <button id="submitReportBtn" class="btn-primary" type="button">
+                    <i class="fa-solid fa-paper-plane"></i> إرسال البلاغ
+                </button>
+                <button id="cancelReportBtn" class="btn-secondary" type="button">إلغاء</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Platform ban modal -->
+    <div id="platformBanModal" class="dashboard-modal-overlay">
+        <div class="dashboard-modal-box">
+            <div class="dashboard-modal-header">
+                <h3><i class="fa-solid fa-ban"></i> حظر على المنصة</h3>
+                <button type="button" class="modal-close-btn" id="closePlatformBanBtn">✕</button>
+            </div>
+            <div id="platformBanTargetLabel" class="modal-target-label"></div>
+            <label class="modal-label">نوع الحظر</label>
+            <select id="platformBanType" class="custom-select">
+                <option value="temporary">مؤقت</option>
+                <option value="permanent">دائم</option>
+            </select>
+            <div id="platformBanDurationWrap">
+                <label class="modal-label" for="platformBanDuration">المدة بالدقائق</label>
+                <input id="platformBanDuration" type="number" min="1" value="60" class="custom-input">
+            </div>
+            <label class="modal-label" for="platformBanReason">السبب</label>
+            <textarea id="platformBanReason" maxlength="500" class="custom-input modal-textarea" placeholder="سبب الحظر..."></textarea>
+            <div class="modal-actions">
+                <button id="confirmPlatformBanBtn" class="btn-danger" type="button">
+                    <i class="fa-solid fa-ban"></i> تنفيذ الحظر
+                </button>
+                <button id="cancelPlatformBanBtn" class="btn-secondary" type="button">إلغاء</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="dashboardToast" class="dashboard-toast"></div>
+
+    <script>
+        // =========================================================
+        // Chatify Advanced Dashboard
+        // Session-based auth + badges + reports + platform admin
+        // =========================================================
+        let savedUsername = localStorage.getItem('chat_username') || '';
+        let myRole = localStorage.getItem('chat_role') || 'user';
+        let myBadge = null;
+        let myPermissions = [];
+        let currentFriendsList = [];
+        let currentChatsList = [];
+        let adminUsersCache = [];
+        let permissionsCatalog = [];
+        let reportTargetUser = null;
+        let platformBanTargetUser = null;
+
+        const socket = io({ autoConnect: false });
+
+        function escapeHTML(value) {
+            return String(value ?? '').replace(/[&<>"']/g, ch => ({
+                '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'
+            }[ch]));
+        }
+
+        function roleLabel(role) {
+            if (role === 'owner') return 'مالك المنصة';
+            if (role === 'admin') return 'Admin';
+            if (role === 'moderator') return 'مشرف';
+            return 'مستخدم';
+        }
+
+        function badgeHTML(roleOrBadge) {
+            const type = typeof roleOrBadge === 'object'
+                ? (roleOrBadge?.type || roleOrBadge?.role || '')
+                : String(roleOrBadge || '');
+            if (type === 'owner') {
+                return '<span class="platform-badge owner"><i class="fa-solid fa-crown"></i> مالك</span>';
+            }
+            if (type === 'admin') {
+                return '<span class="platform-badge admin"><i class="fa-solid fa-bolt"></i> Admin</span>';
+            }
+            if (type === 'moderator') {
+                return '<span class="platform-badge moderator"><i class="fa-solid fa-shield-halved"></i> مشرف</span>';
+            }
+            return '';
+        }
+
+        function hasPermission(permission) {
+            return savedUsername === 'tomi' || myRole === 'owner' || myPermissions.includes(permission);
+        }
+
+        function canOpenAdmin() {
+            return savedUsername === 'tomi' ||
+                myRole === 'owner' ||
+                myPermissions.some(p => [
+                    'manage_platform_bans',
+                    'manage_moderators',
+                    'manage_reports'
+                ].includes(p));
+        }
+
+        function showToast(message, type = 'normal') {
+            const toast = document.getElementById('dashboardToast');
+            if (!toast) return;
+            toast.textContent = message || '';
+            toast.classList.toggle('error', type === 'error');
+            toast.classList.add('show');
+            clearTimeout(showToast._timer);
+            showToast._timer = setTimeout(() => toast.classList.remove('show'), 3500);
+        }
+
+        function fallbackAvatar(name) {
+            return `https://ui-avatars.com/api/?name=${encodeURIComponent(name || 'User')}&background=6c5ce7&color=fff`;
+        }
+
+        // Automatically turns non-transparent "frame" pictures (including
+        // downloaded images with a baked-in grey checkerboard) into a real
+        // overlay with a transparent center. The avatar stays independent.
+        const processedAvatarFrameCache = new Map();
+
+        function avatarFrameSourceWithCacheBust(url) {
+            if (!url || url.startsWith('data:') || url.startsWith('blob:')) return url;
+            return url + (url.includes('?') ? '&' : '?') + 'frameCutout=3';
+        }
+
+        function processAvatarFrameUrl(url) {
+            if (!url) return Promise.resolve('');
+            if (processedAvatarFrameCache.has(url)) return processedAvatarFrameCache.get(url);
+
+            const task = new Promise((resolve, reject) => {
+                const source = new Image();
+                source.decoding = 'async';
+                source.onload = () => {
+                    try {
+                        const naturalW = Math.max(1, source.naturalWidth || source.width || 1);
+                        const naturalH = Math.max(1, source.naturalHeight || source.height || 1);
+                        const maxSide = 640;
+                        const scale = Math.min(1, maxSide / Math.max(naturalW, naturalH));
+                        const width = Math.max(1, Math.round(naturalW * scale));
+                        const height = Math.max(1, Math.round(naturalH * scale));
+                        const canvas = document.createElement('canvas');
+                        canvas.width = width;
+                        canvas.height = height;
+                        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+                        if (!ctx) return resolve(url);
+                        ctx.drawImage(source, 0, 0, width, height);
+                        const image = ctx.getImageData(0, 0, width, height);
+                        const pixels = image.data;
+                        const pixelCount = width * height;
+
+                        let transparentPixels = 0;
+                        for (let i = 3; i < pixels.length; i += 4) if (pixels[i] < 245) transparentPixels++;
+                        const alreadyTransparent = transparentPixels > pixelCount * 0.003;
+
+                        const coords = [
+                            [2,2],[width-3,2],[2,height-3],[width-3,height-3],
+                            [Math.floor(width/2),2],[Math.floor(width/2),height-3],
+                            [2,Math.floor(height/2)],[width-3,Math.floor(height/2)]
+                        ];
+                        const samples = coords.map(([x,y]) => {
+                            const i=(Math.max(0,Math.min(height-1,y))*width+Math.max(0,Math.min(width-1,x)))*4;
+                            return [pixels[i],pixels[i+1],pixels[i+2]];
+                        });
+                        const cx=(width-1)/2, cy=(height-1)/2, minSide=Math.min(width,height);
+                        const innerRadius=minSide*0.292;
+                        const featherEnd=innerRadius+Math.max(2,minSide*0.008);
+                        const outerRadius=minSide*0.498;
+                        const dist=(r,g,b,s)=>Math.hypot(r-s[0],g-s[1],b-s[2]);
+
+                        for(let y=0;y<height;y++){
+                            for(let x=0;x<width;x++){
+                                const i=(y*width+x)*4;
+                                if(pixels[i+3]===0) continue;
+                                const radius=Math.hypot(x-cx,y-cy);
+                                if(radius>outerRadius){pixels[i+3]=0;continue;}
+                                if(radius<=innerRadius){pixels[i+3]=0;continue;}
+                                if(radius<featherEnd){
+                                    const amount=(radius-innerRadius)/Math.max(1,featherEnd-innerRadius);
+                                    pixels[i+3]=Math.round(pixels[i+3]*amount);
+                                    continue;
+                                }
+                                if(!alreadyTransparent){
+                                    const r=pixels[i],g=pixels[i+1],b=pixels[i+2];
+                                    const max=Math.max(r,g,b),min=Math.min(r,g,b);
+                                    const chroma=max-min, luminance=(r+g+b)/3;
+                                    let bg=chroma<=19&&luminance>=18&&luminance<=218;
+                                    if(!bg) bg=samples.some(s=>dist(r,g,b,s)<=20);
+                                    if(bg) pixels[i+3]=0;
+                                }
+                            }
+                        }
+                        ctx.putImageData(image,0,0);
+                        resolve(canvas.toDataURL('image/png'));
+                    } catch(error){ reject(error); }
+                };
+                source.onerror=()=>reject(new Error('frame-image-load-failed'));
+                source.src=avatarFrameSourceWithCacheBust(url);
+            }).catch(()=>url);
+            processedAvatarFrameCache.set(url,task);
+            return task;
+        }
+
+        async function renderAvatarFrame(frameImg,url,animated=false){
+            if(!frameImg) return;
+            const token=String(Date.now())+Math.random();
+            frameImg.dataset.frameRenderToken=token;
+            if(!url){
+                frameImg.removeAttribute('src');
+                frameImg.style.display='none';
+                return;
+            }
+            frameImg.src=avatarFrameSourceWithCacheBust(url);
+            frameImg.style.display='';
+            if(animated) return;
+            const processed=await processAvatarFrameUrl(url);
+            if(frameImg.dataset.frameRenderToken!==token) return;
+            frameImg.src=processed||url;
+            frameImg.style.display='';
+        }
+
+        function setAvatarWithFrame(img, frameImg, user) {
+            if (!img) return;
+            img.src = user?.avatar || fallbackAvatar(user?.displayName || user?.username || 'User');
+            if (frameImg) {
+                if (user?.frame?.url) {
+                    renderAvatarFrame(frameImg, user.frame.url, !!user.frame.animated);
+                    frameImg.title = user.frame.name || 'إطار';
+                } else {
+                    renderAvatarFrame(frameImg, '');
+                }
+            }
+        }
+
+        function createAvatarWithFrame(user, sizeClass = '') {
+            const wrap = document.createElement('span');
+            wrap.className = `avatar-frame-wrap ${sizeClass}`.trim();
+
+            const avatar = document.createElement('img');
+            avatar.className = 'avatar-sm';
+            avatar.alt = user?.username || 'user';
+
+            const frame = document.createElement('img');
+            frame.className = 'avatar-frame-overlay';
+            frame.alt = '';
+            frame.setAttribute('aria-hidden', 'true');
+
+            wrap.appendChild(avatar);
+            wrap.appendChild(frame);
+            setAvatarWithFrame(avatar, frame, user);
+            return wrap;
+        }
+
+        function applyIdentity(data) {
+            if (!data?.username) return;
+            savedUsername = data.username;
+            myRole = data.role || 'user';
+            myBadge = data.badge || null;
+            myPermissions = Array.isArray(data.permissions) ? data.permissions : [];
+
+            localStorage.setItem('chat_username', savedUsername);
+            localStorage.setItem('username', savedUsername);
+            localStorage.setItem('chat_userId', savedUsername);
+            localStorage.setItem('chat_role', myRole);
+            if (data.displayName) localStorage.setItem('chat_display_name', data.displayName);
+
+            const displayUsername = document.getElementById('displayUsername');
+            const badge = document.getElementById('myPlatformBadge');
+            const avatar = document.getElementById('userAvatar');
+            const avatarFrame = document.getElementById('userAvatarFrame');
+            const welcomeSubtitle = document.getElementById('welcomeSubtitle');
+
+            if (displayUsername) displayUsername.textContent = data.displayName || savedUsername;
+            if (badge) badge.innerHTML = badgeHTML(myBadge || myRole);
+            if (avatar) {
+                setAvatarWithFrame(avatar, avatarFrame, {
+                    username: savedUsername,
+                    displayName: data.displayName || savedUsername,
+                    avatar: data.avatar || '',
+                    frame: data.frame || null
+                });
+            }
+            if (welcomeSubtitle) {
+                welcomeSubtitle.textContent = myRole === 'owner'
+                    ? 'أنت مالك المنصة ولديك جميع صلاحيات الإدارة.'
+                    : myRole === 'admin'
+                        ? 'حساب إدارة مميز — الأدوات المتاحة تعتمد على الصلاحيات الممنوحة لك.'
+                        : myRole === 'moderator'
+                            ? 'حساب مشرف مميز — الأدوات المتاحة تعتمد على الصلاحيات الممنوحة لك.'
+                            : 'تواصل مع أصدقائك وشارِك لحظاتك بكل سهولة.';
+            }
+
+            updateAdminVisibility();
+        }
+
+        async function ensureHttpSession() {
+            try {
+                let res = await fetch('/api/session', { credentials: 'same-origin' });
+                if (res.ok) {
+                    const data = await res.json();
+                    applyIdentity(data);
+                    localStorage.removeItem('chat_password');
+                    return true;
+                }
+
+                // Upgrade users from the older localStorage-password login flow.
+                const legacyUser = localStorage.getItem('chat_username');
+                const legacyPassword = localStorage.getItem('chat_password');
+                if (legacyUser && legacyPassword) {
+                    res = await fetch('/api/login', {
+                        method: 'POST',
+                        credentials: 'same-origin',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ username: legacyUser, password: legacyPassword })
+                    });
+                    if (res.ok) {
+                        const data = await res.json();
+                        applyIdentity(data);
+                        localStorage.removeItem('chat_password');
+                        return true;
+                    }
+                }
+            } catch (err) {
+                console.warn('Session check failed:', err);
+            }
+            return false;
+        }
+
+        // ===== DOM references =====
+        const sidebar = document.getElementById('sidebar');
+        const sidebarOverlay = document.getElementById('sidebarOverlay');
+        const menuToggle = document.getElementById('menuToggle');
+
+        const navHome = document.getElementById('navHome');
+        const navSearch = document.getElementById('navSearch');
+        const navRequests = document.getElementById('navRequests');
+        const navFriends = document.getElementById('navFriends');
+        const navChatMenu = document.getElementById('navChatMenu');
+        const navAdmin = document.getElementById('navAdmin');
+
+        const sectionHome = document.getElementById('sectionHome');
+        const sectionSearch = document.getElementById('sectionSearch');
+        const sectionRequests = document.getElementById('sectionRequests');
+        const sectionFriends = document.getElementById('sectionFriends');
+        const sectionChatList = document.getElementById('sectionChatList');
+        const sectionChat = document.getElementById('sectionChat');
+        const sectionAdmin = document.getElementById('sectionAdmin');
+
+        const allNavItems = [navHome, navSearch, navRequests, navFriends, navChatMenu, navAdmin];
+        const allSections = [sectionHome, sectionSearch, sectionRequests, sectionFriends, sectionChatList, sectionChat, sectionAdmin];
+
+        function toggleSidebar() {
+            sidebar?.classList.toggle('open');
+            sidebarOverlay?.classList.toggle('active');
+        }
+        menuToggle?.addEventListener('click', toggleSidebar);
+        sidebarOverlay?.addEventListener('click', toggleSidebar);
+
+        function switchSection(activeNav, activeSection) {
+            allNavItems.forEach(item => item?.classList.remove('active'));
+            allSections.forEach(sec => { if (sec) sec.style.display = 'none'; });
+            activeNav?.classList.add('active');
+            if (activeSection) activeSection.style.display = 'block';
+
+            if (window.innerWidth <= 768) {
+                sidebar?.classList.remove('open');
+                sidebarOverlay?.classList.remove('active');
+            }
+        }
+
+        function updateAdminVisibility() {
+            if (!navAdmin) return;
+            navAdmin.style.display = canOpenAdmin() ? 'flex' : 'none';
+
+            const ownerBox = document.getElementById('adminOwnerCreateBox');
+            if (ownerBox) ownerBox.style.display = (savedUsername === 'tomi' || myRole === 'owner') ? 'block' : 'none';
+
+            const usersTab = document.getElementById('adminUsersTabBtn');
+            const reportsTab = document.getElementById('adminReportsTabBtn');
+            const bansTab = document.getElementById('adminBansTabBtn');
+
+            if (usersTab) usersTab.style.display = (savedUsername === 'tomi' || hasPermission('manage_moderators')) ? 'inline-flex' : 'none';
+            if (reportsTab) reportsTab.style.display = (savedUsername === 'tomi' || hasPermission('manage_reports')) ? 'inline-flex' : 'none';
+            if (bansTab) bansTab.style.display = (savedUsername === 'tomi' || hasPermission('manage_platform_bans')) ? 'inline-flex' : 'none';
+
+            const visibleTabs = [usersTab, reportsTab, bansTab].filter(tab => tab && tab.style.display !== 'none');
+            const activeTab = visibleTabs.find(tab => tab.classList.contains('active'));
+            if (!activeTab && visibleTabs[0]) {
+                document.querySelectorAll('.admin-tab-btn').forEach(b => b.classList.remove('active'));
+                document.querySelectorAll('.admin-pane').forEach(p => p.classList.remove('active'));
+                visibleTabs[0].classList.add('active');
+                document.getElementById(visibleTabs[0].dataset.adminPane)?.classList.add('active');
+            } else if (activeTab && activeTab.style.display === 'none' && visibleTabs[0]) {
+                activeTab.classList.remove('active');
+                document.querySelectorAll('.admin-pane').forEach(p => p.classList.remove('active'));
+                visibleTabs[0].classList.add('active');
+                document.getElementById(visibleTabs[0].dataset.adminPane)?.classList.add('active');
+            }
+        }
+
+        // ===== Navigation =====
+        navHome?.addEventListener('click', e => {
+            e.preventDefault();
+            switchSection(navHome, sectionHome);
+            refreshData();
+        });
+
+        navSearch?.addEventListener('click', e => {
+            e.preventDefault();
+            switchSection(navSearch, sectionSearch);
+            const q = document.getElementById('searchInput')?.value.trim();
+            if (q) fetchUsers(q);
+        });
+
+        navRequests?.addEventListener('click', e => {
+            e.preventDefault();
+            switchSection(navRequests, sectionRequests);
+            socket.emit('get_friend_requests', savedUsername);
+        });
+
+        navFriends?.addEventListener('click', e => {
+            e.preventDefault();
+            switchSection(navFriends, sectionFriends);
+            socket.emit('get_friends', savedUsername);
+        });
+
+        function openChatsWindow() {
+            switchSection(navChatMenu, sectionChatList);
+            socket.emit('get_my_chats', savedUsername);
+        }
+        navChatMenu?.addEventListener('click', e => {
+            e.preventDefault();
+            openChatsWindow();
+        });
+
+        navAdmin?.addEventListener('click', e => {
+            e.preventDefault();
+            if (!canOpenAdmin()) return;
+            switchSection(navAdmin, sectionAdmin);
+            loadAdminData();
+        });
+
+        // ===== Session/bootstrap =====
+        async function bootstrap() {
+            const ok = await ensureHttpSession();
+            if (!ok) {
+                localStorage.removeItem('chat_username');
+                localStorage.removeItem('chat_role');
+                window.location.replace('login.html');
+                return;
+            }
+            socket.connect();
+        }
+
+        socket.on('connect', () => {
+            socket.emit('login', { username: savedUsername });
+        });
+
+        socket.on('login_result', data => {
+            if (!data?.success) {
+                if (data?.ban) {
+                    alert('هذا الحساب محظور على المنصة.');
+                }
+                window.location.replace('login.html');
+                return;
+            }
+            applyIdentity(data);
+            refreshData();
+        });
+
+        socket.on('platform-banned', data => {
+            alert(data?.message || 'تم حظر حسابك من المنصة.');
+            localStorage.removeItem('chat_username');
+            localStorage.removeItem('chat_role');
+            sessionStorage.clear();
+            window.location.replace('login.html');
+        });
+
+        socket.on('my-role-updated', data => {
+            myRole = data?.role || myRole;
+            myBadge = data?.badge || myBadge;
+            if (Array.isArray(data?.permissions)) myPermissions = data.permissions;
+            localStorage.setItem('chat_role', myRole);
+            applyIdentity({
+                username: savedUsername,
+                displayName: localStorage.getItem('chat_display_name') || savedUsername,
+                role: myRole,
+                badge: myBadge,
+                permissions: myPermissions
+            });
+            showToast('تم تحديث دور حسابك.');
+        });
+
+        socket.on('my-permissions-updated', data => {
+            myPermissions = Array.isArray(data?.permissions) ? data.permissions : [];
+            updateAdminVisibility();
+            showToast('تم تحديث صلاحيات حسابك.');
+        });
+
+        function refreshData() {
+            if (!savedUsername || !socket.connected) return;
+            socket.emit('get_friends', savedUsername);
+            socket.emit('get_friend_requests', savedUsername);
+            socket.emit('get_my_chats', savedUsername);
+        }
+
+        socket.on('profile-updated', function(profile) {
+            if (!profile?.username) return;
+            if (profile.username === savedUsername) {
+                applyIdentity({
+                    ...profile,
+                    permissions: myPermissions,
+                    badge: profile.badge || myBadge,
+                    role: profile.role || myRole
+                });
+            }
+        });
+
+        // ===== Search =====
+        const searchInput = document.getElementById('searchInput');
+        const searchResultsList = document.getElementById('searchResultsList');
+        let searchTimer = null;
+
+        searchInput?.addEventListener('input', e => {
+            clearTimeout(searchTimer);
+            const query = e.target.value.trim();
+            if (!query) {
+                searchResultsList.innerHTML = '<p class="empty-msg">ابدأ الكتابة للبحث عن المستخدمين...</p>';
+                return;
+            }
+            searchTimer = setTimeout(() => fetchUsers(query), 250);
+        });
+
+        function fetchUsers(query) {
+            socket.emit('search_users', { query, currentUser: savedUsername });
+        }
+
+        socket.on('search_results', users => {
+            renderSearchResults(Array.isArray(users) ? users : []);
+        });
+
+        function renderSearchResults(users) {
+            if (!searchResultsList) return;
+            searchResultsList.innerHTML = '';
+            if (!users.length) {
+                searchResultsList.innerHTML = '<p class="empty-msg">لم يتم العثور على مستخدمين بهذا الاسم.</p>';
+                return;
+            }
+
+            const friendNames = new Set(currentFriendsList.map(f => typeof f === 'object' ? f.username : f));
+
+            users.forEach(user => {
+                const card = document.createElement('div');
+                card.className = 'user-card-item';
+
+                const info = document.createElement('div');
+                info.className = 'user-info';
+
+                const avatar = createAvatarWithFrame(user, 'avatar-frame-wrap-sm');
+
+                const text = document.createElement('div');
+                const title = document.createElement('div');
+                title.className = 'user-name-line';
+
+                const name = document.createElement('h4');
+                name.textContent = user.displayName || user.username;
+                title.appendChild(name);
+
+                if (user.role && user.role !== 'user') {
+                    title.insertAdjacentHTML('beforeend', badgeHTML(user.badge || user.role));
+                }
+
+                const handle = document.createElement('div');
+                handle.className = 'user-handle';
+                handle.textContent = '@' + user.username;
+
+                const status = document.createElement('span');
+                status.className = user.isOnline ? 'status-online' : 'status-offline';
+                status.innerHTML = `<i class="fa-solid fa-circle" style="font-size:8px;"></i> ${user.isOnline ? 'متصل الآن' : 'غير متصل'}`;
+
+                text.appendChild(title);
+                text.appendChild(handle);
+                text.appendChild(status);
+                info.appendChild(avatar);
+                info.appendChild(text);
+
+                const actions = document.createElement('div');
+                actions.className = 'user-card-actions';
+
+                const isFriend = friendNames.has(user.username);
+                const friendBtn = document.createElement('button');
+                friendBtn.className = `btn-action ${isFriend ? 'btn-disabled' : 'btn-primary'}`;
+                friendBtn.disabled = isFriend;
+                friendBtn.innerHTML = isFriend
+                    ? '<i class="fa-solid fa-check"></i><span>صديق</span>'
+                    : '<i class="fa-solid fa-user-plus"></i><span>إضافة صديق</span>';
+                if (!isFriend) {
+                    friendBtn.addEventListener('click', () => sendFriendRequest(user.username, friendBtn));
+                }
+                actions.appendChild(friendBtn);
+
+                const reportBtn = document.createElement('button');
+                reportBtn.className = 'btn-report';
+                reportBtn.innerHTML = '<i class="fa-solid fa-flag"></i> إبلاغ';
+                reportBtn.addEventListener('click', () => openReportModal(user.username, user.displayName || user.username));
+                actions.appendChild(reportBtn);
+
+                if (hasPermission('manage_platform_bans') && user.role !== 'owner') {
+                    const banBtn = document.createElement('button');
+                    banBtn.className = 'btn-danger';
+                    banBtn.innerHTML = '<i class="fa-solid fa-ban"></i> حظر';
+                    banBtn.addEventListener('click', () => openPlatformBanModal(user.username, user.displayName || user.username));
+                    actions.appendChild(banBtn);
+                }
+
+                card.appendChild(info);
+                card.appendChild(actions);
+                searchResultsList.appendChild(card);
+            });
+        }
+
+        function sendFriendRequest(targetUser, btn) {
+            socket.emit('send_friend_request', { fromUser: savedUsername, toUser: targetUser });
+            if (btn) {
+                btn.disabled = true;
+                btn.className = 'btn-action btn-disabled';
+                btn.innerHTML = '<i class="fa-solid fa-clock"></i><span>تم إرسال الطلب</span>';
+            }
+        }
+
+        // ===== Friend requests =====
+        const requestsList = document.getElementById('requestsList');
+        const friendRequestsCount = document.getElementById('friendRequestsCount');
+
+        socket.on('new_friend_request_received', ({ toUser }) => {
+            if (!toUser || toUser === savedUsername) socket.emit('get_friend_requests', savedUsername);
+        });
+
+        socket.on('friend_requests_list', requests => {
+            if (!Array.isArray(requests)) requests = [];
+            if (friendRequestsCount) friendRequestsCount.textContent = requests.length;
+            if (!requestsList) return;
+
+            requestsList.innerHTML = '';
+            if (!requests.length) {
+                requestsList.innerHTML = '<p class="empty-msg">لا توجد طلبات مراسلة حالياً.</p>';
+                return;
+            }
+
+            requests.forEach(username => {
+                const card = document.createElement('div');
+                card.className = 'user-card-item';
+
+                const info = document.createElement('div');
+                info.className = 'user-info';
+                info.innerHTML = `
+                    <img src="https://ui-avatars.com/api/?name=${encodeURIComponent(username)}&background=6c5ce7&color=fff" class="avatar-sm" alt="">
+                    <div>
+                        <h4>${escapeHTML(username)}</h4>
+                        <span style="font-size:12px;color:var(--text-secondary);">@${escapeHTML(username)} • طلب مراسلة جديد</span>
+                    </div>`;
+
+                const actions = document.createElement('div');
+                actions.className = 'actions';
+
+                const accept = document.createElement('button');
+                accept.className = 'btn-primary';
+                accept.textContent = 'قبول';
+                accept.addEventListener('click', () => socket.emit('accept_friend_request', { currentUser: savedUsername, targetUser: username }));
+
+                const reject = document.createElement('button');
+                reject.className = 'btn-danger';
+                reject.textContent = 'رفض';
+                reject.addEventListener('click', () => socket.emit('reject_friend_request', { currentUser: savedUsername, targetUser: username }));
+
+                actions.appendChild(accept);
+                actions.appendChild(reject);
+                card.appendChild(info);
+                card.appendChild(actions);
+                requestsList.appendChild(card);
+            });
+        });
+
+        socket.on('friend_request_accepted', () => refreshData());
+        socket.on('friends_updated', () => refreshData());
+        socket.on('chat_created', ({ roomId }) => {
+            refreshData();
+            if (roomId) openRoomPage(roomId);
+        });
+
+        // ===== Friends =====
+        const friendsList = document.getElementById('friendsList');
+        const friendsSearchInput = document.getElementById('friendsSearchInput');
+        const onlineFriendsCount = document.getElementById('onlineFriendsCount');
+
+        socket.on('friends_list_response', friends => {
+            if (!Array.isArray(friends)) friends = [];
+            currentFriendsList = friends;
+            const onlineCount = friends.filter(f => typeof f === 'object' && f.isOnline).length;
+            if (onlineFriendsCount) onlineFriendsCount.textContent = onlineCount;
+            renderFriends(friends);
+        });
+
+        function renderFriends(friends) {
+            if (!friendsList) return;
+            friendsList.innerHTML = '';
+            if (!friends.length) {
+                friendsList.innerHTML = '<p class="empty-msg">لا يوجد أصدقاء مضافون بعد.</p>';
+                return;
+            }
+
+            friends.forEach(friend => {
+                const f = typeof friend === 'object'
+                    ? friend
+                    : { username: friend, displayName: friend, role: 'user', isOnline: false };
+
+                const card = document.createElement('div');
+                card.className = 'user-card-item';
+
+                const info = document.createElement('div');
+                info.className = 'user-info';
+
+                const avatar = createAvatarWithFrame(f, 'avatar-frame-wrap-sm');
+
+                const text = document.createElement('div');
+                const title = document.createElement('div');
+                title.className = 'user-name-line';
+                const h4 = document.createElement('h4');
+                h4.textContent = f.displayName || f.username;
+                title.appendChild(h4);
+                if (f.role && f.role !== 'user') title.insertAdjacentHTML('beforeend', badgeHTML(f.badge || f.role));
+
+                const handle = document.createElement('div');
+                handle.className = 'user-handle';
+                handle.textContent = '@' + f.username;
+
+                const status = document.createElement('span');
+                status.className = f.isOnline ? 'status-online' : 'status-offline';
+                status.innerHTML = `<i class="fa-solid fa-circle" style="font-size:8px;"></i> ${f.isOnline ? 'متصل الآن' : 'غير متصل'}`;
+
+                text.appendChild(title);
+                text.appendChild(handle);
+                text.appendChild(status);
+                info.appendChild(avatar);
+                info.appendChild(text);
+
+                const actions = document.createElement('div');
+                actions.className = 'user-card-actions';
+
+                const chatBtn = document.createElement('button');
+                chatBtn.className = 'btn-primary';
+                chatBtn.innerHTML = '<i class="fa-solid fa-comment"></i> محادثة';
+                chatBtn.addEventListener('click', () => {
+                    const roomId = 'private_' + [savedUsername, f.username].sort().join('_');
+                    openRoomPage(roomId);
+                });
+
+                const reportBtn = document.createElement('button');
+                reportBtn.className = 'btn-report';
+                reportBtn.innerHTML = '<i class="fa-solid fa-flag"></i>';
+                reportBtn.title = 'إبلاغ';
+                reportBtn.addEventListener('click', () => openReportModal(f.username, f.displayName || f.username));
+
+                const removeBtn = document.createElement('button');
+                removeBtn.className = 'btn-danger';
+                removeBtn.innerHTML = '<i class="fa-solid fa-user-minus"></i>';
+                removeBtn.title = 'إزالة الصديق';
+                removeBtn.addEventListener('click', () => {
+                    if (confirm(`هل تريد إزالة ${f.username} من قائمة الأصدقاء؟`)) {
+                        socket.emit('remove_friend', { currentUser: savedUsername, targetUser: f.username });
+                    }
+                });
+
+                actions.appendChild(chatBtn);
+                actions.appendChild(reportBtn);
+                actions.appendChild(removeBtn);
+                card.appendChild(info);
+                card.appendChild(actions);
+                friendsList.appendChild(card);
+            });
+        }
+
+        friendsSearchInput?.addEventListener('input', e => {
+            const q = e.target.value.trim().toLowerCase();
+            const filtered = currentFriendsList.filter(f => {
+                const obj = typeof f === 'object' ? f : { username: f, displayName: f };
+                return String(obj.username || '').toLowerCase().includes(q) ||
+                    String(obj.displayName || '').toLowerCase().includes(q);
+            });
+            renderFriends(filtered);
+        });
+
+        socket.on('friend_removed', ({ user1, user2 }) => {
+            if (savedUsername === user1 || savedUsername === user2) refreshData();
+        });
+
+        socket.on('online_users_list', () => socket.emit('get_friends', savedUsername));
+
+        // ===== Chat history =====
+        const chatHistoryList = document.getElementById('chatHistoryList');
+        const chatHistoryCount = document.getElementById('chatHistoryCount');
+        const chatHistorySearchInput = document.getElementById('chatHistorySearchInput');
+        const activeChatsCount = document.getElementById('activeChatsCount');
+
+        function normalizeChat(chat) {
+            if (!chat) return null;
+            const roomId = typeof chat === 'string' ? chat : (chat.roomId || chat.id || '');
+            if (!roomId) return null;
+            const isPrivate = typeof chat === 'string'
+                ? roomId.startsWith('private_')
+                : Boolean(chat.isPrivate || chat.type === 'private' || roomId.startsWith('private_'));
+            return {
+                roomId,
+                isPrivate,
+                title: isPrivate
+                    ? (chat.partner ? `محادثة مع ${chat.partner}` : (chat.roomName || 'محادثة خاصة'))
+                    : (chat.roomName || chat.name || 'غرفة عامة'),
+                partner: chat.partner || null,
+                lastMessage: typeof chat.lastMessage === 'string'
+                    ? chat.lastMessage
+                    : (chat.lastMessage?.msg || ''),
+                shareCode: chat.shareCode || (!isPrivate ? roomId : ''),
+                owner: chat.owner || null,
+                isHost: !!chat.isHost,
+                memberCount: Number(chat.memberCount || 0),
+                maxUsers: Number(chat.maxUsers || 24),
+                updatedAt: chat.updatedAt || null
+            };
+        }
+
+        function renderChatHistory(chats) {
+            if (!chatHistoryList) return;
+            const normalized = chats.map(normalizeChat).filter(Boolean);
+            const q = chatHistorySearchInput?.value.trim().toLowerCase() || '';
+            const filtered = q
+                ? normalized.filter(c =>
+                    c.title.toLowerCase().includes(q) ||
+                    c.roomId.toLowerCase().includes(q) ||
+                    String(c.lastMessage || '').toLowerCase().includes(q))
+                : normalized;
+
+            if (chatHistoryCount) chatHistoryCount.textContent = `${normalized.length} محادثة`;
+            if (activeChatsCount) activeChatsCount.textContent = normalized.length;
+
+            chatHistoryList.innerHTML = '';
+            if (!normalized.length) {
+                chatHistoryList.innerHTML = `
+                    <div class="chat-empty-state">
+                        <i class="fa-regular fa-comments"></i>
+                        <h3>لا توجد محادثات حتى الآن</h3>
+                        <p>أنشئ غرفة عامة، ادخل بواسطة رمز، أو أضف صديقاً لتبدأ محادثة خاصة.</p>
+                    </div>`;
+                return;
+            }
+            if (!filtered.length) {
+                chatHistoryList.innerHTML = '<p class="empty-msg">لا توجد محادثة مطابقة لبحثك.</p>';
+                return;
+            }
+
+            filtered.forEach(chat => {
+                const card = document.createElement('div');
+                card.className = 'chat-history-card';
+                card.tabIndex = 0;
+                card.setAttribute('role','button');
+
+                const main = document.createElement('div');
+                main.className = 'chat-history-main';
+
+                const icon = document.createElement('div');
+                icon.className = 'chat-history-icon';
+                icon.innerHTML = chat.isPrivate
+                    ? '<i class="fa-solid fa-user-lock"></i>'
+                    : '<i class="fa-solid fa-users"></i>';
+
+                const text = document.createElement('div');
+                text.className = 'chat-history-text';
+
+                const title = document.createElement('div');
+                title.className = 'chat-history-title';
+                title.textContent = chat.title;
+
+                const preview = document.createElement('div');
+                preview.className = 'chat-history-last-message';
+                preview.textContent = chat.lastMessage || (chat.isPrivate ? 'محادثة خاصة' : 'اضغط لفتح الغرفة');
+
+                text.appendChild(title);
+                text.appendChild(preview);
+                main.appendChild(icon);
+                main.appendChild(text);
+
+                const meta = document.createElement('div');
+                meta.className = 'chat-history-meta';
+
+                const typeBadge = document.createElement('span');
+                typeBadge.className = `chat-type-badge ${chat.isPrivate ? 'private' : 'public'}`;
+                typeBadge.textContent = chat.isPrivate ? 'خاصة' : 'عامة';
+                meta.appendChild(typeBadge);
+
+                if (!chat.isPrivate) {
+                    const code = document.createElement('span');
+                    code.className = 'chat-room-code';
+                    code.textContent = chat.shareCode || chat.roomId;
+                    meta.appendChild(code);
+                }
+
+                const open = () => openRoomPage(chat.roomId);
+                card.addEventListener('click', open);
+                card.addEventListener('keydown', e => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        open();
+                    }
+                });
+
+                card.appendChild(main);
+                card.appendChild(meta);
+                chatHistoryList.appendChild(card);
+            });
+        }
+
+        socket.on('my_chats_list', chats => {
+            currentChatsList = Array.isArray(chats) ? chats : [];
+            renderChatHistory(currentChatsList);
+        });
+
+        chatHistorySearchInput?.addEventListener('input', () => renderChatHistory(currentChatsList));
+        document.getElementById('refreshChatsBtn')?.addEventListener('click', () => socket.emit('get_my_chats', savedUsername));
+
+        function openRoomPage(roomId) {
+            if (!roomId) return;
+            window.location.href = `room.html?roomId=${encodeURIComponent(roomId)}`;
+        }
+
+        // Create rooms from home
+        document.getElementById('createRoom')?.addEventListener('click', () => {
+            const maxUsers = Number(document.getElementById('maxUsersSelect')?.value) || 4;
+            const roomName = document.getElementById('homeRoomNameInput')?.value.trim() || 'غرفة عامة جديدة';
+            socket.emit('create-group-room', {
+                userId: savedUsername,
+                maxUsers,
+                roomName
+            });
+        });
+
+        // Create rooms from chat history page
+        document.getElementById('chatListCreateRoomBtn')?.addEventListener('click', () => {
+            const roomName = document.getElementById('chatListRoomName')?.value.trim() || 'غرفة عامة جديدة';
+            const maxUsers = Number(document.getElementById('chatListMaxUsers')?.value) || 4;
+            socket.emit('create-group-room', { userId: savedUsername, maxUsers, roomName });
+        });
+
+        socket.on('group-room-created', data => {
+            socket.emit('get_my_chats', savedUsername);
+            showToast(`تم إنشاء الغرفة. الرمز: ${data.shareCode || data.roomId}`);
+            if (data.roomId) openRoomPage(data.roomId);
+        });
+        socket.on('room-create-error', data => showToast(data?.message || 'تعذر إنشاء الغرفة', 'error'));
+
+        function joinByCode(code) {
+            const shareCode = String(code || '').trim();
+            if (!shareCode) {
+                showToast('يرجى إدخال رمز الغرفة.', 'error');
+                return;
+            }
+            if (shareCode.startsWith('private_')) {
+                showToast('الغرف الخاصة لا يمكن دخولها بواسطة رمز.', 'error');
+                return;
+            }
+            socket.emit('join-room-by-code', { shareCode, userId: savedUsername });
+        }
+
+        document.getElementById('joinRoom')?.addEventListener('click', () => {
+            joinByCode(document.getElementById('roomIdInput')?.value);
+        });
+        document.getElementById('chatListJoinRoomBtn')?.addEventListener('click', () => {
+            joinByCode(document.getElementById('chatListJoinCode')?.value);
+        });
+
+        socket.on('join-by-code-result', data => {
+            if (!data?.success) {
+                showToast(data?.error || 'تعذر دخول الغرفة', 'error');
+                return;
+            }
+            socket.emit('get_my_chats', savedUsername);
+            openRoomPage(data.roomId);
+        });
+
+        // ===== Reports =====
+        const reportModal = document.getElementById('reportUserModal');
+        const reportTargetLabel = document.getElementById('reportTargetLabel');
+        const reportReasonInput = document.getElementById('reportReasonInput');
+        const reportDetailsInput = document.getElementById('reportDetailsInput');
+        const reportAttachmentInput = document.getElementById('reportAttachmentInput');
+        const reportAttachmentStatus = document.getElementById('reportAttachmentStatus');
+
+        function openReportModal(username, displayName) {
+            if (!username || username === savedUsername) return;
+            reportTargetUser = username;
+            reportTargetLabel.textContent = `الإبلاغ عن: ${displayName || username} (@${username})`;
+            reportReasonInput.value = '';
+            reportDetailsInput.value = '';
+            reportAttachmentInput.value = '';
+            reportAttachmentStatus.textContent = '';
+            reportModal.style.display = 'flex';
+        }
+
+        function closeReportModal() {
+            reportModal.style.display = 'none';
+            reportTargetUser = null;
+            reportAttachmentInput.value = '';
+            reportAttachmentStatus.textContent = '';
+        }
+
+        document.getElementById('closeReportModalBtn')?.addEventListener('click', closeReportModal);
+        document.getElementById('cancelReportBtn')?.addEventListener('click', closeReportModal);
+        reportModal?.addEventListener('click', e => { if (e.target === reportModal) closeReportModal(); });
+
+        async function uploadReportEvidence(file) {
+            const form = new FormData();
+            form.append('file', file);
+            form.append('context', 'report');
+
+            const res = await fetch('/api/upload', {
+                method: 'POST',
+                credentials: 'same-origin',
+                body: form
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok || !data.success) throw new Error(data.error || 'تعذر رفع صورة الإثبات');
+            return data;
+        }
+
+        document.getElementById('submitReportBtn')?.addEventListener('click', async () => {
+            if (!reportTargetUser) return;
+            const reason = reportReasonInput.value.trim();
+            const details = reportDetailsInput.value.trim();
+            if (!reason) {
+                showToast('اختر سبب البلاغ أولاً.', 'error');
+                return;
+            }
+
+            const submitBtn = document.getElementById('submitReportBtn');
+            submitBtn.disabled = true;
+            let attachmentFileId = null;
+
+            try {
+                const file = reportAttachmentInput.files?.[0];
+                if (file) {
+                    reportAttachmentStatus.textContent = 'جاري رفع صورة الإثبات...';
+                    const uploaded = await uploadReportEvidence(file);
+                    attachmentFileId = uploaded.fileId;
+                    reportAttachmentStatus.textContent = 'تم رفع صورة الإثبات.';
+                }
+
+                socket.emit('submit-report', {
+                    targetUser: reportTargetUser,
+                    reason,
+                    details,
+                    attachmentFileId
+                });
+            } catch (err) {
+                showToast(err.message || 'تعذر إرسال البلاغ', 'error');
+                submitBtn.disabled = false;
+            }
+        });
+
+        socket.on('report-submit-result', data => {
+            const btn = document.getElementById('submitReportBtn');
+            if (btn) btn.disabled = false;
+            if (!data?.success) {
+                showToast(data?.error || 'تعذر إرسال البلاغ', 'error');
+                return;
+            }
+            closeReportModal();
+            showToast(data.message || 'تم إرسال البلاغ إلى الإدارة.');
+        });
+
+        socket.on('report-status-updated', data => {
+            showToast(`تم تحديث حالة بلاغك إلى: ${data?.status || 'محدّث'}`);
+        });
+
+        // ===== Platform ban modal =====
+        const platformBanModal = document.getElementById('platformBanModal');
+        const platformBanType = document.getElementById('platformBanType');
+        const platformBanDurationWrap = document.getElementById('platformBanDurationWrap');
+
+        function openPlatformBanModal(username, displayName) {
+            if (!hasPermission('manage_platform_bans') || !username || username === 'tomi') return;
+            platformBanTargetUser = username;
+            document.getElementById('platformBanTargetLabel').textContent = `المستخدم: ${displayName || username} (@${username})`;
+            platformBanType.value = 'temporary';
+            document.getElementById('platformBanDuration').value = '60';
+            document.getElementById('platformBanReason').value = '';
+            platformBanDurationWrap.style.display = 'block';
+            platformBanModal.style.display = 'flex';
+        }
+
+        function closePlatformBanModal() {
+            platformBanModal.style.display = 'none';
+            platformBanTargetUser = null;
+        }
+
+        platformBanType?.addEventListener('change', () => {
+            platformBanDurationWrap.style.display = platformBanType.value === 'temporary' ? 'block' : 'none';
+        });
+        document.getElementById('closePlatformBanBtn')?.addEventListener('click', closePlatformBanModal);
+        document.getElementById('cancelPlatformBanBtn')?.addEventListener('click', closePlatformBanModal);
+        platformBanModal?.addEventListener('click', e => { if (e.target === platformBanModal) closePlatformBanModal(); });
+
+        document.getElementById('confirmPlatformBanBtn')?.addEventListener('click', () => {
+            if (!platformBanTargetUser) return;
+            const isPermanent = platformBanType.value === 'permanent';
+            const duration = Number(document.getElementById('platformBanDuration')?.value) || 60;
+            const reason = document.getElementById('platformBanReason')?.value.trim() || '';
+            socket.emit('platform-ban-user', {
+                targetUser: platformBanTargetUser,
+                duration,
+                reason,
+                isPermanent
+            });
+        });
+
+        socket.on('platform-ban-result', data => {
+            if (!data?.success) {
+                showToast(data?.error || 'تعذر تنفيذ الحظر', 'error');
+                return;
+            }
+            closePlatformBanModal();
+            showToast(data.unbanned ? 'تم فك الحظر.' : 'تم حظر المستخدم على المنصة.');
+            if (canOpenAdmin()) loadAdminData();
+        });
+
+        // ===== Admin dashboard =====
+        const adminUsersList = document.getElementById('adminUsersList');
+        const reportsList = document.getElementById('reportsList');
+        const platformBansList = document.getElementById('platformBansList');
+        const reportsStatusFilter = document.getElementById('reportsStatusFilter');
+
+        document.querySelectorAll('.admin-tab-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('.admin-tab-btn').forEach(b => b.classList.remove('active'));
+                document.querySelectorAll('.admin-pane').forEach(p => p.classList.remove('active'));
+                btn.classList.add('active');
+                const pane = document.getElementById(btn.dataset.adminPane);
+                pane?.classList.add('active');
+
+                if (btn.dataset.adminPane === 'adminUsersPane' && (savedUsername === 'tomi' || hasPermission('manage_moderators'))) {
+                    socket.emit('admin-get-users');
+                }
+                if (btn.dataset.adminPane === 'adminReportsPane' && hasPermission('manage_reports')) {
+                    socket.emit('get-reports', { status: reportsStatusFilter.value });
+                }
+                if (btn.dataset.adminPane === 'adminBansPane' && hasPermission('manage_platform_bans')) {
+                    socket.emit('get-platform-bans');
+                }
+            });
+        });
+
+        function loadAdminData() {
+            updateAdminVisibility();
+            socket.emit('admin-get-permissions-catalog');
+
+            if (savedUsername === 'tomi' || hasPermission('manage_moderators')) {
+                socket.emit('admin-get-users');
+            }
+            if (hasPermission('manage_reports')) {
+                socket.emit('get-reports', { status: reportsStatusFilter?.value || 'pending' });
+            }
+            if (hasPermission('manage_platform_bans')) {
+                socket.emit('get-platform-bans');
+            }
+        }
+
+        document.getElementById('adminRefreshBtn')?.addEventListener('click', loadAdminData);
+        reportsStatusFilter?.addEventListener('change', () => {
+            if (hasPermission('manage_reports')) {
+                socket.emit('get-reports', { status: reportsStatusFilter.value });
+            }
+        });
+
+        document.getElementById('adminUsersSearchInput')?.addEventListener('input', e => {
+            renderAdminUsers(adminUsersCache, e.target.value.trim().toLowerCase());
+        });
+
+        socket.on('permissions-catalog', data => {
+            permissionsCatalog = Array.isArray(data?.permissions) ? data.permissions : [];
+            renderStaffPermissionOptions();
+        });
+
+        function renderStaffPermissionOptions() {
+            const box = document.getElementById('staffPermissionsBox');
+            if (!box) return;
+            box.innerHTML = '';
+            permissionsCatalog.forEach(permission => {
+                const label = document.createElement('label');
+                label.className = 'permission-chip';
+                const input = document.createElement('input');
+                input.type = 'checkbox';
+                input.value = permission.id;
+                label.appendChild(input);
+                label.appendChild(document.createTextNode(permission.label));
+                box.appendChild(label);
+            });
+        }
+
+        document.getElementById('createStaffBtn')?.addEventListener('click', () => {
+            if (!(savedUsername === 'tomi' || myRole === 'owner')) return;
+            const username = document.getElementById('staffUsernameInput').value.trim();
+            const displayName = document.getElementById('staffDisplayNameInput').value.trim();
+            const password = document.getElementById('staffPasswordInput').value;
+            const role = document.getElementById('staffRoleSelect').value;
+            const permissions = [...document.querySelectorAll('#staffPermissionsBox input:checked')].map(i => i.value);
+
+            if (!username || !password) {
+                showToast('اكتب Username وكلمة مرور للحساب المميز.', 'error');
+                return;
+            }
+            socket.emit('admin-create-staff-account', { username, displayName, password, role, permissions });
+        });
+
+        socket.on('admin-users-list', data => {
+            if (!data?.success) {
+                if (adminUsersList) adminUsersList.innerHTML = `<p class="empty-msg">${escapeHTML(data?.error || 'تعذر تحميل المستخدمين')}</p>`;
+                return;
+            }
+            adminUsersCache = Array.isArray(data.users) ? data.users : [];
+            const q = document.getElementById('adminUsersSearchInput')?.value.trim().toLowerCase() || '';
+            renderAdminUsers(adminUsersCache, q);
+        });
+
+        function renderAdminUsers(users, query = '') {
+            if (!adminUsersList) return;
+            adminUsersList.innerHTML = '';
+            const filtered = users.filter(u => !query ||
+                String(u.username).toLowerCase().includes(query) ||
+                String(u.displayName || '').toLowerCase().includes(query));
+
+            if (!filtered.length) {
+                adminUsersList.innerHTML = '<p class="empty-msg">لا يوجد مستخدمون مطابقون.</p>';
+                return;
+            }
+
+            filtered.forEach(user => {
+                const card = document.createElement('div');
+                card.className = 'admin-user-card';
+
+                const head = document.createElement('div');
+                head.className = 'admin-user-head';
+
+                const identity = document.createElement('div');
+                const title = document.createElement('div');
+                title.className = 'user-name-line';
+                const strong = document.createElement('strong');
+                strong.textContent = user.displayName || user.username;
+                title.appendChild(strong);
+                if (user.role !== 'user') title.insertAdjacentHTML('beforeend', badgeHTML(user.badge || user.role));
+
+                const meta = document.createElement('div');
+                meta.className = 'admin-user-meta';
+                meta.textContent = `@${user.username} • ${user.isOnline ? 'متصل' : 'غير متصل'}${user.isBanned ? ' • محظور' : ''}`;
+
+                identity.appendChild(title);
+                identity.appendChild(meta);
+                head.appendChild(identity);
+
+                const rolePill = document.createElement('span');
+                rolePill.className = 'status-pill';
+                rolePill.textContent = roleLabel(user.role);
+                head.appendChild(rolePill);
+
+                card.appendChild(head);
+
+                const actions = document.createElement('div');
+                actions.className = 'admin-user-actions';
+
+                if (user.role !== 'owner' && (savedUsername === 'tomi' || hasPermission('manage_moderators'))) {
+                    const roleSelect = document.createElement('select');
+                    roleSelect.className = 'custom-select';
+                    roleSelect.style.width = 'auto';
+                    ['user','moderator','admin'].forEach(role => {
+                        const opt = document.createElement('option');
+                        opt.value = role;
+                        opt.textContent = roleLabel(role);
+                        opt.selected = user.role === role;
+                        roleSelect.appendChild(opt);
+                    });
+
+                    const saveRole = document.createElement('button');
+                    saveRole.className = 'btn-secondary';
+                    saveRole.textContent = 'حفظ الدور';
+                    saveRole.addEventListener('click', () => {
+                        socket.emit('admin-set-role', { targetUser: user.username, role: roleSelect.value });
+                    });
+                    actions.appendChild(roleSelect);
+                    actions.appendChild(saveRole);
+                }
+
+                if (user.role !== 'owner' && hasPermission('manage_platform_bans')) {
+                    if (user.isBanned) {
+                        const unban = document.createElement('button');
+                        unban.className = 'btn-secondary';
+                        unban.textContent = 'فك الحظر';
+                        unban.addEventListener('click', () => socket.emit('platform-unban-user', { targetUser: user.username }));
+                        actions.appendChild(unban);
+                    } else {
+                        const ban = document.createElement('button');
+                        ban.className = 'btn-danger';
+                        ban.textContent = 'حظر المنصة';
+                        ban.addEventListener('click', () => openPlatformBanModal(user.username, user.displayName || user.username));
+                        actions.appendChild(ban);
+                    }
+                }
+
+                if (savedUsername === 'tomi' && user.role !== 'owner' && user.role !== 'user') {
+                    const permBtn = document.createElement('button');
+                    permBtn.className = 'btn-secondary';
+                    permBtn.textContent = 'الصلاحيات';
+                    permBtn.addEventListener('click', () => togglePermissionEditor(card, user));
+                    actions.appendChild(permBtn);
+                }
+
+                if (actions.children.length) card.appendChild(actions);
+                adminUsersList.appendChild(card);
+            });
+        }
+
+        function togglePermissionEditor(card, user) {
+            const existing = card.querySelector('.permissions-editor');
+            if (existing) {
+                existing.remove();
+                return;
+            }
+
+            const editor = document.createElement('div');
+            editor.className = 'permissions-editor';
+
+            const grid = document.createElement('div');
+            grid.className = 'permission-checks';
+
+            permissionsCatalog.forEach(permission => {
+                const label = document.createElement('label');
+                label.className = 'permission-chip';
+                const input = document.createElement('input');
+                input.type = 'checkbox';
+                input.value = permission.id;
+                input.checked = Array.isArray(user.permissions) && user.permissions.includes(permission.id);
+                label.appendChild(input);
+                label.appendChild(document.createTextNode(permission.label));
+                grid.appendChild(label);
+            });
+
+            const save = document.createElement('button');
+            save.className = 'btn-primary';
+            save.style.marginTop = '10px';
+            save.textContent = 'حفظ الصلاحيات';
+            save.addEventListener('click', () => {
+                const permissions = [...grid.querySelectorAll('input:checked')].map(i => i.value);
+                socket.emit('admin-set-permissions', { targetUser: user.username, permissions });
+            });
+
+            editor.appendChild(grid);
+            editor.appendChild(save);
+            card.appendChild(editor);
+        }
+
+        socket.on('admin-action-result', data => {
+            if (!data?.success) {
+                showToast(data?.error || 'تعذر تنفيذ الإجراء الإداري', 'error');
+                return;
+            }
+            showToast('تم تنفيذ الإجراء الإداري بنجاح.');
+            document.getElementById('staffPasswordInput').value = '';
+            if (savedUsername === 'tomi' || hasPermission('manage_moderators')) socket.emit('admin-get-users');
+        });
+
+        socket.on('reports-list', reports => renderReports(Array.isArray(reports) ? reports : []));
+
+        function renderReports(reports) {
+            if (!reportsList) return;
+            reportsList.innerHTML = '';
+            if (!reports.length) {
+                reportsList.innerHTML = '<p class="empty-msg">لا توجد بلاغات بهذه الحالة.</p>';
+                return;
+            }
+
+            reports.forEach(report => {
+                const card = document.createElement('div');
+                card.className = 'report-card';
+
+                const head = document.createElement('div');
+                head.className = 'report-card-head';
+
+                const titleWrap = document.createElement('div');
+                const title = document.createElement('strong');
+                title.textContent = `بلاغ على @${report.targetUser}`;
+                const meta = document.createElement('div');
+                meta.className = 'report-meta';
+                meta.textContent = `المبلّغ: @${report.reporter} • ${report.createdAt ? new Date(report.createdAt).toLocaleString() : ''}`;
+                titleWrap.appendChild(title);
+                titleWrap.appendChild(meta);
+
+                const status = document.createElement('span');
+                status.className = `status-pill ${report.status || 'pending'}`;
+                status.textContent = report.status || 'pending';
+
+                head.appendChild(titleWrap);
+                head.appendChild(status);
+                card.appendChild(head);
+
+                const reason = document.createElement('div');
+                reason.className = 'report-meta';
+                reason.style.marginTop = '10px';
+                reason.textContent = `السبب: ${report.reason || ''}`;
+                card.appendChild(reason);
+
+                if (report.details) {
+                    const details = document.createElement('div');
+                    details.className = 'report-meta';
+                    details.textContent = report.details;
+                    card.appendChild(details);
+                }
+
+                if (report.attachment?.url) {
+                    const link = document.createElement('a');
+                    link.className = 'report-evidence';
+                    link.href = report.attachment.url;
+                    link.target = '_blank';
+                    link.rel = 'noopener';
+                    link.innerHTML = '<i class="fa-solid fa-image"></i> فتح صورة الإثبات';
+                    card.appendChild(link);
+                }
+
+                const actions = document.createElement('div');
+                actions.className = 'report-actions';
+
+                const statusSelect = document.createElement('select');
+                statusSelect.className = 'custom-select';
+                statusSelect.style.width = 'auto';
+                ['reviewing','actioned','dismissed'].forEach(s => {
+                    const opt = document.createElement('option');
+                    opt.value = s;
+                    opt.textContent = s === 'reviewing' ? 'قيد المراجعة' : s === 'actioned' ? 'تم اتخاذ إجراء' : 'رفض البلاغ';
+                    opt.selected = report.status === s;
+                    statusSelect.appendChild(opt);
+                });
+
+                const resolution = document.createElement('input');
+                resolution.className = 'custom-input';
+                resolution.placeholder = 'ملاحظة / نتيجة المراجعة';
+                resolution.value = report.resolution || '';
+                resolution.style.flex = '1';
+
+                const save = document.createElement('button');
+                save.className = 'btn-primary';
+                save.textContent = 'حفظ';
+                save.addEventListener('click', () => {
+                    socket.emit('review-report', {
+                        reportId: report.reportId,
+                        status: statusSelect.value,
+                        resolution: resolution.value.trim()
+                    });
+                });
+
+                actions.appendChild(statusSelect);
+                actions.appendChild(resolution);
+                actions.appendChild(save);
+                card.appendChild(actions);
+                reportsList.appendChild(card);
+            });
+        }
+
+        socket.on('report-review-result', data => {
+            if (!data?.success) {
+                showToast(data?.error || 'تعذر تحديث البلاغ', 'error');
+                return;
+            }
+            showToast('تم تحديث البلاغ.');
+            socket.emit('get-reports', { status: reportsStatusFilter.value });
+        });
+
+        socket.on('new-report', () => {
+            showToast('وصل بلاغ جديد إلى الإدارة.');
+            if (sectionAdmin?.style.display !== 'none' && hasPermission('manage_reports')) {
+                socket.emit('get-reports', { status: reportsStatusFilter.value });
+            }
+        });
+
+        socket.on('platform-bans-list', bans => renderPlatformBans(Array.isArray(bans) ? bans : []));
+
+        function renderPlatformBans(bans) {
+            if (!platformBansList) return;
+            platformBansList.innerHTML = '';
+            if (!bans.length) {
+                platformBansList.innerHTML = '<p class="empty-msg">لا يوجد مستخدمون محظورون على المنصة.</p>';
+                return;
+            }
+
+            bans.forEach(ban => {
+                const card = document.createElement('div');
+                card.className = 'platform-ban-card';
+
+                const head = document.createElement('div');
+                head.className = 'platform-ban-head';
+
+                const info = document.createElement('div');
+                const title = document.createElement('strong');
+                title.textContent = '@' + (ban.username || ban.targetUser);
+                const meta = document.createElement('div');
+                meta.className = 'ban-meta';
+                meta.textContent = ban.isPermanent
+                    ? `حظر دائم • بواسطة ${ban.bannedBy || '-'}`
+                    : `حظر مؤقت حتى ${ban.expiresAt ? new Date(ban.expiresAt).toLocaleString() : '-'} • بواسطة ${ban.bannedBy || '-'}`;
+                info.appendChild(title);
+                info.appendChild(meta);
+
+                head.appendChild(info);
+                card.appendChild(head);
+
+                if (ban.reason) {
+                    const reason = document.createElement('div');
+                    reason.className = 'ban-meta';
+                    reason.textContent = 'السبب: ' + ban.reason;
+                    card.appendChild(reason);
+                }
+
+                const actions = document.createElement('div');
+                actions.className = 'ban-actions';
+                const unban = document.createElement('button');
+                unban.className = 'btn-secondary';
+                unban.textContent = 'فك الحظر';
+                unban.addEventListener('click', () => {
+                    socket.emit('platform-unban-user', { targetUser: ban.username || ban.targetUser });
+                });
+                actions.appendChild(unban);
+                card.appendChild(actions);
+
+                platformBansList.appendChild(card);
+            });
+        }
+
+        // ===== Logout =====
+        document.getElementById('logoutBtn')?.addEventListener('click', async e => {
+            e.preventDefault();
+            try {
+                await fetch('/api/logout', { method: 'POST', credentials: 'same-origin' });
+            } catch (_) {}
+            sessionStorage.clear();
+            ['chat_username','username','chat_userId','chat_role','chat_display_name','chat_password'].forEach(k => localStorage.removeItem(k));
+            window.location.replace('login.html');
+        });
+
+        // The advanced conversation experience (receipts, files, reply,
+        // reactions, shared backgrounds, audio/video calls) lives in room.html.
+        // This dashboard deliberately opens that page instead of maintaining a
+        // second, simplified chat implementation here.
+
+        bootstrap();
+    </script>
+</body>
+
+</html>

@@ -1,0 +1,84 @@
+:root{color-scheme:dark;--bg:#0d0d15;--panel:#151522;--card:#1b1a2b;--border:#2a2940;--text:#f4f3fa;--muted:#9d9bb0;--accent:#7c3aed;--accent2:#9b4de3;--danger:#ef4444;--ok:#22c55e}*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at top,#171428 0,#0d0d15 42%);color:var(--text);font-family:system-ui,-apple-system,"Segoe UI",Tahoma,Arial,sans-serif;min-height:100vh}.settings-shell{width:min(1080px,calc(100% - 28px));margin:0 auto;padding:24px 0 50px}.settings-header{display:flex;align-items:center;gap:14px;padding:14px 0 22px}.settings-header h1{margin:0;font-size:1.55rem}.settings-header p{margin:4px 0 0;color:var(--muted);font-size:.85rem}.back-btn{width:44px;height:44px;border:1px solid var(--border);border-radius:14px;display:grid;place-items:center;color:var(--text);text-decoration:none;background:var(--panel)}.role-badge{margin-inline-start:auto;background:#24203b;border:1px solid #463b72;border-radius:999px;padding:7px 11px;font-size:.78rem}.settings-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}.panel{background:rgba(21,21,34,.96);border:1px solid var(--border);border-radius:22px;padding:20px}.panel-heading{display:flex;align-items:center;gap:12px;margin-bottom:20px}.panel-heading>div:first-child{width:42px;height:42px;border-radius:13px;display:grid;place-items:center;background:#282044;color:#b99cff}.panel-heading h2{margin:0;font-size:1.05rem}.panel-heading p{margin:4px 0 0;color:var(--muted);font-size:.78rem}.avatar-area{display:flex;align-items:center;gap:18px;padding:12px 0 22px}.profile-avatar-wrap{--profile-photo-size:64%;position:relative;width:118px;height:118px;display:grid;place-items:center;isolation:isolate}.profile-avatar{width:var(--profile-photo-size);height:var(--profile-photo-size);border-radius:50%;object-fit:cover;position:relative;z-index:3;border:2px solid #41386c;background:#171526;box-shadow:0 0 0 2px rgba(14,13,24,.82)}.profile-frame{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;z-index:2;pointer-events:none;user-select:none;-webkit-user-drag:none}.avatar-actions{display:flex;flex-direction:column;align-items:flex-start;gap:7px}.avatar-actions small,.form-stack small,.muted{color:var(--muted);font-size:.73rem;line-height:1.5}.form-stack{display:flex;flex-direction:column;gap:9px}.form-stack label{font-size:.82rem;color:#d7d4e5}.form-stack input,.form-stack select{width:100%;min-height:46px;border:1px solid var(--border);border-radius:13px;background:#10101a;color:var(--text);padding:0 13px;font-size:16px;outline:none}.form-stack input:focus,.form-stack select:focus{border-color:#7957d8;box-shadow:0 0 0 3px rgba(124,58,237,.12)}.form-stack input[readonly]{opacity:.72}.primary-btn,.secondary-btn,.danger-btn{min-height:44px;border-radius:13px;border:0;display:inline-flex;align-items:center;justify-content:center;gap:8px;font-weight:700;cursor:pointer;padding:0 16px}.primary-btn{background:linear-gradient(135deg,var(--accent),var(--accent2));color:white}.secondary-btn{background:#242238;color:#ded9f4;border:1px solid #3a3657}.danger-btn{background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.32);color:#ff8d8d}.file-label{cursor:pointer}.owner-panel{margin-top:16px}.owner-heading>div:first-child{color:#f5c451;background:#302817}.owner-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.owner-box{background:#11111c;border:1px solid var(--border);border-radius:17px;padding:16px}.owner-box h3{margin:0 0 8px;font-size:.95rem}.duration-row{display:grid;grid-template-columns:1fr auto;align-items:end;gap:12px}.check-row{min-height:46px;display:flex;align-items:center;gap:8px;background:#191827;border:1px solid var(--border);padding:0 12px;border-radius:13px}.check-row input{width:18px;height:18px;min-height:0}.library-title{display:flex;align-items:center;gap:10px;margin:24px 0 12px}.library-title h3{margin:0}.library-title span{background:#29243d;padding:4px 9px;border-radius:99px;color:#b9add9}.frames-library{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px}.frame-card{position:relative;background:#11111c;border:1px solid var(--border);border-radius:16px;padding:10px;text-align:center;min-width:0}.frame-card strong{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:.78rem}.frame-demo{--frame-demo-photo-size:62%;width:100%;aspect-ratio:1;position:relative;display:grid;place-items:center;isolation:isolate}.frame-demo-avatar{width:var(--frame-demo-photo-size);height:var(--frame-demo-photo-size);border-radius:50%;object-fit:cover;position:relative;z-index:3;background:#171526;box-shadow:0 0 0 2px rgba(14,13,24,.82)}.frame-demo-overlay{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;z-index:2;pointer-events:none;user-select:none;-webkit-user-drag:none}.delete-frame{position:absolute;left:7px;top:7px;width:30px;height:30px;border-radius:10px;border:1px solid rgba(239,68,68,.25);background:rgba(15,15,24,.78);color:#ff7373;cursor:pointer}.toast{position:fixed;z-index:99;top:16px;left:50%;transform:translate(-50%,-20px);background:#1d1c2c;border:1px solid #393752;padding:10px 16px;border-radius:13px;opacity:0;pointer-events:none;transition:.2s;max-width:min(92vw,520px);text-align:center}.toast.show{opacity:1;transform:translate(-50%,0)}.toast.error{border-color:#6a3037;color:#ff9da3}@media(max-width:760px){.settings-shell{width:min(100% - 18px,680px);padding-top:10px}.settings-grid,.owner-grid{grid-template-columns:1fr}.frames-library{grid-template-columns:repeat(3,minmax(0,1fr))}.settings-header{position:sticky;top:0;z-index:5;background:rgba(13,13,21,.92);backdrop-filter:blur(12px);padding:10px 0}.settings-header h1{font-size:1.25rem}.role-badge{font-size:.7rem}.panel{border-radius:18px;padding:16px}}@media(max-width:390px){.frames-library{grid-template-columns:repeat(2,minmax(0,1fr))}.avatar-area{align-items:flex-start}.profile-avatar-wrap{width:100px;height:100px}.settings-header p{display:none}}
+
+
+/* ===== Avatar frame cutout v3 =====
+   The photo and decorative frame are always separate layers.
+   The account photo owns the center; the frame can never cover it. */
+.profile-avatar-wrap{
+  --profile-photo-size:60%;
+  position:relative!important;
+  width:128px;
+  height:128px;
+  display:block!important;
+  flex:0 0 auto;
+  isolation:isolate;
+  overflow:visible!important;
+}
+.profile-avatar-wrap .profile-avatar{
+  position:absolute!important;
+  left:50%!important;
+  top:50%!important;
+  transform:translate(-50%,-50%)!important;
+  width:var(--profile-photo-size)!important;
+  height:var(--profile-photo-size)!important;
+  min-width:0!important;
+  min-height:0!important;
+  max-width:none!important;
+  max-height:none!important;
+  border-radius:50%!important;
+  object-fit:cover!important;
+  z-index:30!important;
+  display:block!important;
+  background:#171526!important;
+  border:2px solid rgba(105,86,171,.82)!important;
+  box-shadow:0 0 0 3px rgba(12,11,20,.88)!important;
+}
+.profile-avatar-wrap .profile-frame{
+  position:absolute!important;
+  inset:0!important;
+  width:100%!important;
+  height:100%!important;
+  max-width:none!important;
+  max-height:none!important;
+  object-fit:contain!important;
+  object-position:center!important;
+  z-index:10!important;
+  display:block;
+  border-radius:50%!important;
+  clip-path:circle(50% at 50% 50%);
+  pointer-events:none!important;
+  user-select:none!important;
+  -webkit-user-drag:none!important;
+}
+.frame-demo{
+  --frame-demo-photo-size:60%;
+  position:relative!important;
+  display:block!important;
+  isolation:isolate;
+  overflow:visible!important;
+}
+.frame-demo .frame-demo-avatar{
+  position:absolute!important;
+  left:50%!important;
+  top:50%!important;
+  transform:translate(-50%,-50%)!important;
+  width:var(--frame-demo-photo-size)!important;
+  height:var(--frame-demo-photo-size)!important;
+  border-radius:50%!important;
+  object-fit:cover!important;
+  z-index:30!important;
+}
+.frame-demo .frame-demo-overlay{
+  position:absolute!important;
+  inset:0!important;
+  width:100%!important;
+  height:100%!important;
+  object-fit:contain!important;
+  z-index:10!important;
+  border-radius:50%!important;
+  clip-path:circle(50% at 50% 50%);
+  pointer-events:none!important;
+}
+@media(max-width:390px){
+  .profile-avatar-wrap{width:108px;height:108px;}
+}

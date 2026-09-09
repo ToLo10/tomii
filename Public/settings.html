@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#11111b">
+  <title>Chatify - الإعدادات</title>
+  <link rel="stylesheet" href="settings.css?v=20260908-frame-cutout-v3">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
+</head>
+<body>
+  <main class="settings-shell">
+    <header class="settings-header">
+      <a class="back-btn" href="index.html" aria-label="العودة"><i class="fa-solid fa-arrow-right"></i></a>
+      <div>
+        <h1>الإعدادات</h1>
+        <p>إدارة الحساب والصورة وكلمة المرور</p>
+      </div>
+      <span id="roleBadge" class="role-badge"></span>
+    </header>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+    <section class="settings-grid">
+      <article class="panel profile-panel">
+        <div class="panel-heading">
+          <div><i class="fa-solid fa-user"></i></div>
+          <div><h2>الحساب</h2><p>الصورة والاسم الظاهر</p></div>
+        </div>
+
+        <div class="avatar-area">
+          <div class="profile-avatar-wrap">
+            <img id="profileAvatar" class="profile-avatar" alt="صورة الحساب">
+            <img id="profileFrame" class="profile-frame" alt="" aria-hidden="true" style="display:none;">
+          </div>
+          <div class="avatar-actions">
+            <label class="secondary-btn" for="avatarInput"><i class="fa-solid fa-image"></i> تغيير الصورة</label>
+            <input id="avatarInput" type="file" accept="image/*,.gif" hidden>
+            <small>PNG / JPG / WebP / GIF</small>
+          </div>
+        </div>
+
+        <form id="profileForm" class="form-stack">
+          <label>اسم المستخدم</label>
+          <input id="usernameInput" type="text" readonly>
+          <small>هذا هو المعرّف الثابت للمحادثات. يمكنك تغيير الاسم الظاهر أدناه بدون كسر المحادثات القديمة.</small>
+
+          <label for="displayNameInput">الاسم الظاهر</label>
+          <input id="displayNameInput" type="text" maxlength="60" required>
+          <button class="primary-btn" type="submit"><i class="fa-solid fa-floppy-disk"></i> حفظ الاسم</button>
+        </form>
+      </article>
+
+      <article class="panel security-panel">
+        <div class="panel-heading">
+          <div><i class="fa-solid fa-lock"></i></div>
+          <div><h2>كلمة المرور</h2><p>تغيير كلمة المرور بأمان</p></div>
+        </div>
+        <form id="passwordForm" class="form-stack">
+          <label for="currentPassword">كلمة المرور الحالية</label>
+          <input id="currentPassword" type="password" autocomplete="current-password" required>
+          <label for="newPassword">كلمة المرور الجديدة</label>
+          <input id="newPassword" type="password" minlength="6" autocomplete="new-password" required>
+          <label for="confirmPassword">تأكيد كلمة المرور</label>
+          <input id="confirmPassword" type="password" minlength="6" autocomplete="new-password" required>
+          <button class="primary-btn" type="submit"><i class="fa-solid fa-key"></i> تغيير كلمة المرور</button>
+        </form>
+      </article>
+    </section>
+
+    <section id="ownerFramesPanel" class="panel owner-panel" style="display:none;">
+      <div class="panel-heading owner-heading">
+        <div><i class="fa-solid fa-crown"></i></div>
+        <div><h2>مكتبة الإطارات</h2><p>للمالك فقط: رفع الإطارات ومنحها لأي حساب لمدة محددة أو بشكل دائم</p></div>
+      </div>
+
+      <div class="owner-grid">
+        <form id="frameUploadForm" class="owner-box form-stack">
+          <h3>رفع إطار جديد</h3>
+          <label for="frameName">اسم الإطار</label>
+          <input id="frameName" type="text" maxlength="60" placeholder="مثال: Royal Purple" required>
+          <label class="secondary-btn file-label" for="frameFile"><i class="fa-solid fa-upload"></i> اختيار PNG / WebP / GIF</label>
+          <input id="frameFile" type="file" accept="image/*,.gif" hidden required>
+          <div id="frameFileName" class="muted">لم يتم اختيار ملف</div>
+          <button class="primary-btn" type="submit"><i class="fa-solid fa-plus"></i> إضافة للمكتبة</button>
+        </form>
+
+        <form id="frameAssignForm" class="owner-box form-stack">
+          <h3>منح إطار لمستخدم</h3>
+          <label for="targetUsername">اسم المستخدم</label>
+          <input id="targetUsername" type="text" placeholder="username" required>
+          <label for="frameSelect">الإطار</label>
+          <select id="frameSelect" required></select>
+          <div class="duration-row">
+            <div>
+              <label for="durationDays">المدة بالأيام</label>
+              <input id="durationDays" type="number" min="1" max="3650" value="7">
+            </div>
+            <label class="check-row"><input id="permanentFrame" type="checkbox"> <span>دائم</span></label>
+          </div>
+          <button class="primary-btn" type="submit"><i class="fa-solid fa-gift"></i> منح الإطار</button>
+          <button id="removeFrameBtn" class="danger-btn" type="button"><i class="fa-solid fa-xmark"></i> سحب الإطار من المستخدم</button>
+        </form>
+      </div>
+
+      <div class="library-title"><h3>الإطارات المتوفرة</h3><span id="framesCount">0</span></div>
+      <div id="framesLibrary" class="frames-library"></div>
+    </section>
+  </main>
+
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  let me = null;
+  let frames = [];
+
+  function fallbackAvatar(name) {
+    return `https://ui-avatars.com/api/?name=${encodeURIComponent(name || 'User')}&background=6c5ce7&color=fff`;
+  }
+
+  // ---------------------------------------------------------
+  // Avatar-frame renderer
+  // ---------------------------------------------------------
+  // Many frame images downloaded from the web only LOOK transparent:
+  // the grey checkerboard is actually baked into the JPG/PNG pixels.
+  // This renderer automatically removes that fake background, cuts a
+  // real circular hole in the middle, and keeps the profile photo as a
+  // separate layer. It also works normally with genuinely transparent
+  // PNG/WebP files.
+  const processedFrameCache = new Map();
+
+  function frameSourceWithCacheBust(url) {
+    if (!url || url.startsWith('data:') || url.startsWith('blob:')) return url;
+    return url + (url.includes('?') ? '&' : '?') + 'frameCutout=3';
+  }
+
+  function processFrameUrl(url) {
+    if (!url) return Promise.resolve('');
+    if (processedFrameCache.has(url)) return processedFrameCache.get(url);
+
+    const task = new Promise((resolve, reject) => {
+      const source = new Image();
+      source.decoding = 'async';
+
+      source.onload = () => {
+        try {
+          const naturalW = Math.max(1, source.naturalWidth || source.width || 1);
+          const naturalH = Math.max(1, source.naturalHeight || source.height || 1);
+          const maxSide = 640;
+          const scale = Math.min(1, maxSide / Math.max(naturalW, naturalH));
+          const width = Math.max(1, Math.round(naturalW * scale));
+          const height = Math.max(1, Math.round(naturalH * scale));
+
+          const canvas = document.createElement('canvas');
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d', { willReadFrequently: true });
+          if (!ctx) return resolve(url);
+
+          ctx.clearRect(0, 0, width, height);
+          ctx.drawImage(source, 0, 0, width, height);
+
+          const image = ctx.getImageData(0, 0, width, height);
+          const pixels = image.data;
+          const pixelCount = width * height;
+
+          let transparentPixels = 0;
+          for (let i = 3; i < pixels.length; i += 4) {
+            if (pixels[i] < 245) transparentPixels++;
+          }
+          const alreadyTransparent = transparentPixels > pixelCount * 0.003;
+
+          const sampleCoords = [
+            [2, 2], [width - 3, 2], [2, height - 3], [width - 3, height - 3],
+            [Math.floor(width / 2), 2], [Math.floor(width / 2), height - 3],
+            [2, Math.floor(height / 2)], [width - 3, Math.floor(height / 2)]
+          ];
+          const edgeSamples = sampleCoords.map(([x, y]) => {
+            const i = (Math.max(0, Math.min(height - 1, y)) * width + Math.max(0, Math.min(width - 1, x))) * 4;
+            return [pixels[i], pixels[i + 1], pixels[i + 2]];
+          });
+
+          const cx = (width - 1) / 2;
+          const cy = (height - 1) / 2;
+          const minSide = Math.min(width, height);
+          // The center is intentionally transparent in the FRAME layer.
+          // The real account photo is rendered separately in that hole.
+          const innerRadius = minSide * 0.292;
+          const featherEnd = innerRadius + Math.max(2, minSide * 0.008);
+          const outerRadius = minSide * 0.498;
+
+          function distance3(r, g, b, sample) {
+            const dr = r - sample[0];
+            const dg = g - sample[1];
+            const db = b - sample[2];
+            return Math.sqrt(dr * dr + dg * dg + db * db);
+          }
+
+          for (let y = 0; y < height; y++) {
+            for (let x = 0; x < width; x++) {
+              const i = (y * width + x) * 4;
+              if (pixels[i + 3] === 0) continue;
+
+              const dx = x - cx;
+              const dy = y - cy;
+              const radius = Math.sqrt(dx * dx + dy * dy);
+
+              // Remove square corners so a non-transparent JPG can never
+              // appear as a square on top of the profile photo.
+              if (radius > outerRadius) {
+                pixels[i + 3] = 0;
+                continue;
+              }
+
+              // Always create a genuine transparent hole in the middle.
+              if (radius <= innerRadius) {
+                pixels[i + 3] = 0;
+                continue;
+              }
+              if (radius < featherEnd) {
+                const amount = (radius - innerRadius) / Math.max(1, featherEnd - innerRadius);
+                pixels[i + 3] = Math.round(pixels[i + 3] * amount);
+                continue;
+              }
+
+              // If the source already has alpha, trust its real transparency.
+              // Otherwise clean fake checkerboards / flat image backgrounds.
+              if (!alreadyTransparent) {
+                const r = pixels[i];
+                const g = pixels[i + 1];
+                const b = pixels[i + 2];
+                const max = Math.max(r, g, b);
+                const min = Math.min(r, g, b);
+                const chroma = max - min;
+                const luminance = (r + g + b) / 3;
+
+                // Typical baked checkerboard: almost-neutral dark/medium grey.
+                let isBackground = chroma <= 19 && luminance >= 18 && luminance <= 218;
+
+                // Also remove a flat background that matches one of the image
+                // edges/corners (helps JPG, PNG and WebP with solid backdrops).
+                if (!isBackground) {
+                  isBackground = edgeSamples.some(sample => distance3(r, g, b, sample) <= 20);
+                }
+
+                if (isBackground) pixels[i + 3] = 0;
+              }
+            }
+          }
+
+          ctx.putImageData(image, 0, 0);
+          resolve(canvas.toDataURL('image/png'));
+        } catch (error) {
+          reject(error);
+        }
+      };
+
+      source.onerror = () => reject(new Error('frame-image-load-failed'));
+      source.src = frameSourceWithCacheBust(url);
+    }).catch(() => url);
+
+    processedFrameCache.set(url, task);
+    return task;
+  }
+
+  async function renderFrameElement(element, url, animated = false) {
+    if (!element) return;
+    const token = String(Date.now()) + Math.random();
+    element.dataset.frameRenderToken = token;
+
+    if (!url) {
+      element.removeAttribute('src');
+      element.style.display = 'none';
+      return;
+    }
+
+    // Animated GIF frames keep their animation. CSS still guarantees that
+    // the account photo owns the center. Static images get the stronger
+    // automatic checkerboard/background cleanup below.
+    element.src = frameSourceWithCacheBust(url);
+    element.style.display = '';
+    if (animated) return;
+
+    const processed = await processFrameUrl(url);
+    if (element.dataset.frameRenderToken !== token) return;
+    element.src = processed || url;
+    element.style.display = '';
+  }
+
+  function toast(message, error = false) {
+    const el = $('toast');
+    el.textContent = message;
+    el.classList.toggle('error', error);
+    el.classList.add('show');
+    clearTimeout(toast.timer);
+    toast.timer = setTimeout(() => el.classList.remove('show'), 3500);
+  }
+
+  async function request(url, options = {}) {
+    const response = await fetch(url, { credentials: 'same-origin', ...options });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || 'تعذر تنفيذ الطلب');
+    return data;
+  }
+
+  function renderMe(profile) {
+    me = { ...me, ...profile };
+    $('usernameInput').value = me.username || '';
+    $('displayNameInput').value = me.displayName || me.username || '';
+    $('profileAvatar').src = me.avatar || fallbackAvatar(me.displayName || me.username);
+    if (me.frame?.url) {
+      renderFrameElement($('profileFrame'), me.frame.url, !!me.frame.animated);
+    } else {
+      renderFrameElement($('profileFrame'), '');
+    }
+    const role = me.role || 'user';
+    $('roleBadge').textContent = role === 'owner' ? '👑 مالك' : role === 'admin' ? '🛡 إدارة' : role === 'moderator' ? '🛡 مشرف' : '@' + (me.username || 'user');
+    $('ownerFramesPanel').style.display = role === 'owner' || me.username === 'tomi' ? 'block' : 'none';
+  }
+
+  async function loadMe() {
+    try {
+      const data = await request('/api/settings/me');
+      renderMe(data);
+      if (data.role === 'owner' || data.username === 'tomi') await loadFrames();
+    } catch (err) {
+      if (/تسجيل الدخول|401/.test(err.message)) location.href = 'login.html';
+      else toast(err.message, true);
+    }
+  }
+
+  async function loadFrames() {
+    try {
+      const data = await request('/api/frames');
+      frames = Array.isArray(data.frames) ? data.frames : [];
+      $('framesCount').textContent = frames.length;
+      $('frameSelect').innerHTML = frames.length
+        ? frames.map(f => `<option value="${f.frameId}">${escapeHtml(f.name)}</option>`).join('')
+        : '<option value="">لا توجد إطارات بعد</option>';
+
+      const library = $('framesLibrary');
+      library.innerHTML = '';
+      frames.forEach(frame => {
+        const card = document.createElement('div');
+        card.className = 'frame-card';
+        card.innerHTML = `
+          <div class="frame-demo">
+            <img class="frame-demo-avatar" src="${fallbackAvatar('TO')}" alt="">
+            <img class="frame-demo-overlay" alt="${escapeHtml(frame.name)}">
+          </div>
+          <strong>${escapeHtml(frame.name)}</strong>
+          <button type="button" class="delete-frame" data-id="${frame.frameId}"><i class="fa-solid fa-trash"></i></button>`;
+        library.appendChild(card);
+        renderFrameElement(card.querySelector('.frame-demo-overlay'), frame.url, !!frame.animated);
+      });
+    } catch (err) { toast(err.message, true); }
+  }
+
+  function escapeHtml(value) {
+    return String(value || '').replace(/[&<>'"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[ch]));
+  }
+
+  $('profileForm').addEventListener('submit', async e => {
+    e.preventDefault();
+    try {
+      const data = await request('/api/settings/profile', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ displayName: $('displayNameInput').value.trim() })
+      });
+      renderMe(data.profile);
+      localStorage.setItem('chat_display_name', data.profile.displayName);
+      toast('تم تحديث الاسم');
+    } catch (err) { toast(err.message, true); }
+  });
+
+  $('passwordForm').addEventListener('submit', async e => {
+    e.preventDefault();
+    const next = $('newPassword').value;
+    if (next !== $('confirmPassword').value) return toast('تأكيد كلمة المرور غير مطابق', true);
+    try {
+      await request('/api/settings/password', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({ currentPassword:$('currentPassword').value, newPassword:next })
+      });
+      e.target.reset();
+      toast('تم تغيير كلمة المرور');
+    } catch (err) { toast(err.message, true); }
+  });
+
+  $('avatarInput').addEventListener('change', async e => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const form = new FormData();
+    form.append('file', file);
+    form.append('context', 'avatar');
+    try {
+      toast('جاري رفع صورة الحساب...');
+      const upload = await request('/api/upload', { method:'POST', body:form });
+      const data = await request('/api/settings/avatar', {
+        method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({fileId:upload.fileId})
+      });
+      renderMe(data.profile);
+      toast('تم تحديث صورة الحساب');
+    } catch (err) { toast(err.message, true); }
+    e.target.value = '';
+  });
+
+  $('frameFile').addEventListener('change', e => {
+    $('frameFileName').textContent = e.target.files?.[0]?.name || 'لم يتم اختيار ملف';
+  });
+
+  $('frameUploadForm').addEventListener('submit', async e => {
+    e.preventDefault();
+    const file = $('frameFile').files?.[0];
+    if (!file) return toast('اختر ملف الإطار', true);
+    const form = new FormData();
+    form.append('file', file);
+    form.append('context', 'frame');
+    try {
+      toast('جاري رفع الإطار...');
+      const upload = await request('/api/upload', { method:'POST', body:form });
+      await request('/api/admin/frames', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({ fileId:upload.fileId, name:$('frameName').value.trim() })
+      });
+      e.target.reset();
+      $('frameFileName').textContent = 'لم يتم اختيار ملف';
+      await loadFrames();
+      toast('تمت إضافة الإطار للمكتبة');
+    } catch (err) { toast(err.message, true); }
+  });
+
+  $('permanentFrame').addEventListener('change', e => {
+    $('durationDays').disabled = e.target.checked;
+  });
+
+  $('frameAssignForm').addEventListener('submit', async e => {
+    e.preventDefault();
+    try {
+      await request('/api/admin/frames/assign', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({
+          username:$('targetUsername').value.trim(),
+          frameId:$('frameSelect').value,
+          permanent:$('permanentFrame').checked,
+          durationDays:Number($('durationDays').value || 1)
+        })
+      });
+      toast('تم منح الإطار للمستخدم');
+    } catch (err) { toast(err.message, true); }
+  });
+
+  $('removeFrameBtn').addEventListener('click', async () => {
+    const username = $('targetUsername').value.trim();
+    if (!username) return toast('اكتب اسم المستخدم أولاً', true);
+    try {
+      await request('/api/admin/frames/remove', {
+        method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({username})
+      });
+      toast('تم سحب الإطار');
+    } catch (err) { toast(err.message, true); }
+  });
+
+  $('framesLibrary').addEventListener('click', async e => {
+    const btn = e.target.closest('.delete-frame');
+    if (!btn) return;
+    if (!confirm('حذف هذا الإطار من المكتبة وسحبه من جميع المستخدمين؟')) return;
+    try {
+      await request('/api/admin/frames/' + encodeURIComponent(btn.dataset.id), { method:'DELETE' });
+      await loadFrames();
+      toast('تم حذف الإطار');
+    } catch (err) { toast(err.message, true); }
+  });
+
+  loadMe();
+})();
+</script>
+</body>
+</html>

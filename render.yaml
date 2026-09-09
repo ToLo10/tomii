@@ -1,0 +1,34 @@
+services:
+  - type: web
+    name: chatify
+    runtime: node
+    plan: free
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: MONGODB_URI
+        sync: false
+      - key: WRITE_LOCAL_JSON_BACKUP
+        value: "false"
+      - key: MAX_UPLOAD_BYTES
+        value: "536870912"
+      - key: GIPHY_API_KEY
+        sync: false
+      - key: TURN_URL
+        sync: false
+      - key: TURN_USERNAME
+        sync: false
+      - key: TURN_CREDENTIAL
+        sync: false
+      - key: FORCE_TURN_RELAY
+        value: "false"
+      - key: MODERATION_ARCHIVE_ENABLED
+        value: "false"
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
+      - key: TELEGRAM_MAX_COPY_BYTES
+        value: "20971520"
