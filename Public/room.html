@@ -2199,9 +2199,9 @@
                     <button type="button" class="attachment-option" id="openMediaPickerBtn">
                         <span class="attachment-option-icon media">
                             <i class="fa-regular fa-image"></i>
-                            <i class="fa-solid fa-music mini-note"></i>
+                            <i class="fa-solid fa-video mini-note"></i>
                         </span>
-                        <span class="attachment-option-text">الصور والصوت</span>
+                        <span class="attachment-option-text">الصور والفيديو</span>
                         <i class="fa-solid fa-chevron-left attachment-chevron"></i>
                     </button>
                     <div class="attachment-separator"></div>
@@ -2217,13 +2217,13 @@
                 <div class="input-area" id="messageComposer">
                     <div class="composer-row">
                         <button id="attachBtn" class="composer-plus-btn" type="button"
-                                title="إضافة صورة أو صوت أو ملف" aria-label="فتح المرفقات"
+                                title="إضافة صورة أو فيديو أو ملف" aria-label="فتح المرفقات"
                                 aria-expanded="false">
                             <i class="fa-solid fa-plus"></i>
                         </button>
 
                         <input type="file" id="mediaInput"
-                               accept="image/*,video/*,audio/*,.gif"
+                               accept="image/*,video/*"
                                multiple style="display:none;">
                         <input type="file" id="fileInput"
                                multiple style="display:none;">
@@ -3498,12 +3498,31 @@
         }
 
         document.addEventListener('visibilitychange', function() {
-            if (document.visibilityState === 'visible' && roomId && socket.connected) {
-                document.querySelectorAll('.message[data-msg-id]').forEach(el => {
-                    const msgId = el.getAttribute('data-msg-id');
-                    const senderId = el.getAttribute('data-sender-id');
-                    if (senderId !== myUserId) readObserver.observe(el);
-                });
+            if (document.visibilityState === 'visible') {
+                // Returning from Samsung Gallery / Android photo picker can leave Socket.IO
+                // briefly disconnected. Reconnect silently instead of rejecting the file.
+                if (!socket.connected) {
+                    try { socket.connect(); } catch (_) {}
+                }
+                if (roomId && socket.connected) {
+                    document.querySelectorAll('.message[data-msg-id]').forEach(el => {
+                        const msgId = el.getAttribute('data-msg-id');
+                        const senderId = el.getAttribute('data-sender-id');
+                        if (senderId !== myUserId) readObserver.observe(el);
+                    });
+                }
+            }
+        });
+
+        window.addEventListener('pageshow', () => {
+            if (!socket.connected) {
+                try { socket.connect(); } catch (_) {}
+            }
+        });
+
+        window.addEventListener('focus', () => {
+            if (!socket.connected) {
+                try { socket.connect(); } catch (_) {}
             }
         });
 
@@ -3885,14 +3904,29 @@
         attachBtn.addEventListener('click', toggleAttachmentMenu);
         attachmentMenu.addEventListener('click', e => e.stopPropagation());
 
+        // Media picker is intentionally limited to images/videos. On Android/Samsung this
+        // routes the request through the device photo/media picker instead of the generic
+        // document/audio provider chooser. Browsers still decide the exact native UI.
+        function openNativePicker(input) {
+            try {
+                if (typeof input.showPicker === 'function') {
+                    input.showPicker();
+                } else {
+                    input.click();
+                }
+            } catch (_) {
+                input.click();
+            }
+        }
+
         openMediaPickerBtn.addEventListener('click', () => {
             closeAttachmentMenu();
-            mediaInput.click();
+            openNativePicker(mediaInput);
         });
 
         openFilePickerBtn.addEventListener('click', () => {
             closeAttachmentMenu();
-            fileInput.click();
+            openNativePicker(fileInput);
         });
 
         stickerPicker.addEventListener('click', e => e.stopPropagation());
@@ -5316,23 +5350,68 @@
             });
         }
 
+        function waitForSocketConnection(timeoutMs = 15000) {
+            if (socket.connected) return Promise.resolve(true);
+
+            return new Promise(resolve => {
+                let settled = false;
+                const finish = value => {
+                    if (settled) return;
+                    settled = true;
+                    clearTimeout(timer);
+                    socket.off('connect', onConnect);
+                    resolve(value);
+                };
+                const onConnect = () => finish(true);
+                const timer = setTimeout(() => finish(false), timeoutMs);
+
+                socket.once('connect', onConnect);
+                try { socket.connect(); } catch (_) {}
+            });
+        }
+
+        async function uploadChatFileWithOneRetry(file, options) {
+            try {
+                return await uploadFileToServer(file, options);
+            } catch (firstError) {
+                const message = String(firstError?.message || '');
+                const looksTemporary = /انقطع الاتصال|network|failed to fetch|تعذر الاتصال/i.test(message);
+                if (!looksTemporary) throw firstError;
+
+                // Android browsers may briefly suspend the page while Samsung Gallery /
+                // the system photo picker is open. Give the network stack a moment to resume.
+                await new Promise(resolve => setTimeout(resolve, 900));
+                if (options?.progressUI) {
+                    options.progressUI.bar.style.width = '0%';
+                    options.progressUI.percent.textContent = 'إعادة المحاولة...';
+                }
+                return uploadFileToServer(file, options);
+            }
+        }
+
         async function uploadAndSendChatFile(file, replySnapshot = null) {
             if (!roomId || !file) return;
-            if (!socket.connected) {
-                alert('الاتصال بالخادم غير جاهز بعد. حاول بعد لحظة.');
-                return;
-            }
+
+            // Do NOT reject the selected media just because Socket.IO disconnected while the
+            // Android picker was in the foreground. HTTP upload can start independently, then
+            // we wait for Socket.IO to reconnect before publishing the chat message.
             const localMsgId = 'msg-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
             const progressUI = createUploadProgressItem(file, localMsgId);
             pendingUploads.set(localMsgId, progressUI.item);
 
             try {
                 sendStatus('يرفع ملف...');
-                const uploaded = await uploadFileToServer(file, {
+                const uploaded = await uploadChatFileWithOneRetry(file, {
                     context: 'chat',
                     targetRoomId: roomId,
                     progressUI
                 });
+
+                progressUI.name.textContent = (file.name || uploaded.fileName || 'ملف') + ' • جاري الاتصال';
+                const connected = await waitForSocketConnection(15000);
+                if (!connected) {
+                    throw new Error('تم رفع الملف، لكن تعذر إعادة الاتصال بالمحادثة. حاول مرة أخرى بعد لحظة.');
+                }
 
                 progressUI.name.textContent = (file.name || uploaded.fileName || 'ملف') + ' • جاري الإرسال';
                 socket.emit('send-uploaded-file', {
@@ -5350,7 +5429,7 @@
                 setTimeout(() => {
                     progressUI.item.remove();
                     pendingUploads.delete(localMsgId);
-                }, 5000);
+                }, 7000);
             } finally {
                 sendStatus('');
             }

@@ -77,3 +77,12 @@ The account's internal username remains stable in this build because current pri
 - Filtered Cloudflare port 53 ICE URLs for browser reliability.
 - `/api/health` now reports `turn: cloudflare`, `static`, or `stun-only`.
 - Existing static TURN environment variables remain supported as a fallback.
+
+## 2026-09-09 - Android/Samsung media picker stability
+- Changed the chat media attachment option from images/audio to images/video only so Android can use its native photo/media picker instead of the generic document/audio provider chooser.
+- Added `showPicker()` with a safe `.click()` fallback for native file selection.
+- Removed the hard Socket.IO-connected precheck before uploading selected media.
+- Media now uploads over HTTP first, then waits for Socket.IO to reconnect before publishing the message.
+- Added automatic reconnect when returning from Android Gallery/photo picker (`visibilitychange`, `pageshow`, `focus`).
+- Added one safe retry for temporary upload-network failures after returning from the picker.
+- Kept the generic Files picker unchanged.
