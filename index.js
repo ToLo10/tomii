@@ -1495,7 +1495,7 @@ app.get("/api/client-config", requireHttpAuth, (_req, res) => {
       // GIPHY requires browser/client-side API calls. The browser receives
       // this Web API key and requests GIPHY directly; the server does not proxy media.
       apiKey: process.env.GIPHY_API_KEY || "",
-      rating: "g"
+      rating: "r"
     }
   });
 });

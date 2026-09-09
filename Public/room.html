@@ -2906,7 +2906,7 @@
             },
             giphy: {
                 apiKey: '',
-                rating: 'g'
+                rating: 'r'
             }
         };
         const pendingUploads = new Map();
@@ -4087,7 +4087,7 @@
                 api_key: apiKey,
                 limit: String(GIPHY_LIMIT),
                 offset: String(currentOffset),
-                rating: String(clientConfig.giphy?.rating || 'g')
+                rating: 'r'
             });
 
             if (normalizedQuery) {
