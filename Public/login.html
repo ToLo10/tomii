@@ -2,138 +2,259 @@
 <html lang="ar" dir="rtl">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <meta name="theme-color" content="#080611">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>TOMI - تسجيل الدخول</title>
+
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <link rel="stylesheet" href="login.css">
-</head>
-<body>
-    <main class="login-layout">
-        <section class="showcase-panel" aria-label="واجهة TOMI التعريفية">
-            <img class="showcase-reference" src="assets/tomi-showcase.webp"
-                 alt="واجهة TOMI تعرض محادثات خاصة ومكالمات وغرف عامة" draggable="false">
-        </section>
 
-        <section class="auth-side">
-            <div class="top-brand" aria-label="TOMI">
-                <span class="brand-word">TOMI</span>
-                <span class="brand-mark" aria-hidden="true">
-                    <i class="fa-solid fa-comment"></i>
-                    <i class="fa-solid fa-comment"></i>
+    <style>
+        /* تنسيقات صغيرة خاصة بالنسخة المبسطة.
+           التصميم الرئيسي موجود في login.css */
+        .auth-container {
+            max-width: 430px;
+        }
+
+        .auth-header {
+            margin-bottom: 24px;
+        }
+
+        .auth-header .brand-mark {
+            width: 58px;
+            height: 58px;
+            border-radius: 18px;
+            margin: 0 auto 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: linear-gradient(135deg, #6c5ce7, #8e44ad);
+            box-shadow: 0 10px 30px rgba(108, 92, 231, 0.28);
+        }
+
+        .auth-header .brand-mark i {
+            margin: 0;
+            color: #fff;
+            font-size: 1.65rem;
+            filter: none;
+        }
+
+        .auth-header h1 {
+            margin-bottom: 5px;
+        }
+
+        .auth-header p {
+            line-height: 1.7;
+        }
+
+        .simple-note {
+            display: flex;
+            gap: 9px;
+            align-items: flex-start;
+            margin: 4px 0 18px;
+            padding: 11px 12px;
+            border-radius: 11px;
+            background: rgba(108, 92, 231, 0.07);
+            border: 1px solid rgba(108, 92, 231, 0.16);
+            color: #aaaabd;
+            font-size: 0.78rem;
+            line-height: 1.7;
+        }
+
+        .simple-note i {
+            color: #a29bfe;
+            margin-top: 3px;
+            flex-shrink: 0;
+        }
+
+        .field-help {
+            color: #777789;
+            font-size: 0.72rem;
+            margin-top: 6px;
+            line-height: 1.6;
+        }
+
+        .auth-footer-note {
+            margin-top: 18px;
+            text-align: center;
+            color: #6f6f80;
+            font-size: 0.72rem;
+            line-height: 1.7;
+        }
+
+        .submit-btn .btn-spinner {
+            display: none;
+        }
+
+        .submit-btn.loading .btn-spinner {
+            display: inline-block;
+        }
+
+        .submit-btn.loading .btn-icon {
+            display: none;
+        }
+
+        @media (max-width: 480px) {
+            body {
+                padding: 12px;
+            }
+
+            .auth-container {
+                padding: 25px 20px;
+                margin: 12px 0;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <main class="auth-container" aria-labelledby="authTitle">
+        <header class="auth-header">
+            <div class="brand-mark" aria-hidden="true">
+                <i class="fa-solid fa-comments"></i>
+            </div>
+            <h1 id="authTitle">TOMI</h1>
+            <p>سجّل دخولك أو أنشئ حساباً جديداً للبدء بالمحادثة.</p>
+        </header>
+
+        <div class="tabs" role="tablist" aria-label="تسجيل الدخول أو إنشاء حساب">
+            <button type="button" class="tab-btn active" id="loginTabBtn" role="tab"
+                    aria-selected="true" aria-controls="loginForm">
+                تسجيل الدخول
+            </button>
+            <button type="button" class="tab-btn" id="registerTabBtn" role="tab"
+                    aria-selected="false" aria-controls="registerForm">
+                إنشاء حساب
+            </button>
+        </div>
+
+        <div class="error-msg" id="errorMsg" role="alert" aria-live="assertive"></div>
+        <div class="success-msg" id="successMsg" role="status" aria-live="polite"></div>
+
+        <!-- تسجيل الدخول -->
+        <form class="form-section active" id="loginForm" novalidate>
+            <div class="input-group">
+                <label for="loginUsername">اسم المستخدم</label>
+                <input
+                    type="text"
+                    id="loginUsername"
+                    name="username"
+                    placeholder="أدخل اسم المستخدم"
+                    autocomplete="username"
+                    maxlength="32"
+                    spellcheck="false"
+                    required
+                >
+            </div>
+
+            <div class="input-group">
+                <label for="loginPassword">كلمة المرور</label>
+                <input
+                    type="password"
+                    id="loginPassword"
+                    name="password"
+                    placeholder="أدخل كلمة المرور"
+                    autocomplete="current-password"
+                    required
+                >
+                <button type="button" class="toggle-password" data-target="loginPassword"
+                        aria-label="إظهار كلمة المرور" title="إظهار/إخفاء كلمة المرور">
+                    <i class="fa-solid fa-eye"></i>
+                </button>
+            </div>
+
+            <button class="submit-btn" id="loginSubmitBtn" type="submit">
+                <i class="fa-solid fa-spinner fa-spin btn-spinner"></i>
+                <i class="fa-solid fa-right-to-bracket btn-icon"></i>
+                <span>تسجيل الدخول</span>
+            </button>
+        </form>
+
+        <!-- إنشاء حساب عادي -->
+        <form class="form-section" id="registerForm" novalidate>
+            <div class="simple-note">
+                <i class="fa-solid fa-circle-info"></i>
+                <span>
+                    التسجيل العام ينشئ <strong>حساب مستخدم عادي فقط</strong>.
+                    حسابات المشرفين والإدارة والأسماء المميزة ينشئها أو يعتمدها مالك المنصة من لوحة الإدارة.
                 </span>
             </div>
 
-            <aside class="auth-card" aria-labelledby="authTitle">
-                <div class="panel-brand" aria-label="TOMI">
-                    <span class="brand-word">TOMI</span>
-                    <span class="brand-mark" aria-hidden="true">
-                        <i class="fa-solid fa-comment"></i>
-                        <i class="fa-solid fa-comment"></i>
-                    </span>
+            <div class="input-group">
+                <label for="regUsername">اسم المستخدم</label>
+                <input
+                    type="text"
+                    id="regUsername"
+                    name="username"
+                    placeholder="4 أحرف على الأقل"
+                    autocomplete="username"
+                    maxlength="32"
+                    spellcheck="false"
+                    required
+                >
+                <div class="field-help" id="usernameHint">
+                    4 أحرف على الأقل، بدون مسافات.
                 </div>
+            </div>
 
-                <header class="auth-header">
-                    <h1 id="authTitle">أهلاً برجعتك</h1>
-                    <p>سجّل دخولك وخلك قريب من أصدقائك</p>
-                </header>
+            <div class="input-group">
+                <label for="regDisplayName">الاسم المعروض <span class="hint">(اختياري)</span></label>
+                <input
+                    type="text"
+                    id="regDisplayName"
+                    name="displayName"
+                    placeholder="الاسم الذي سيظهر للآخرين"
+                    autocomplete="name"
+                    maxlength="60"
+                >
+            </div>
 
-                <div class="tabs" role="tablist" aria-label="تسجيل الدخول أو إنشاء حساب">
-                    <button type="button" class="tab-btn active" id="loginTabBtn" role="tab"
-                            aria-selected="true" aria-controls="loginForm">تسجيل الدخول</button>
-                    <button type="button" class="tab-btn" id="registerTabBtn" role="tab"
-                            aria-selected="false" aria-controls="registerForm">إنشاء حساب</button>
-                </div>
+            <div class="input-group">
+                <label for="regPassword">كلمة المرور <span class="hint">(6 أحرف على الأقل)</span></label>
+                <input
+                    type="password"
+                    id="regPassword"
+                    name="password"
+                    placeholder="أدخل كلمة المرور"
+                    autocomplete="new-password"
+                    minlength="6"
+                    required
+                >
+                <button type="button" class="toggle-password" data-target="regPassword"
+                        aria-label="إظهار كلمة المرور" title="إظهار/إخفاء كلمة المرور">
+                    <i class="fa-solid fa-eye"></i>
+                </button>
+            </div>
 
-                <div class="message-stack" aria-live="polite">
-                    <div class="error-msg" id="errorMsg" role="alert" aria-live="assertive"></div>
-                    <div class="success-msg" id="successMsg" role="status" aria-live="polite"></div>
-                </div>
+            <div class="input-group">
+                <label for="regPasswordConfirm">تأكيد كلمة المرور</label>
+                <input
+                    type="password"
+                    id="regPasswordConfirm"
+                    name="passwordConfirm"
+                    placeholder="أعد إدخال كلمة المرور"
+                    autocomplete="new-password"
+                    minlength="6"
+                    required
+                >
+                <button type="button" class="toggle-password" data-target="regPasswordConfirm"
+                        aria-label="إظهار كلمة المرور" title="إظهار/إخفاء كلمة المرور">
+                    <i class="fa-solid fa-eye"></i>
+                </button>
+            </div>
 
-                <form class="form-section active" id="loginForm" novalidate>
-                    <div class="input-group">
-                        <label for="loginUsername">اسم المستخدم</label>
-                        <div class="input-shell">
-                            <i class="fa-regular fa-user field-icon" aria-hidden="true"></i>
-                            <input type="text" id="loginUsername" name="username" placeholder="أدخل اسم المستخدم"
-                                   autocomplete="username" maxlength="32" spellcheck="false" required>
-                        </div>
-                    </div>
+            <button class="submit-btn" id="registerSubmitBtn" type="submit">
+                <i class="fa-solid fa-spinner fa-spin btn-spinner"></i>
+                <i class="fa-solid fa-user-plus btn-icon"></i>
+                <span>إنشاء الحساب</span>
+            </button>
+        </form>
 
-                    <div class="input-group">
-                        <label for="loginPassword">كلمة المرور</label>
-                        <div class="input-shell password-shell">
-                            <input type="password" id="loginPassword" name="password" placeholder="أدخل كلمة المرور"
-                                   autocomplete="current-password" required>
-                            <button type="button" class="toggle-password" data-target="loginPassword"
-                                    aria-label="إظهار كلمة المرور" title="إظهار/إخفاء كلمة المرور">
-                                <i class="fa-regular fa-eye"></i>
-                            </button>
-                        </div>
-                    </div>
-
-                    <button class="submit-btn" id="loginSubmitBtn" type="submit">
-                        <i class="fa-solid fa-spinner fa-spin btn-spinner"></i>
-                        <span>تسجيل الدخول</span>
-                        <i class="fa-solid fa-right-to-bracket btn-icon"></i>
-                    </button>
-                </form>
-
-                <form class="form-section" id="registerForm" novalidate>
-                    <div class="input-group">
-                        <label for="regUsername">اسم المستخدم</label>
-                        <div class="input-shell">
-                            <i class="fa-regular fa-user field-icon" aria-hidden="true"></i>
-                            <input type="text" id="regUsername" name="username" placeholder="4 أحرف على الأقل"
-                                   autocomplete="username" maxlength="32" spellcheck="false" required>
-                        </div>
-                        <div class="field-help" id="usernameHint">4 أحرف على الأقل، بدون مسافات.</div>
-                    </div>
-
-                    <div class="input-group">
-                        <label for="regDisplayName">الاسم المعروض <span class="hint">(اختياري)</span></label>
-                        <div class="input-shell">
-                            <i class="fa-regular fa-id-badge field-icon" aria-hidden="true"></i>
-                            <input type="text" id="regDisplayName" name="displayName"
-                                   placeholder="الاسم الذي سيظهر للآخرين" autocomplete="name" maxlength="60">
-                        </div>
-                    </div>
-
-                    <div class="input-group">
-                        <label for="regPassword">كلمة المرور <span class="hint">(6 أحرف على الأقل)</span></label>
-                        <div class="input-shell password-shell">
-                            <input type="password" id="regPassword" name="password" placeholder="أدخل كلمة المرور"
-                                   autocomplete="new-password" minlength="6" required>
-                            <button type="button" class="toggle-password" data-target="regPassword"
-                                    aria-label="إظهار كلمة المرور" title="إظهار/إخفاء كلمة المرور">
-                                <i class="fa-regular fa-eye"></i>
-                            </button>
-                        </div>
-                    </div>
-
-                    <div class="input-group">
-                        <label for="regPasswordConfirm">تأكيد كلمة المرور</label>
-                        <div class="input-shell password-shell">
-                            <input type="password" id="regPasswordConfirm" name="passwordConfirm"
-                                   placeholder="أعد إدخال كلمة المرور" autocomplete="new-password" minlength="6" required>
-                            <button type="button" class="toggle-password" data-target="regPasswordConfirm"
-                                    aria-label="إظهار كلمة المرور" title="إظهار/إخفاء كلمة المرور">
-                                <i class="fa-regular fa-eye"></i>
-                            </button>
-                        </div>
-                    </div>
-
-                    <button class="submit-btn" id="registerSubmitBtn" type="submit">
-                        <i class="fa-solid fa-spinner fa-spin btn-spinner"></i>
-                        <span>إنشاء الحساب</span>
-                        <i class="fa-solid fa-user-plus btn-icon"></i>
-                    </button>
-                </form>
-            </aside>
-        </section>
+        <div class="auth-footer-note">
+            جلسة تسجيل الدخول تُحفظ بواسطة الخادم بشكل آمن، ولا يتم حفظ كلمة المرور في المتصفح.
+        </div>
     </main>
 
-<script>
+    <script>
         const loginTabBtn = document.getElementById('loginTabBtn');
         const registerTabBtn = document.getElementById('registerTabBtn');
         const loginForm = document.getElementById('loginForm');
@@ -182,8 +303,6 @@
             loginForm.classList.toggle('active', isLogin);
             registerForm.classList.toggle('active', !isLogin);
 
-            document.body.classList.toggle('register-mode', !isLogin);
-
             setTimeout(() => {
                 const target = isLogin
                     ? document.getElementById('loginUsername')
@@ -203,7 +322,7 @@
 
                 const showing = input.type === 'text';
                 input.type = showing ? 'password' : 'text';
-                icon.className = showing ? 'fa-regular fa-eye' : 'fa-regular fa-eye-slash';
+                icon.className = showing ? 'fa-solid fa-eye' : 'fa-solid fa-eye-slash';
                 button.setAttribute('aria-label', showing ? 'إظهار كلمة المرور' : 'إخفاء كلمة المرور');
             });
         });
@@ -230,24 +349,24 @@
 
             if (!value) {
                 usernameHint.textContent = '4 أحرف على الأقل، بدون مسافات.';
-                usernameHint.style.color = '#8b88a8';
+                usernameHint.style.color = '#777789';
                 return;
             }
 
             if (/\s/.test(value)) {
                 usernameHint.textContent = 'اسم المستخدم لا يمكن أن يحتوي على مسافات.';
-                usernameHint.style.color = '#fb7185';
+                usernameHint.style.color = '#e74c3c';
                 return;
             }
 
             if (length < 4) {
                 usernameHint.textContent = `باقي ${4 - length} حرف للوصول للحد الأدنى.`;
-                usernameHint.style.color = '#fbbf24';
+                usernameHint.style.color = '#f39c12';
                 return;
             }
 
             usernameHint.textContent = 'اسم المستخدم صالح للتسجيل كمستخدم عادي.';
-            usernameHint.style.color = '#34d399';
+            usernameHint.style.color = '#2ecc71';
         });
 
         async function readJsonSafe(response) {
@@ -276,10 +395,12 @@
                 localStorage.removeItem('chat_badge');
             }
 
+            // تنظيف بيانات المصادقة القديمة الحساسة.
             localStorage.removeItem('chat_password');
             localStorage.removeItem('chat_session_token');
             localStorage.removeItem('sessionToken');
 
+            // لا نستعيد غرفة قديمة من جلسة مستخدم آخر.
             sessionStorage.removeItem('active_room_id');
             sessionStorage.removeItem('active_partner');
             sessionStorage.removeItem('active_room_is_host');
@@ -401,6 +522,7 @@
                 });
 
                 if (!response.ok) {
+                    // تنظيف بيانات تسجيل الدخول القديمة، لكن نبقى في صفحة الدخول.
                     localStorage.removeItem('chat_password');
                     localStorage.removeItem('chat_session_token');
                     localStorage.removeItem('sessionToken');
