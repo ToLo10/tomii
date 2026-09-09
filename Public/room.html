@@ -3135,9 +3135,7 @@
                 const archiveNoticeText = document.getElementById('moderationArchiveNoticeText');
                 if (clientConfig.moderationArchive?.enabled && archiveNotice) {
                     archiveNotice.style.display = 'flex';
-                    if (archiveNoticeText) {
-                        archiveNoticeText.textContent = clientConfig.moderationArchive.notice || 'قد تتم مراجعة المحادثات لأغراض الإدارة والسلامة.';
-                    }
+                   
                 }
             } catch (_) {}
         }
