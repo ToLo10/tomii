@@ -1487,7 +1487,7 @@ app.get("/api/client-config", requireHttpAuth, (_req, res) => {
       turnProvider: CLOUDFLARE_TURN_CONFIGURED ? "cloudflare" : (staticTurnConfigured ? "static" : "none"),
       iceTransportPolicy: String(process.env.FORCE_TURN_RELAY || "false").toLowerCase() === "true" ? "relay" : "all"
     },
-    
+
     giphy: {
       // GIPHY requires browser/client-side API calls. The browser receives
       // this Web API key and requests GIPHY directly; the server does not proxy media.

@@ -86,3 +86,17 @@ The account's internal username remains stable in this build because current pri
 - Added automatic reconnect when returning from Android Gallery/photo picker (`visibilitychange`, `pageshow`, `focus`).
 - Added one safe retry for temporary upload-network failures after returning from the picker.
 - Kept the generic Files picker unchanged.
+
+## 2026-09-10 — Professional TOMI login redesign
+- Rebuilt the login/register screen into a responsive two-column landing/authentication experience.
+- Added TOMI brand treatment, hero headline, live-chat style product mockup, permission card and feature cards.
+- Preserved the existing `/api/login`, `/api/register` and `/api/session` authentication flow and all existing element IDs used by JavaScript.
+- Removed the old bottom/footer note from the login page as requested.
+- Added responsive layouts for desktop, tablet and mobile; registration mode stays focused on the form on small phones.
+
+## 2026-09-10 — Exact TOMI login reference redesign
+- Rebuilt the login/register page to match the supplied TOMI reference layout.
+- Added the exact supplied left-side showcase artwork (including the same girl/boy avatars and Arabic demo text) as an optimized local WebP asset.
+- Recreated the functional right-side TOMI login/register card in HTML/CSS with the same wording and visual identity.
+- Removed footer/social/copyright strip; the page ends after the main interface.
+- Preserved the current authentication API flow, MongoDB/Render/Cloudflare TURN project files, and mobile gallery upload fixes.
