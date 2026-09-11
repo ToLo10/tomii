@@ -3376,3 +3376,58 @@ body {
   .call-upgrade-prompt { margin-inline:4px; }
 }
 
+
+/* =========================================================
+   TOMI - Per-room notifications + call device controls
+   ========================================================= */
+.room-notification-btn {
+    position: relative;
+}
+
+.room-notification-btn.muted {
+    color: #ff8b9b !important;
+    background: rgba(255, 107, 129, 0.10) !important;
+}
+
+.room-notification-btn[aria-pressed="true"] {
+    color: #a88cff;
+}
+
+.room-notification-btn:disabled {
+    opacity: .55;
+    cursor: wait;
+}
+
+#flipCameraCallBtn,
+#audioOutputCallBtn {
+    transition: transform .18s ease, filter .18s ease, background .18s ease;
+}
+
+#flipCameraCallBtn:active,
+#audioOutputCallBtn:active {
+    transform: scale(.94);
+}
+
+@media (max-width: 430px) {
+    .call-actions {
+        gap: 7px;
+    }
+
+    .call-round-btn {
+        width: 44px;
+        height: 44px;
+        flex: 0 0 44px;
+    }
+}
+
+.room-notification-btn.needs-permission::after {
+    content: '';
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #f7b731;
+    box-shadow: 0 0 0 2px #161522;
+}

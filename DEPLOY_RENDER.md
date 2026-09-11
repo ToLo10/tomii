@@ -14,7 +14,7 @@
 ## Render setup
 1. Put the project in a private Git repository.
 2. Create a Render Web Service, or use `render.yaml`.
-3. Build command: `npm ci`
+3. Build command: `npm install`
 4. Start command: `npm start`
 5. Add the environment variables from `.env.example` in Render > Environment.
 6. Do not upload `.env` to Git.

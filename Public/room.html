@@ -2089,6 +2089,7 @@
                     <div class="header-actions">
                         <button id="audioCallBtn" class="header-btn" title="اتصال صوتي" style="display:none;"><i class="fa-solid fa-phone"></i></button>
                         <button id="videoCallBtn" class="header-btn" title="اتصال فيديو" style="display:none;"><i class="fa-solid fa-video"></i></button>
+                        <button id="notificationToggleBtn" class="header-btn room-notification-btn" title="إشعارات المحادثة" style="display:none;" aria-pressed="true"><i class="fa-solid fa-bell"></i></button>
                         <button id="backgroundBtn" class="header-btn" title="تغيير خلفية المحادثة" style="display:none;"><i class="fa-solid fa-image"></i></button>
                         <button id="clearChatBtn" class="header-btn" title="مسح المحادثة"><i class="fa-solid fa-eraser"></i></button>
                         <button id="deleteRoomBtn" class="header-btn" title="حذف الغرفة" style="display:none;color:#ff6b6b;"><i class="fa-solid fa-trash"></i></button>
@@ -2410,7 +2411,9 @@
                 <button id="acceptCallBtn" type="button" class="call-round-btn call-accept" title="قبول"><i class="fa-solid fa-phone"></i></button>
                 <button id="rejectCallBtn" type="button" class="call-round-btn call-end" title="رفض"><i class="fa-solid fa-phone-slash"></i></button>
                 <button id="muteCallBtn" type="button" class="call-round-btn call-control" title="كتم المايكروفون" style="display:none;"><i class="fa-solid fa-microphone"></i></button>
+                <button id="audioOutputCallBtn" type="button" class="call-round-btn call-control" title="اختيار مخرج الصوت" style="display:none;"><i class="fa-solid fa-volume-high"></i></button>
                 <button id="cameraCallBtn" type="button" class="call-round-btn call-control" title="تشغيل/إيقاف الكاميرا" style="display:none;"><i class="fa-solid fa-video"></i></button>
+                <button id="flipCameraCallBtn" type="button" class="call-round-btn call-control" title="تبديل الكاميرا الأمامية/الخلفية" style="display:none;"><i class="fa-solid fa-camera-rotate"></i></button>
                 <button id="endCallBtn" type="button" class="call-round-btn call-end" title="إنهاء" style="display:none;"><i class="fa-solid fa-phone-slash"></i></button>
             </div>
         </div>
@@ -2459,6 +2462,7 @@
     </div>
 
     <script src="/socket.io/socket.io.js"></script>
+    <script src="notifications.js"></script>
     <script>
         function escapeHTML(str) {
             if (!str) return '';
@@ -2906,7 +2910,11 @@
             },
             giphy: {
                 apiKey: '',
-                rating: 'r'
+                rating: 'g'
+            },
+            notifications: {
+                pushSupported: false,
+                vapidPublicKey: ''
             }
         };
         const pendingUploads = new Map();
@@ -2926,7 +2934,12 @@
         let pendingVideoUpgrade = null;
         let microphoneMuted = false;
         let cameraEnabled = true;
+        let currentCameraFacingMode = 'user';
+        let selectedAudioOutputDeviceId = '';
+        let selectedAudioOutputLabel = 'تلقائي';
         let callRenegotiating = false;
+        let roomNotificationsEnabled = true;
+        let roomNotificationLoadedFor = '';
         let turnCredentialsExpiresAt = 0;
         let turnCredentialFetchPromise = null;
 
@@ -3000,6 +3013,7 @@
         const backgroundBtn = document.getElementById('backgroundBtn');
         const audioCallBtn = document.getElementById('audioCallBtn');
         const videoCallBtn = document.getElementById('videoCallBtn');
+        const notificationToggleBtn = document.getElementById('notificationToggleBtn');
 
         const reportModal = document.getElementById('reportModal');
         const reportTargetLabel = document.getElementById('reportTargetLabel');
@@ -3024,7 +3038,9 @@
         const acceptCallBtn = document.getElementById('acceptCallBtn');
         const rejectCallBtn = document.getElementById('rejectCallBtn');
         const muteCallBtn = document.getElementById('muteCallBtn');
+        const audioOutputCallBtn = document.getElementById('audioOutputCallBtn');
         const cameraCallBtn = document.getElementById('cameraCallBtn');
+        const flipCameraCallBtn = document.getElementById('flipCameraCallBtn');
         const endCallBtn = document.getElementById('endCallBtn');
         const callCloseBtn = document.getElementById('callCloseBtn');
         const callUpgradePrompt = document.getElementById('callUpgradePrompt');
@@ -3217,6 +3233,7 @@
             audioCallBtn.style.display = 'none';
             videoCallBtn.style.display = 'none';
             backgroundBtn.style.display = 'none';
+            notificationToggleBtn.style.display = 'none';
             document.querySelector('.input-area').style.display = 'none';
             statusIndicator.textContent = '';
         }
@@ -3224,6 +3241,7 @@
         function showChatControls() {
             document.getElementById('roomUsersBtn').style.display = 'inline-flex';
             clearChatBtn.style.display = 'inline-flex';
+            notificationToggleBtn.style.display = roomId ? 'inline-flex' : 'none';
             document.querySelector('.input-area').style.display = 'flex';
         }
 
@@ -3639,6 +3657,7 @@
                 shareCode: currentShareCode
             };
             updateTitleDisplay(meta);
+            loadRoomNotificationPreference(true);
 
             if (!currentRoomIsPrivate) {
                 socket.emit('get-room-members', {
@@ -4119,7 +4138,7 @@
                 api_key: apiKey,
                 limit: String(GIPHY_LIMIT),
                 offset: String(currentOffset),
-                rating: 'r'
+                rating: 'g'
             });
 
             if (normalizedQuery) {
@@ -6238,6 +6257,98 @@
         });
 
         // =========================================================
+        // Per-room notification controls
+        // =========================================================
+        function updateRoomNotificationButton() {
+            if (!notificationToggleBtn) return;
+            const icon = notificationToggleBtn.querySelector('i');
+            notificationToggleBtn.classList.toggle('muted', !roomNotificationsEnabled);
+            notificationToggleBtn.setAttribute('aria-pressed', roomNotificationsEnabled ? 'true' : 'false');
+            if (icon) icon.className = roomNotificationsEnabled ? 'fa-solid fa-bell' : 'fa-solid fa-bell-slash';
+
+            const permission = window.TomiNotifications?.getPermission?.() || ('Notification' in window ? Notification.permission : 'unsupported');
+            notificationToggleBtn.classList.toggle('needs-permission', roomNotificationsEnabled && permission !== 'granted' && permission !== 'unsupported');
+            if (!roomNotificationsEnabled) {
+                notificationToggleBtn.title = 'إشعارات هذه المحادثة مكتومة — اضغط للتفعيل';
+            } else if (permission !== 'granted') {
+                notificationToggleBtn.title = 'الإشعارات مفعلة للمحادثة — اضغط للسماح بإشعارات الجهاز';
+            } else {
+                notificationToggleBtn.title = 'إشعارات هذه المحادثة مفعلة — اضغط للكتم';
+            }
+        }
+
+        async function loadRoomNotificationPreference(force = false) {
+            if (!roomId || (!force && roomNotificationLoadedFor === roomId)) return;
+            try {
+                const response = await fetch('/api/notifications/room/' + encodeURIComponent(roomId), { credentials: 'same-origin' });
+                if (!response.ok) return;
+                const data = await response.json();
+                roomNotificationsEnabled = data.enabled !== false;
+                roomNotificationLoadedFor = roomId;
+                notificationToggleBtn.style.display = 'inline-flex';
+                updateRoomNotificationButton();
+            } catch (error) {
+                console.warn('Notification preference load failed:', error);
+            }
+        }
+
+        async function saveRoomNotificationPreference(enabled) {
+            if (!roomId) return false;
+            const response = await fetch('/api/notifications/room/' + encodeURIComponent(roomId), {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ enabled: Boolean(enabled) })
+            });
+            if (!response.ok) throw new Error('notification-preference-save-failed');
+            const data = await response.json();
+            roomNotificationsEnabled = data.enabled !== false;
+            roomNotificationLoadedFor = roomId;
+            updateRoomNotificationButton();
+            return true;
+        }
+
+        notificationToggleBtn.addEventListener('click', async function() {
+            if (!roomId) return;
+            notificationToggleBtn.disabled = true;
+            try {
+                if (roomNotificationsEnabled) {
+                    const permission = window.TomiNotifications?.getPermission?.() || ('Notification' in window ? Notification.permission : 'unsupported');
+                    // The first tap while notifications are enabled grants the device/browser permission.
+                    // Once permission exists, the same button behaves as a normal mute switch.
+                    if (permission !== 'granted' && window.TomiNotifications?.enableFromUserGesture) {
+                        const result = await window.TomiNotifications.enableFromUserGesture();
+                        updateRoomNotificationButton();
+                        if (result?.ok) {
+                            statusIndicator.textContent = '🔔 تم تفعيل إشعارات الجهاز لهذه المحادثة';
+                            setTimeout(() => { if (statusIndicator.textContent.includes('إشعارات الجهاز')) statusIndicator.textContent = ''; }, 2200);
+                        } else {
+                            alert('إشعارات المحادثة ما زالت مفعلة داخل TOMI، لكن المتصفح لم يسمح بإشعارات الجهاز.');
+                        }
+                        return;
+                    }
+                    await saveRoomNotificationPreference(false);
+                    statusIndicator.textContent = '🔕 تم كتم إشعارات هذه المحادثة';
+                } else {
+                    await saveRoomNotificationPreference(true);
+                    if (window.TomiNotifications?.enableFromUserGesture) {
+                        await window.TomiNotifications.enableFromUserGesture();
+                    }
+                    statusIndicator.textContent = '🔔 تم تفعيل إشعارات هذه المحادثة';
+                }
+                setTimeout(() => {
+                    if (statusIndicator.textContent.includes('إشعارات هذه المحادثة')) statusIndicator.textContent = '';
+                }, 2200);
+            } catch (error) {
+                console.error(error);
+                alert('تعذر تغيير إعداد الإشعارات حالياً.');
+            } finally {
+                notificationToggleBtn.disabled = false;
+                updateRoomNotificationButton();
+            }
+        });
+
+        // =========================================================
         // Advanced: reliable two-way WebRTC audio/video calls
         // Private chats only. Supports mute, camera toggle and
         // consensual audio -> video upgrade with renegotiation.
@@ -6381,6 +6492,75 @@
             return remoteCallStream;
         }
 
+        async function applySelectedAudioOutput() {
+            if (!selectedAudioOutputDeviceId) return false;
+            let applied = false;
+            for (const element of [remoteCallAudio, remoteCallVideo]) {
+                if (element && typeof element.setSinkId === 'function') {
+                    try {
+                        await element.setSinkId(selectedAudioOutputDeviceId);
+                        applied = true;
+                    } catch (error) {
+                        console.warn('setSinkId failed:', error);
+                    }
+                }
+            }
+            return applied;
+        }
+
+        function audioOutputKindFromLabel(label = '') {
+            const value = String(label).toLowerCase();
+            if (/earpiece|receiver|handset|سماعة.?الأذن|سماعة.?الهاتف/.test(value)) return 'earpiece';
+            if (/speaker|loudspeaker|speakerphone|مكبر/.test(value)) return 'speaker';
+            return 'other';
+        }
+
+        async function chooseNextAudioOutput() {
+            if (!activeCall) return;
+
+            // Chrome/Edge can expose an explicit output picker. This is the most reliable
+            // web-safe way to let the user choose speaker/earpiece/Bluetooth.
+            if (navigator.mediaDevices?.selectAudioOutput) {
+                try {
+                    const device = await navigator.mediaDevices.selectAudioOutput();
+                    if (device?.deviceId) {
+                        selectedAudioOutputDeviceId = device.deviceId;
+                        selectedAudioOutputLabel = device.label || 'مخرج صوت';
+                        await applySelectedAudioOutput();
+                        audioOutputCallBtn.title = 'مخرج الصوت: ' + selectedAudioOutputLabel;
+                        callStatus.textContent = 'تم اختيار مخرج الصوت: ' + selectedAudioOutputLabel;
+                        return;
+                    }
+                } catch (error) {
+                    if (error?.name !== 'NotAllowedError') console.warn('selectAudioOutput:', error);
+                }
+            }
+
+            if (typeof remoteCallAudio.setSinkId === 'function' && navigator.mediaDevices?.enumerateDevices) {
+                try {
+                    const outputs = (await navigator.mediaDevices.enumerateDevices()).filter(device => device.kind === 'audiooutput');
+                    if (outputs.length) {
+                        const currentIndex = outputs.findIndex(device => device.deviceId === selectedAudioOutputDeviceId);
+                        let target = null;
+                        const currentKind = audioOutputKindFromLabel(selectedAudioOutputLabel);
+                        if (currentKind === 'speaker') target = outputs.find(d => audioOutputKindFromLabel(d.label) === 'earpiece');
+                        else target = outputs.find(d => audioOutputKindFromLabel(d.label) === 'speaker');
+                        if (!target) target = outputs[(currentIndex + 1 + outputs.length) % outputs.length];
+                        selectedAudioOutputDeviceId = target.deviceId;
+                        selectedAudioOutputLabel = target.label || 'مخرج صوت ' + (outputs.indexOf(target) + 1);
+                        await applySelectedAudioOutput();
+                        audioOutputCallBtn.title = 'مخرج الصوت: ' + selectedAudioOutputLabel;
+                        callStatus.textContent = 'تم تبديل مخرج الصوت: ' + selectedAudioOutputLabel;
+                        return;
+                    }
+                } catch (error) {
+                    console.warn('Audio output enumeration failed:', error);
+                }
+            }
+
+            alert('المتصفح على هذا الجهاز لا يسمح للموقع بتبديل السبيكر/سماعة الأذن مباشرة. استخدم مخرج الصوت من لوحة الهاتف أثناء المكالمة.');
+        }
+
         function attachRemoteMedia() {
             const stream = ensureRemoteCallStream();
             const hasVideo = stream.getVideoTracks().some(track => track.readyState === 'live');
@@ -6392,6 +6572,7 @@
                 remoteCallVideo.volume = 1;
                 remoteCallVideo.style.display = 'block';
                 remoteCallAudio.srcObject = null;
+                applySelectedAudioOutput().catch(() => {});
                 safePlayMedia(remoteCallVideo);
             } else {
                 remoteCallAudio.srcObject = stream;
@@ -6399,6 +6580,7 @@
                 remoteCallAudio.volume = 1;
                 remoteCallVideo.srcObject = null;
                 remoteCallVideo.style.display = 'none';
+                applySelectedAudioOutput().catch(() => {});
                 safePlayMedia(remoteCallAudio);
             }
         }
@@ -6421,6 +6603,7 @@
         function updateCallControlUI() {
             const active = Boolean(activeCall);
             muteCallBtn.style.display = active ? 'inline-flex' : 'none';
+            audioOutputCallBtn.style.display = active ? 'inline-flex' : 'none';
             cameraCallBtn.style.display = active ? 'inline-flex' : 'none';
             endCallBtn.style.display = active ? 'inline-flex' : 'none';
 
@@ -6434,6 +6617,7 @@
             const videoTrack = localCallStream?.getVideoTracks?.()[0] || null;
             const isVideoCall = activeCall?.callType === 'video';
             const cameraOff = isVideoCall && (!videoTrack || !videoTrack.enabled);
+            flipCameraCallBtn.style.display = active && isVideoCall && videoTrack?.enabled ? 'inline-flex' : 'none';
             cameraCallBtn.classList.toggle('active-off', cameraOff);
             cameraCallBtn.classList.toggle('pending', Boolean(activeCall?.upgradePending));
             const cameraIcon = cameraCallBtn.querySelector('i');
@@ -6445,6 +6629,13 @@
             else if (activeCall.upgradePending) cameraCallBtn.title = 'بانتظار موافقة الطرف الآخر';
             else if (isVideoCall) cameraCallBtn.title = cameraOff ? 'تشغيل الكاميرا' : 'إيقاف الكاميرا';
             else cameraCallBtn.title = 'طلب تحويل المكالمة إلى فيديو';
+
+            flipCameraCallBtn.title = currentCameraFacingMode === 'environment'
+                ? 'التحويل إلى الكاميرا الأمامية'
+                : 'التحويل إلى الكاميرا الخلفية';
+            audioOutputCallBtn.title = selectedAudioOutputDeviceId
+                ? 'مخرج الصوت: ' + selectedAudioOutputLabel
+                : 'اختيار السبيكر / سماعة الأذن';
         }
 
         function updateCallVideoLayout(callType) {
@@ -6530,7 +6721,7 @@
                     autoGainControl: audioCfg.autoGainControl !== false
                 },
                 video: callType === 'video'
-                    ? { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' }
+                    ? { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: { ideal: currentCameraFacingMode } }
                     : false
             });
         }
@@ -6538,8 +6729,101 @@
         async function getCameraOnlyStream() {
             return navigator.mediaDevices.getUserMedia({
                 audio: false,
-                video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' }
+                video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: { ideal: currentCameraFacingMode } }
             });
+        }
+
+        async function flipActiveCamera() {
+            if (!activeCall || activeCall.callType !== 'video' || !peerConnection) return;
+            const oldTrack = localCallStream?.getVideoTracks?.()[0] || null;
+            if (!oldTrack) {
+                alert('الكاميرا غير مفعلة حالياً.');
+                return;
+            }
+
+            const previousFacing = currentCameraFacingMode;
+            const nextFacing = previousFacing === 'environment' ? 'user' : 'environment';
+            let cameraStream = null;
+            let oldTrackStoppedForRetry = false;
+
+            const requestFacingCamera = async (facing) => {
+                try {
+                    return await navigator.mediaDevices.getUserMedia({
+                        audio: false,
+                        video: {
+                            width: { ideal: 1280 },
+                            height: { ideal: 720 },
+                            facingMode: { exact: facing }
+                        }
+                    });
+                } catch (_) {
+                    return navigator.mediaDevices.getUserMedia({
+                        audio: false,
+                        video: {
+                            width: { ideal: 1280 },
+                            height: { ideal: 720 },
+                            facingMode: { ideal: facing }
+                        }
+                    });
+                }
+            };
+
+            try {
+                try {
+                    cameraStream = await requestFacingCamera(nextFacing);
+                } catch (firstError) {
+                    // Samsung/Android browsers can require releasing the current camera
+                    // before opening the other physical lens. Retry after stopping it.
+                    try { oldTrack.stop(); } catch (_) {}
+                    oldTrackStoppedForRetry = true;
+                    cameraStream = await requestFacingCamera(nextFacing);
+                }
+
+                const newTrack = cameraStream.getVideoTracks()[0];
+                if (!newTrack) throw new Error('camera-unavailable');
+                const sender = peerConnection.getSenders().find(s => s.track?.kind === 'video');
+                if (sender) {
+                    await sender.replaceTrack(newTrack);
+                } else {
+                    peerConnection.addTrack(newTrack, localCallStream || cameraStream);
+                }
+
+                if (!localCallStream) localCallStream = new MediaStream();
+                try { localCallStream.removeTrack(oldTrack); } catch (_) {}
+                localCallStream.addTrack(newTrack);
+                if (!oldTrackStoppedForRetry) {
+                    try { oldTrack.stop(); } catch (_) {}
+                }
+                currentCameraFacingMode = nextFacing;
+                cameraEnabled = true;
+                attachLocalMedia();
+                updateCallControlUI();
+                if (!sender) await renegotiateActiveCall();
+                callStatus.textContent = nextFacing === 'environment' ? 'تم تشغيل الكاميرا الخلفية' : 'تم تشغيل الكاميرا الأمامية';
+            } catch (error) {
+                if (cameraStream) cameraStream.getTracks().forEach(track => { try { track.stop(); } catch (_) {} });
+                console.error('Camera flip failed:', error);
+
+                // If the old camera had to be released for the switch attempt, try to
+                // restore it so a failed flip does not end video completely.
+                if (oldTrackStoppedForRetry) {
+                    try {
+                        const recoveryStream = await requestFacingCamera(previousFacing);
+                        const recoveryTrack = recoveryStream.getVideoTracks()[0];
+                        const sender = peerConnection.getSenders().find(s => s.track?.kind === 'video');
+                        if (recoveryTrack && sender) {
+                            await sender.replaceTrack(recoveryTrack);
+                            try { localCallStream.removeTrack(oldTrack); } catch (_) {}
+                            localCallStream.addTrack(recoveryTrack);
+                            currentCameraFacingMode = previousFacing;
+                            cameraEnabled = true;
+                            attachLocalMedia();
+                            updateCallControlUI();
+                        }
+                    } catch (_) {}
+                }
+                alert('تعذر تبديل الكاميرا على هذا الجهاز.');
+            }
         }
 
         function addLocalTracksToPeer() {
@@ -6618,7 +6902,9 @@
             if (!incoming) updateCallControlUI();
             else {
                 muteCallBtn.style.display = 'none';
+                audioOutputCallBtn.style.display = 'none';
                 cameraCallBtn.style.display = 'none';
+                flipCameraCallBtn.style.display = 'none';
                 endCallBtn.style.display = 'none';
             }
             updateCallVideoLayout(callType);
@@ -6652,6 +6938,7 @@
                     callStatus.textContent = 'جاري تجهيز خادم الاتصال الآمن...';
                     await refreshTurnCredentialsForCall();
                 }
+                currentCameraFacingMode = 'user';
                 localCallStream = await getCallMedia(callType);
                 activeCall = { callId, roomId, targetUser, callType, outgoing: true, upgradePending: false };
                 microphoneMuted = false;
@@ -6720,6 +7007,7 @@
                     callStatus.textContent = 'جاري تجهيز خادم الاتصال الآمن...';
                     await refreshTurnCredentialsForCall();
                 }
+                currentCameraFacingMode = 'user';
                 localCallStream = await getCallMedia(data.callType);
                 activeCall = {
                     callId:data.callId, roomId:data.roomId, targetUser:data.fromUser,
@@ -6802,6 +7090,17 @@
             } catch (err) {
                 console.warn('ICE candidate rejected:', err);
             }
+        });
+
+        audioOutputCallBtn.addEventListener('click', function() {
+            chooseNextAudioOutput().catch(error => {
+                console.warn('Audio output switch failed:', error);
+                alert('تعذر تبديل مخرج الصوت على هذا الجهاز.');
+            });
+        });
+
+        flipCameraCallBtn.addEventListener('click', function() {
+            flipActiveCamera().catch(() => {});
         });
 
         muteCallBtn.addEventListener('click', function() {
@@ -7010,13 +7309,18 @@
             clearPendingIceCandidates();
             microphoneMuted = false;
             cameraEnabled = true;
+            currentCameraFacingMode = 'user';
+            selectedAudioOutputDeviceId = '';
+            selectedAudioOutputLabel = 'تلقائي';
             callRenegotiating = false;
             callUpgradePrompt.style.display = 'none';
             callModal.style.display = 'none';
             acceptCallBtn.style.display = 'none';
             rejectCallBtn.style.display = 'none';
             muteCallBtn.style.display = 'none';
+            audioOutputCallBtn.style.display = 'none';
             cameraCallBtn.style.display = 'none';
+            flipCameraCallBtn.style.display = 'none';
             endCallBtn.style.display = 'none';
         }
 

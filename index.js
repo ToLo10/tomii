@@ -16,6 +16,7 @@ const helmet = require("helmet");
 const rateLimitModule = require("express-rate-limit");
 const rateLimit = rateLimitModule.rateLimit || rateLimitModule;
 const mongoose = require("mongoose");
+const webpush = require("web-push");
 
 const io = new Server(server, {
   maxHttpBufferSize: 1e8 // 100MB
@@ -67,7 +68,10 @@ function emptyDatabase() {
     uploads: {},
     sessions: {},
     frames: {},
-    telegramTopics: {}
+    telegramTopics: {},
+    notificationPreferences: {},
+    pushSubscriptions: {},
+    pushConfig: {}
   };
 }
 
@@ -676,6 +680,143 @@ function getRoomAudience(roomId) {
   if (!room) return [];
   if (room.isPrivate) return getPrivateRoomParticipants(roomId) || [];
   return Array.isArray(room.members) ? [...new Set(room.members)] : [];
+}
+
+// =========================================================
+// Per-room notifications + Web Push
+// =========================================================
+let webPushReady = false;
+let webPushPublicKey = "";
+
+function ensureNotificationState() {
+  if (!db.notificationPreferences || typeof db.notificationPreferences !== "object") db.notificationPreferences = {};
+  if (!db.pushSubscriptions || typeof db.pushSubscriptions !== "object") db.pushSubscriptions = {};
+  if (!db.pushConfig || typeof db.pushConfig !== "object") db.pushConfig = {};
+}
+
+function roomNotificationsEnabled(username, roomIdOrCode) {
+  ensureNotificationState();
+  const rId = getCanonicalRoomId(roomIdOrCode);
+  if (!username || !rId) return false;
+  return db.notificationPreferences?.[username]?.[rId] !== false;
+}
+
+function setRoomNotificationsEnabled(username, roomIdOrCode, enabled) {
+  ensureNotificationState();
+  const rId = getCanonicalRoomId(roomIdOrCode);
+  if (!db.notificationPreferences[username]) db.notificationPreferences[username] = {};
+  db.notificationPreferences[username][rId] = Boolean(enabled);
+  saveDB(db);
+  return db.notificationPreferences[username][rId];
+}
+
+function sanitizePushSubscription(subscription) {
+  const endpoint = String(subscription?.endpoint || "").trim();
+  const p256dh = String(subscription?.keys?.p256dh || "").trim();
+  const auth = String(subscription?.keys?.auth || "").trim();
+  if (!endpoint || !p256dh || !auth) return null;
+  return { endpoint, expirationTime: subscription?.expirationTime || null, keys: { p256dh, auth } };
+}
+
+function initializeWebPush() {
+  ensureNotificationState();
+  try {
+    const envPublic = String(process.env.VAPID_PUBLIC_KEY || "").trim();
+    const envPrivate = String(process.env.VAPID_PRIVATE_KEY || "").trim();
+    let publicKey = envPublic;
+    let privateKey = envPrivate;
+
+    if (!publicKey || !privateKey) {
+      publicKey = String(db.pushConfig.publicKey || "").trim();
+      privateKey = String(db.pushConfig.privateKey || "").trim();
+    }
+
+    if (!publicKey || !privateKey) {
+      const generated = webpush.generateVAPIDKeys();
+      publicKey = generated.publicKey;
+      privateKey = generated.privateKey;
+      db.pushConfig.publicKey = publicKey;
+      db.pushConfig.privateKey = privateKey;
+      db.pushConfig.generatedAt = new Date().toISOString();
+    }
+
+    const subject = String(process.env.VAPID_SUBJECT || "mailto:admin@tomii.local").trim();
+    webpush.setVapidDetails(subject, publicKey, privateKey);
+    webPushPublicKey = publicKey;
+    webPushReady = true;
+    console.log("🔔 Web Push notifications ready");
+  } catch (error) {
+    webPushReady = false;
+    webPushPublicKey = "";
+    console.error("Web Push initialization failed:", error.message);
+  }
+}
+
+function upsertPushSubscription(username, subscription) {
+  ensureNotificationState();
+  const clean = sanitizePushSubscription(subscription);
+  if (!clean || !username) return false;
+  if (!Array.isArray(db.pushSubscriptions[username])) db.pushSubscriptions[username] = [];
+  const list = db.pushSubscriptions[username];
+  const existingIndex = list.findIndex(item => item?.endpoint === clean.endpoint);
+  const record = { ...clean, updatedAt: new Date().toISOString() };
+  if (existingIndex >= 0) list[existingIndex] = record;
+  else list.push(record);
+  if (list.length > 12) db.pushSubscriptions[username] = list.slice(-12);
+  saveDB(db);
+  return true;
+}
+
+function removePushSubscription(username, endpoint) {
+  ensureNotificationState();
+  const list = Array.isArray(db.pushSubscriptions[username]) ? db.pushSubscriptions[username] : [];
+  const next = list.filter(item => item?.endpoint !== endpoint);
+  if (next.length !== list.length) {
+    db.pushSubscriptions[username] = next;
+    saveDB(db);
+  }
+}
+
+async function sendPushToUser(username, roomId, payload = {}) {
+  if (!webPushReady || !username || !roomNotificationsEnabled(username, roomId)) return;
+  const subscriptions = Array.isArray(db.pushSubscriptions?.[username]) ? [...db.pushSubscriptions[username]] : [];
+  if (!subscriptions.length) return;
+
+  const body = JSON.stringify({
+    title: payload.title || "TOMI",
+    body: payload.body || "لديك نشاط جديد",
+    url: payload.url || `/room.html?roomId=${encodeURIComponent(roomId)}`,
+    roomId,
+    tag: payload.tag || `tomi-${roomId}-${Date.now()}`,
+    type: payload.type || "message",
+    requireInteraction: Boolean(payload.requireInteraction)
+  });
+
+  await Promise.allSettled(subscriptions.map(async subscription => {
+    try {
+      await webpush.sendNotification(subscription, body, { TTL: payload.type === "call" ? 45 : 180, urgency: "high" });
+    } catch (error) {
+      if (error?.statusCode === 404 || error?.statusCode === 410) {
+        removePushSubscription(username, subscription.endpoint);
+      } else {
+        console.warn("Push notification failed:", error?.statusCode || error?.message || error);
+      }
+    }
+  }));
+}
+
+function mediaNotificationBody(fileType, fileName = "") {
+  const name = String(fileName || "").slice(0, 80);
+  if (fileType === "image" || fileType === "gif") return "📷 أرسل صورة";
+  if (fileType === "video") return "🎥 أرسل فيديو";
+  if (fileType === "audio") return "🎤 أرسل رسالة صوتية";
+  if (fileType === "pdf") return `📄 أرسل ملف PDF${name ? `: ${name}` : ""}`;
+  return `📎 أرسل ملف${name ? `: ${name}` : ""}`;
+}
+
+async function notifyRoomParticipants(roomId, actor, payload) {
+  const audience = getRoomAudience(roomId).filter(username => username && username !== actor);
+  await Promise.allSettled(audience.map(username => sendPushToUser(username, roomId, payload)));
 }
 
 function normalizeReceiptEntries(entries) {
@@ -1315,7 +1456,8 @@ app.get("/api/health", (_req, res) => {
     uptime: Math.round(process.uptime()),
     database: mongoReady ? "mongodb" : "local-json",
     fileStorage: gridFsBucket ? "mongodb-gridfs" : "local-disk",
-    turn: CLOUDFLARE_TURN_CONFIGURED ? "cloudflare" : (staticTurnConfigured ? "static" : "stun-only")
+    turn: CLOUDFLARE_TURN_CONFIGURED ? "cloudflare" : (staticTurnConfigured ? "static" : "stun-only"),
+    notifications: webPushReady ? "web-push" : "browser-only"
   });
 });
 
@@ -1487,14 +1629,69 @@ app.get("/api/client-config", requireHttpAuth, (_req, res) => {
       turnProvider: CLOUDFLARE_TURN_CONFIGURED ? "cloudflare" : (staticTurnConfigured ? "static" : "none"),
       iceTransportPolicy: String(process.env.FORCE_TURN_RELAY || "false").toLowerCase() === "true" ? "relay" : "all"
     },
+    notifications: {
+      pushSupported: webPushReady,
+      vapidPublicKey: webPushPublicKey
+    },
     
     giphy: {
       // GIPHY requires browser/client-side API calls. The browser receives
       // this Web API key and requests GIPHY directly; the server does not proxy media.
       apiKey: process.env.GIPHY_API_KEY || "",
-      rating: "r"
+      rating: "g"
     }
   });
+});
+
+// 🔔 Per-room notification preference. Existing rooms default to enabled.
+app.get("/api/notifications/room/:roomId", requireHttpAuth, (req, res) => {
+  try {
+    const rId = getCanonicalRoomId(req.params.roomId);
+    if (!rId || !canUserAccessRoom(rId, req.authUser)) {
+      return res.status(403).json({ error: "لا تملك صلاحية الوصول لهذه المحادثة" });
+    }
+    return res.json({ success: true, roomId: rId, enabled: roomNotificationsEnabled(req.authUser, rId), pushSupported: webPushReady });
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+app.post("/api/notifications/room/:roomId", requireHttpAuth, (req, res) => {
+  try {
+    const rId = getCanonicalRoomId(req.params.roomId);
+    if (!rId || !canUserAccessRoom(rId, req.authUser)) {
+      return res.status(403).json({ error: "لا تملك صلاحية الوصول لهذه المحادثة" });
+    }
+    const enabled = setRoomNotificationsEnabled(req.authUser, rId, req.body?.enabled !== false);
+    return res.json({ success: true, roomId: rId, enabled });
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+app.get("/api/push/public-key", requireHttpAuth, (_req, res) => {
+  res.json({ success: webPushReady, publicKey: webPushPublicKey || "" });
+});
+
+app.post("/api/push/subscribe", requireHttpAuth, (req, res) => {
+  try {
+    if (!webPushReady) return res.status(503).json({ error: "خدمة الإشعارات غير مهيأة" });
+    const ok = upsertPushSubscription(req.authUser, req.body?.subscription || req.body);
+    if (!ok) return res.status(400).json({ error: "اشتراك الإشعارات غير صالح" });
+    return res.json({ success: true });
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+app.post("/api/push/unsubscribe", requireHttpAuth, (req, res) => {
+  try {
+    const endpoint = String(req.body?.endpoint || "").trim();
+    if (endpoint) removePushSubscription(req.authUser, endpoint);
+    return res.json({ success: true });
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
 });
 
 // Generate short-lived Cloudflare TURN credentials for the authenticated user.
@@ -3440,6 +3637,13 @@ io.on("connection", (socket) => {
           });
         }
       }
+      notifyRoomParticipants(rId, actor, {
+        title: user.displayName || actor,
+        body: cleanMsg.slice(0, 180),
+        url: `/room.html?roomId=${encodeURIComponent(rId)}`,
+        tag: `msg-${messageData.msgId}`,
+        type: "message"
+      }).catch(() => {});
     } catch (err) {
       console.error("خطأ إرسال الرسالة:", err.message);
       socket.emit("message-rejected", { reason: "تعذر إرسال الرسالة." });
@@ -3535,6 +3739,13 @@ io.on("connection", (socket) => {
           });
         }
       }
+      notifyRoomParticipants(rId, actor, {
+        title: user.displayName || actor,
+        body: mediaNotificationBody(messageData.fileType),
+        url: `/room.html?roomId=${encodeURIComponent(rId)}`,
+        tag: `msg-${messageData.msgId}`,
+        type: "media"
+      }).catch(() => {});
     } catch (err) {
       console.error("خطأ إرسال الميديا:", err.message);
       socket.emit("message-rejected", { reason: "تعذر إرسال الملف." });
@@ -3638,6 +3849,13 @@ io.on("connection", (socket) => {
           });
         }
       }
+      notifyRoomParticipants(rId, actor, {
+        title: user.displayName || actor,
+        body: mediaNotificationBody(messageData.fileType, messageData.fileName),
+        url: `/room.html?roomId=${encodeURIComponent(rId)}`,
+        tag: `msg-${messageData.msgId}`,
+        type: "media"
+      }).catch(() => {});
     } catch (err) {
       console.error("خطأ إرسال الملف المرفوع:", err.message);
       socket.emit("message-rejected", { reason: "تعذر إرسال الملف." });
@@ -4651,12 +4869,21 @@ io.on("connection", (socket) => {
     }
 
     const id = callId || ("call_" + crypto.randomBytes(10).toString("hex"));
+    const normalizedCallType = callType === "video" ? "video" : "audio";
     emitPrivateCallEvent(valid, "incoming-call", {
       callId: id,
       fromDisplayName: db.users[valid.actor]?.displayName || valid.actor,
-      callType: callType === "video" ? "video" : "audio",
+      callType: normalizedCallType,
       offer
     });
+    sendPushToUser(valid.targetUser, valid.rId, {
+      title: normalizedCallType === "video" ? "مكالمة فيديو واردة" : "مكالمة صوتية واردة",
+      body: `${db.users[valid.actor]?.displayName || valid.actor} يتصل بك الآن`,
+      url: `/room.html?roomId=${encodeURIComponent(valid.rId)}`,
+      tag: `call-${id}`,
+      type: "call",
+      requireInteraction: true
+    }).catch(() => {});
     socket.emit("call-offer-sent", { callId: id, roomId: valid.rId, targetUser: valid.targetUser });
   });
 
@@ -4691,6 +4918,13 @@ io.on("connection", (socket) => {
     const valid = validatePrivateCallTarget(roomId, targetUser);
     if (!valid || !callId) return;
     emitPrivateCallEvent(valid, "call-upgrade-requested", { callId });
+    sendPushToUser(valid.targetUser, valid.rId, {
+      title: "طلب تحويل المكالمة إلى فيديو",
+      body: `${db.users[valid.actor]?.displayName || valid.actor} يريد تشغيل الفيديو`,
+      url: `/room.html?roomId=${encodeURIComponent(valid.rId)}`,
+      tag: `upgrade-${callId}`,
+      type: "call"
+    }).catch(() => {});
   });
 
   socket.on("call-upgrade-response", ({ roomId, targetUser, callId, accepted, reason } = {}) => {
@@ -4884,6 +5118,7 @@ async function startServer() {
   await initCloudDatabase();
   db = normalizeDatabaseState(db);
   ensurePlatformOwner();
+  initializeWebPush();
   saveDB(db);
 
   server.listen(PORT, () => {

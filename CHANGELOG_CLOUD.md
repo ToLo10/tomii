@@ -86,3 +86,12 @@ The account's internal username remains stable in this build because current pri
 - Added automatic reconnect when returning from Android Gallery/photo picker (`visibilitychange`, `pageshow`, `focus`).
 - Added one safe retry for temporary upload-network failures after returning from the picker.
 - Kept the generic Files picker unchanged.
+
+## 2026-09-11 — Room notifications + call device controls
+
+- Added a per-room notification bell in the conversation header. Each user can mute/unmute every room independently and the preference is persisted in MongoDB state.
+- Added Web Push subscriptions through a service worker so enabled-room notifications can arrive while TOMI is in the background or closed (where the browser/OS supports Web Push).
+- Added push notifications for text messages, uploaded media/files, incoming private calls, and audio-to-video upgrade requests.
+- Added an audio-output control during calls. Supporting browsers can choose/cycle speaker, earpiece, Bluetooth, or other audio outputs.
+- Added front/rear camera switching during video calls using WebRTC track replacement without ending the call.
+- Kept mute, camera on/off, audio-to-video upgrade, Cloudflare TURN, MongoDB/GridFS, and mobile upload fixes intact.
