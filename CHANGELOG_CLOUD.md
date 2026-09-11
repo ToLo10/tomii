@@ -105,3 +105,8 @@ The account's internal username remains stable in this build because current pri
 - Front/back camera switching remains available during video calls.
 - Added owner-grantable `send_platform_broadcast` permission. Authorized staff can send one official TOMI message to every account; messages are persisted in each user's read-only “TOMI • حساب المنصة” conversation and also use Web Push when enabled.
 - Improved iPad/tablet sidebar sizing with dynamic viewport/safe-area handling so Logout stays reachable above Safari browser chrome.
+
+### Platform inbox cleanup
+- Fixed duplicate `TOMI • حساب المنصة` entries in chat history.
+- Legacy duplicate system rooms are automatically consolidated on startup.
+- Future platform-wide announcements append to one official conversation per user.

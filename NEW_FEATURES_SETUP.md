@@ -35,3 +35,15 @@ Each recipient receives the announcement in a read-only conversation named `TOMI
 - Removed the per-room browser notification button and disabled Web Push initialization.
 - Active audio/video calls can be minimized inside TOMI and continue while switching between chats without reloading the page.
 - Chat images open in a full-screen lightbox with a close button.
+
+## Official TOMI inbox consolidation
+- Each user now has exactly one canonical `TOMI • حساب المنصة` conversation.
+- Every new owner/admin platform broadcast is appended to that same conversation.
+- On server startup, legacy duplicate TOMI system conversations are merged into the canonical inbox, preserving message history and removing duplicate room cards.
+
+
+## Floating call window controls
+- Minimized audio and video calls can be dragged anywhere inside the viewport.
+- The user can resize the floating call window with +/- buttons or the corner resize grip.
+- The chosen size and position are remembered on the device and clamped back into view after orientation/viewport changes.
+- Expanding the call restores the normal full call UI without interrupting WebRTC.

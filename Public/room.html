@@ -2385,8 +2385,13 @@
     <!-- Call Modal -->
     <div id="callModal" class="advanced-modal-overlay">
         <div class="advanced-modal-box call-modal-box">
-            <div class="advanced-modal-header">
+            <div class="advanced-modal-header" id="callMiniDragArea">
                 <h3 id="callTitle">مكالمة خاصة</h3>
+                <div id="miniCallWindowTools" class="mini-call-window-tools" aria-label="التحكم بحجم ومكان نافذة المكالمة">
+                    <button id="miniCallShrinkBtn" type="button" class="mini-call-size-btn" title="تصغير النافذة" aria-label="تصغير نافذة المكالمة"><i class="fa-solid fa-minus"></i></button>
+                    <span id="miniCallDragHandle" class="mini-call-drag-handle" title="اسحب لتحريك المكالمة" aria-label="اسحب لتحريك نافذة المكالمة"><i class="fa-solid fa-up-down-left-right"></i></span>
+                    <button id="miniCallGrowBtn" type="button" class="mini-call-size-btn" title="تكبير النافذة" aria-label="تكبير نافذة المكالمة"><i class="fa-solid fa-plus"></i></button>
+                </div>
                 <button class="modal-close-btn" id="callCloseBtn">✕</button>
             </div>
             <div id="callStatus" class="call-status">جاري التحضير...</div>
@@ -2418,6 +2423,7 @@
                 <button id="pipCallBtn" type="button" class="call-round-btn call-control" title="تصغير مكالمة الفيديو" style="display:none;"><i class="fa-regular fa-window-restore"></i></button>
                 <button id="endCallBtn" type="button" class="call-round-btn call-end" title="إنهاء" style="display:none;"><i class="fa-solid fa-phone-slash"></i></button>
             </div>
+            <div id="miniCallResizeGrip" class="mini-call-resize-grip" title="اسحب لتغيير حجم نافذة المكالمة" aria-label="تغيير حجم نافذة المكالمة"></div>
         </div>
     </div>
 
@@ -2944,6 +2950,9 @@
         let callPrimaryView = 'remote';
         let callRenegotiating = false;
         let callMinimized = false;
+        const MINI_CALL_GEOMETRY_KEY = 'tomi_mini_call_geometry_v2';
+        let miniCallGeometry = null;
+        let miniCallPointerSession = null;
         let turnCredentialsExpiresAt = 0;
         let turnCredentialFetchPromise = null;
 
@@ -3050,6 +3059,12 @@
         const pipCallBtn = document.getElementById('pipCallBtn');
         const endCallBtn = document.getElementById('endCallBtn');
         const callCloseBtn = document.getElementById('callCloseBtn');
+        const callMiniDragArea = document.getElementById('callMiniDragArea');
+        const miniCallWindowTools = document.getElementById('miniCallWindowTools');
+        const miniCallDragHandle = document.getElementById('miniCallDragHandle');
+        const miniCallShrinkBtn = document.getElementById('miniCallShrinkBtn');
+        const miniCallGrowBtn = document.getElementById('miniCallGrowBtn');
+        const miniCallResizeGrip = document.getElementById('miniCallResizeGrip');
         const callUpgradePrompt = document.getElementById('callUpgradePrompt');
         const acceptVideoUpgradeBtn = document.getElementById('acceptVideoUpgradeBtn');
         const rejectVideoUpgradeBtn = document.getElementById('rejectVideoUpgradeBtn');
@@ -6674,6 +6689,153 @@
         }
         bindCallViewSwap();
 
+        function getCallMiniBox() {
+            return callModal?.querySelector('.call-modal-box') || null;
+        }
+
+        function readMiniCallGeometry() {
+            if (miniCallGeometry) return miniCallGeometry;
+            try {
+                const saved = JSON.parse(localStorage.getItem(MINI_CALL_GEOMETRY_KEY) || 'null');
+                if (saved && Number.isFinite(saved.width) && Number.isFinite(saved.x) && Number.isFinite(saved.y)) {
+                    miniCallGeometry = saved;
+                    return miniCallGeometry;
+                }
+            } catch (_) {}
+            const defaultWidth = Math.min(250, Math.max(180, (window.innerWidth || 360) - 28));
+            miniCallGeometry = { x: 12, y: 12, width: defaultWidth };
+            return miniCallGeometry;
+        }
+
+        function saveMiniCallGeometry() {
+            if (!miniCallGeometry) return;
+            try {
+                localStorage.setItem(MINI_CALL_GEOMETRY_KEY, JSON.stringify({
+                    x: Math.round(miniCallGeometry.x || 0),
+                    y: Math.round(miniCallGeometry.y || 0),
+                    width: Math.round(miniCallGeometry.width || 230)
+                }));
+            } catch (_) {}
+        }
+
+        function getMiniCallWidthLimits() {
+            const viewportWidth = Math.max(1, document.documentElement.clientWidth || window.innerWidth || 360);
+            const min = Math.min(170, Math.max(140, viewportWidth - 20));
+            const max = Math.max(min, Math.min(440, viewportWidth - 16));
+            return { min, max };
+        }
+
+        function clearMiniCallInlineGeometry() {
+            const box = getCallMiniBox();
+            if (!box) return;
+            ['left', 'top', 'right', 'bottom', 'width', 'max-width'].forEach(prop => box.style.removeProperty(prop));
+        }
+
+        function applyMiniCallGeometry(save = false) {
+            if (!callMinimized) return;
+            const box = getCallMiniBox();
+            if (!box) return;
+            const geometry = readMiniCallGeometry();
+            const { min, max } = getMiniCallWidthLimits();
+            geometry.width = Math.max(min, Math.min(max, Number(geometry.width) || 230));
+
+            box.style.setProperty('width', geometry.width + 'px', 'important');
+            box.style.setProperty('max-width', 'none', 'important');
+            box.style.setProperty('right', 'auto', 'important');
+            box.style.setProperty('bottom', 'auto', 'important');
+
+            // قياس الارتفاع بعد تطبيق العرض حتى تبقى النافذة كاملة داخل الشاشة.
+            const rect = box.getBoundingClientRect();
+            const viewportWidth = Math.max(1, document.documentElement.clientWidth || window.innerWidth || 360);
+            const viewportHeight = Math.max(1, window.visualViewport?.height || window.innerHeight || document.documentElement.clientHeight || 640);
+            const viewportOffsetTop = Math.max(0, window.visualViewport?.offsetTop || 0);
+            const viewportOffsetLeft = Math.max(0, window.visualViewport?.offsetLeft || 0);
+            const margin = 8;
+            const maxX = Math.max(viewportOffsetLeft + margin, viewportOffsetLeft + viewportWidth - rect.width - margin);
+            const maxY = Math.max(viewportOffsetTop + margin, viewportOffsetTop + viewportHeight - rect.height - margin);
+            geometry.x = Math.max(viewportOffsetLeft + margin, Math.min(maxX, Number(geometry.x) || viewportOffsetLeft + 12));
+            geometry.y = Math.max(viewportOffsetTop + margin, Math.min(maxY, Number(geometry.y) || viewportOffsetTop + 12));
+
+            box.style.setProperty('left', geometry.x + 'px', 'important');
+            box.style.setProperty('top', geometry.y + 'px', 'important');
+            if (save) saveMiniCallGeometry();
+        }
+
+        function resizeMiniCallBy(delta) {
+            if (!activeCall || !callMinimized) return;
+            const geometry = readMiniCallGeometry();
+            const { min, max } = getMiniCallWidthLimits();
+            geometry.width = Math.max(min, Math.min(max, (Number(geometry.width) || 230) + delta));
+            applyMiniCallGeometry(true);
+        }
+
+        function startMiniCallPointerSession(e, mode) {
+            if (!activeCall || !callMinimized || e.button > 0) return;
+            const box = getCallMiniBox();
+            if (!box) return;
+            const rect = box.getBoundingClientRect();
+            const geometry = readMiniCallGeometry();
+            miniCallPointerSession = {
+                mode,
+                pointerId: e.pointerId,
+                startX: e.clientX,
+                startY: e.clientY,
+                x: rect.left,
+                y: rect.top,
+                width: rect.width
+            };
+            geometry.x = rect.left;
+            geometry.y = rect.top;
+            geometry.width = rect.width;
+            try { e.currentTarget.setPointerCapture?.(e.pointerId); } catch (_) {}
+            e.preventDefault();
+        }
+
+        function moveMiniCallPointerSession(e) {
+            if (!miniCallPointerSession || e.pointerId !== miniCallPointerSession.pointerId || !callMinimized) return;
+            const geometry = readMiniCallGeometry();
+            const dx = e.clientX - miniCallPointerSession.startX;
+            const dy = e.clientY - miniCallPointerSession.startY;
+            if (miniCallPointerSession.mode === 'drag') {
+                geometry.x = miniCallPointerSession.x + dx;
+                geometry.y = miniCallPointerSession.y + dy;
+            } else {
+                const { min, max } = getMiniCallWidthLimits();
+                // مقابض تغيير الحجم تعمل أفقياً لتبقى نسبة الفيديو والواجهة مرتبة.
+                geometry.width = Math.max(min, Math.min(max, miniCallPointerSession.width + dx));
+            }
+            applyMiniCallGeometry(false);
+            e.preventDefault();
+        }
+
+        function endMiniCallPointerSession(e) {
+            if (!miniCallPointerSession) return;
+            if (e?.pointerId != null && e.pointerId !== miniCallPointerSession.pointerId) return;
+            miniCallPointerSession = null;
+            applyMiniCallGeometry(true);
+        }
+
+        function bindMiniCallWindowControls() {
+            if (callMiniDragArea) {
+                callMiniDragArea.addEventListener('pointerdown', e => {
+                    if (!callMinimized) return;
+                    if (e.target.closest('button, input, select, a, .mini-call-drag-handle')) return;
+                    startMiniCallPointerSession(e, 'drag');
+                });
+            }
+            miniCallDragHandle?.addEventListener('pointerdown', e => startMiniCallPointerSession(e, 'drag'));
+            miniCallResizeGrip?.addEventListener('pointerdown', e => startMiniCallPointerSession(e, 'resize'));
+            miniCallShrinkBtn?.addEventListener('click', e => { e.stopPropagation(); resizeMiniCallBy(-44); });
+            miniCallGrowBtn?.addEventListener('click', e => { e.stopPropagation(); resizeMiniCallBy(44); });
+            window.addEventListener('pointermove', moveMiniCallPointerSession, { passive: false });
+            window.addEventListener('pointerup', endMiniCallPointerSession);
+            window.addEventListener('pointercancel', endMiniCallPointerSession);
+            window.addEventListener('resize', () => { if (callMinimized) requestAnimationFrame(() => applyMiniCallGeometry(false)); });
+            window.visualViewport?.addEventListener('resize', () => { if (callMinimized) requestAnimationFrame(() => applyMiniCallGeometry(false)); });
+            window.visualViewport?.addEventListener('scroll', () => { if (callMinimized) requestAnimationFrame(() => applyMiniCallGeometry(false)); });
+        }
+        bindMiniCallWindowControls();
+
         function updateCallMinimizeUI() {
             if (!pipCallBtn) return;
             const icon = pipCallBtn.querySelector('i');
@@ -6681,6 +6843,8 @@
             if (icon) icon.className = callMinimized ? 'fa-solid fa-expand' : 'fa-solid fa-down-left-and-up-right-to-center';
             callModal?.classList.toggle('call-minimized', callMinimized);
             document.body.classList.toggle('has-mini-call', Boolean(activeCall && callMinimized));
+            if (callMinimized) requestAnimationFrame(() => applyMiniCallGeometry(false));
+            else clearMiniCallInlineGeometry();
         }
 
         function setCallMinimized(minimized) {
@@ -7026,6 +7190,7 @@
             callMinimized = false;
             callModal.classList.remove('call-minimized');
             document.body.classList.remove('has-mini-call');
+            clearMiniCallInlineGeometry();
             callModal.style.display = 'flex';
             acceptCallBtn.style.display = incoming ? 'inline-flex' : 'none';
             rejectCallBtn.style.display = incoming ? 'inline-flex' : 'none';
@@ -7445,6 +7610,8 @@
             callMinimized = false;
             callModal.classList.remove('call-minimized');
             document.body.classList.remove('has-mini-call');
+            clearMiniCallInlineGeometry();
+            miniCallPointerSession = null;
             callPrimaryView = 'remote';
             setPrimaryCallView('remote');
             activeCall = null;

@@ -3652,3 +3652,177 @@ body.image-lightbox-open { overflow: hidden; }
 
 #callModal.call-minimized .call-local-wrap.call-audio-only { display: none !important; }
 #callModal.call-minimized .call-remote-wrap.call-audio-only { width: 100%; min-height: 72px; }
+
+/* ========================================================================== */
+/* FLOATING CALL WINDOW v2 — movable + user resizable for audio/video calls. */
+/* ========================================================================== */
+.mini-call-window-tools,
+.mini-call-resize-grip {
+    display: none;
+}
+
+#callModal.call-minimized .call-modal-box {
+    max-width: none !important;
+    min-width: 0 !important;
+    height: auto !important;
+    max-height: min(92dvh, 760px);
+    overflow: visible;
+    resize: none;
+    will-change: left, top, width;
+}
+
+#callModal.call-minimized .advanced-modal-header {
+    cursor: grab;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+    gap: 6px;
+}
+
+#callModal.call-minimized .advanced-modal-header:active,
+#callModal.call-minimized .mini-call-drag-handle:active {
+    cursor: grabbing;
+}
+
+#callModal.call-minimized .mini-call-window-tools {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    margin-inline-start: auto;
+    margin-inline-end: 2px;
+    flex: 0 0 auto;
+}
+
+#callModal.call-minimized .mini-call-size-btn,
+#callModal.call-minimized .mini-call-drag-handle {
+    width: 27px;
+    height: 27px;
+    min-width: 27px;
+    border-radius: 9px;
+    border: 1px solid rgba(255,255,255,.10);
+    background: rgba(255,255,255,.055);
+    color: #d8d4ff;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    font-size: .70rem;
+    line-height: 1;
+    box-shadow: none;
+}
+
+#callModal.call-minimized .mini-call-size-btn {
+    cursor: pointer;
+}
+
+#callModal.call-minimized .mini-call-drag-handle {
+    cursor: grab;
+    touch-action: none;
+}
+
+#callModal.call-minimized .mini-call-size-btn:hover,
+#callModal.call-minimized .mini-call-size-btn:active,
+#callModal.call-minimized .mini-call-drag-handle:hover {
+    background: rgba(139,92,246,.22);
+    border-color: rgba(167,139,250,.36);
+}
+
+#callModal.call-minimized .advanced-modal-header h3 {
+    min-width: 0;
+    max-width: none;
+    flex: 1 1 auto;
+}
+
+/* Video content follows the window width, so resize feels natural. */
+#callModal.call-minimized .call-videos,
+#callModal.call-minimized .call-videos.video-focus-layout {
+    width: 100%;
+    height: auto !important;
+    min-height: 0 !important;
+    aspect-ratio: 16 / 9;
+    position: relative;
+    overflow: hidden;
+}
+
+#callModal.call-minimized .call-videos.video-focus-layout .call-video-wrap.call-primary {
+    inset: 0 !important;
+    width: 100% !important;
+    height: 100% !important;
+    min-height: 0 !important;
+}
+
+#callModal.call-minimized .call-videos.video-focus-layout .call-video-wrap.call-thumbnail {
+    width: clamp(42px, 24%, 94px) !important;
+    height: auto !important;
+    aspect-ratio: 3 / 4;
+    top: 6px !important;
+    right: 6px !important;
+    left: auto !important;
+    bottom: auto !important;
+}
+
+/* Audio calls stay compact but grow horizontally with the same floating box. */
+#callModal.call-minimized .call-videos:not(.video-focus-layout) {
+    aspect-ratio: auto;
+    height: auto !important;
+}
+
+#callModal.call-minimized .call-video-wrap.call-audio-only {
+    width: 100% !important;
+    min-height: clamp(68px, 28vw, 110px) !important;
+    height: clamp(68px, 28vw, 110px) !important;
+}
+
+#callModal.call-minimized .mini-call-resize-grip {
+    display: block;
+    position: absolute;
+    right: -4px;
+    bottom: -4px;
+    width: 26px;
+    height: 26px;
+    z-index: 20;
+    cursor: nwse-resize;
+    touch-action: none;
+    border-radius: 0 0 15px 0;
+}
+
+#callModal.call-minimized .mini-call-resize-grip::before,
+#callModal.call-minimized .mini-call-resize-grip::after {
+    content: '';
+    position: absolute;
+    right: 6px;
+    bottom: 6px;
+    height: 2px;
+    border-radius: 999px;
+    background: rgba(186,170,255,.80);
+    transform: rotate(-45deg);
+    transform-origin: right center;
+}
+
+#callModal.call-minimized .mini-call-resize-grip::before { width: 13px; }
+#callModal.call-minimized .mini-call-resize-grip::after  { width: 8px; right: 5px; bottom: 10px; }
+
+#callModal.call-minimized .call-actions {
+    scrollbar-width: none;
+}
+#callModal.call-minimized .call-actions::-webkit-scrollbar { display: none; }
+
+@media (max-width: 600px) {
+    #callModal.call-minimized .call-modal-box {
+        /* JS applies the remembered user width/position. These are safe fallbacks only. */
+        width: min(230px, calc(100vw - 16px));
+        max-width: none !important;
+    }
+    #callModal.call-minimized .mini-call-size-btn,
+    #callModal.call-minimized .mini-call-drag-handle {
+        width: 25px;
+        height: 25px;
+        min-width: 25px;
+        border-radius: 8px;
+        font-size: .65rem;
+    }
+    #callModal.call-minimized .advanced-modal-header h3 {
+        font-size: .70rem;
+    }
+}

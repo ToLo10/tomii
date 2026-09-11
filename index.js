@@ -551,6 +551,150 @@ function isPlatformSystemRoom(roomId) {
   return Boolean(db.rooms?.[roomId]?.systemRoom);
 }
 
+
+function isPlatformInboxCandidate(roomId, room, username) {
+  if (!room || !username) return false;
+  const members = Array.isArray(room.members) ? room.members : [];
+  const roomName = String(room.roomName || room.name || "");
+  const systemish = Boolean(
+    room.systemRoom ||
+    room.platformAccount ||
+    String(roomId || "").startsWith("private_platform_") ||
+    roomName === "TOMI • حساب المنصة"
+  );
+  return systemish && members.includes(username);
+}
+
+function platformMessageMergeKey(message) {
+  const msg = message && typeof message === "object" ? message : {};
+  const createdAt = String(msg.createdAt || "");
+  const type = String(msg.type || "text");
+  const body = String(msg.msg || "");
+  const fileId = String(msg.fileId || msg.fileUrl || "");
+  const sentBy = String(msg.sentBy || msg.username || msg.userId || "");
+
+  // A single platform broadcast can exist in more than one legacy system room.
+  // Those copies share the same timestamp/content but may have different msgIds.
+  if (createdAt || body || fileId) {
+    return `broadcast:${createdAt}|${type}|${body}|${fileId}|${sentBy}`;
+  }
+  return `id:${String(msg.msgId || "")}`;
+}
+
+// Older builds could leave more than one "TOMI • حساب المنصة" room for the
+// same user. Merge all of them into the deterministic canonical inbox so every
+// user sees ONE official conversation containing the complete announcement
+// history. This runs after MongoDB is loaded and is safe to run repeatedly.
+function consolidatePlatformInboxes() {
+  let changed = false;
+  let removedRooms = 0;
+  let mergedUsers = 0;
+
+  for (const username of Object.keys(db.users || {})) {
+    if (!username || username === PLATFORM_OWNER_USERNAME) continue;
+
+    const canonicalRoomId = getPlatformInboxRoomId(username);
+    const candidateIds = new Set();
+
+    for (const [roomId, room] of Object.entries(db.rooms || {})) {
+      if (isPlatformInboxCandidate(roomId, room, username)) candidateIds.add(roomId);
+    }
+    for (const [roomId, room] of Object.entries(db.privateChats || {})) {
+      if (isPlatformInboxCandidate(roomId, room, username)) candidateIds.add(roomId);
+    }
+
+    if (!candidateIds.size) continue;
+
+    const inbox = ensurePlatformInbox(username);
+    if (!inbox) continue;
+    candidateIds.add(canonicalRoomId);
+
+    const collected = [];
+    let sequence = 0;
+    for (const roomId of candidateIds) {
+      const history = Array.isArray(db.roomHistory?.[roomId]) ? db.roomHistory[roomId] : [];
+      for (const rawMessage of history) {
+        if (!rawMessage || typeof rawMessage !== "object") continue;
+        collected.push({ message: rawMessage, sequence: sequence++ });
+      }
+    }
+
+    collected.sort((a, b) => {
+      const ta = Date.parse(a.message.createdAt || "") || 0;
+      const tb = Date.parse(b.message.createdAt || "") || 0;
+      return ta === tb ? a.sequence - b.sequence : ta - tb;
+    });
+
+    const seen = new Set();
+    const mergedHistory = [];
+    for (const entry of collected) {
+      const key = platformMessageMergeKey(entry.message);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      mergedHistory.push({
+        ...entry.message,
+        roomId: canonicalRoomId,
+        platformAccount: true,
+        systemBroadcast: entry.message.systemBroadcast !== false
+      });
+    }
+
+    const previousCanonicalHistory = Array.isArray(db.roomHistory[canonicalRoomId])
+      ? db.roomHistory[canonicalRoomId]
+      : [];
+    if (
+      candidateIds.size > 1 ||
+      previousCanonicalHistory.length !== mergedHistory.length ||
+      mergedHistory.some((m, i) => previousCanonicalHistory[i]?.msgId !== m.msgId || previousCanonicalHistory[i]?.roomId !== canonicalRoomId)
+    ) {
+      db.roomHistory[canonicalRoomId] = mergedHistory;
+      changed = true;
+      mergedUsers += 1;
+    }
+
+    const lastMessage = mergedHistory.length ? mergedHistory[mergedHistory.length - 1] : null;
+    inbox.room.roomName = "TOMI • حساب المنصة";
+    inbox.room.systemRoom = true;
+    inbox.room.readOnly = true;
+    inbox.room.platformAccount = true;
+    inbox.room.isPrivate = true;
+    inbox.room.members = [PLATFORM_OWNER_USERNAME, username];
+    if (lastMessage?.createdAt) inbox.room.updatedAt = lastMessage.createdAt;
+
+    if (db.privateChats[canonicalRoomId]) {
+      db.privateChats[canonicalRoomId].members = [PLATFORM_OWNER_USERNAME, username];
+      db.privateChats[canonicalRoomId].isPrivate = true;
+      db.privateChats[canonicalRoomId].systemRoom = true;
+      db.privateChats[canonicalRoomId].platformAccount = true;
+    }
+
+    for (const roomId of candidateIds) {
+      if (roomId === canonicalRoomId) continue;
+
+      if (db.notificationPreferences?.[username]?.[roomId] !== undefined &&
+          db.notificationPreferences?.[username]?.[canonicalRoomId] === undefined) {
+        db.notificationPreferences[username][canonicalRoomId] = db.notificationPreferences[username][roomId];
+      }
+      if (db.notificationPreferences?.[username]) {
+        delete db.notificationPreferences[username][roomId];
+      }
+
+      if (db.rooms?.[roomId]) delete db.rooms[roomId];
+      if (db.privateChats?.[roomId]) delete db.privateChats[roomId];
+      if (db.roomHistory?.[roomId]) delete db.roomHistory[roomId];
+      if (db.roomBans?.[roomId]) delete db.roomBans[roomId];
+      removedRooms += 1;
+      changed = true;
+    }
+  }
+
+  if (changed) {
+    saveDB(db);
+    console.log(`🧹 Platform inbox cleanup: merged ${mergedUsers} user inbox(es), removed ${removedRooms} duplicate room(s)`);
+  }
+  return { changed, mergedUsers, removedRooms };
+}
+
 // =========================================================
 // Platform owner, permissions, receipts, sessions & uploads
 // =========================================================
@@ -2350,26 +2494,28 @@ app.get("/api/my-conversations/:username", requireHttpAuth, (req, res) => {
       }
     }
 
-    // 2. Official TOMI platform inbox
-    for (const rId in db.rooms) {
+    // 2. Official TOMI platform inbox — exactly one canonical conversation per user.
+    if (username !== PLATFORM_OWNER_USERNAME) {
+      const rId = getPlatformInboxRoomId(username);
       const room = db.rooms[rId];
-      if (!room?.systemRoom || !room.isPrivate || !Array.isArray(room.members) || !room.members.includes(username)) continue;
-      const history = db.roomHistory[rId] || [];
-      const lastMsg = history.length > 0 ? history[history.length - 1] : null;
-      conversations.push({
-        roomId: rId,
-        name: "TOMI • حساب المنصة",
-        roomName: "TOMI • حساب المنصة",
-        type: "system",
-        partner: null,
-        isPrivate: true,
-        systemRoom: true,
-        isOnline: true,
-        lastMessage: lastMsg ? (lastMsg.type === "text" ? lastMsg.msg : "[ميديا]") : "رسائل رسمية من TOMI",
-        time: lastMsg ? lastMsg.time : "",
-        updatedAt: getLastActivityIso(rId, room.updatedAt || room.createdAt || null),
-        unread: 0
-      });
+      if (room?.systemRoom && room.isPrivate && Array.isArray(room.members) && room.members.includes(username)) {
+        const history = db.roomHistory[rId] || [];
+        const lastMsg = history.length > 0 ? history[history.length - 1] : null;
+        conversations.push({
+          roomId: rId,
+          name: "TOMI • حساب المنصة",
+          roomName: "TOMI • حساب المنصة",
+          type: "system",
+          partner: null,
+          isPrivate: true,
+          systemRoom: true,
+          isOnline: true,
+          lastMessage: lastMsg ? (lastMsg.type === "text" ? lastMsg.msg : "[ميديا]") : "رسائل رسمية من TOMI",
+          time: lastMsg ? lastMsg.time : "",
+          updatedAt: getLastActivityIso(rId, room.updatedAt || room.createdAt || null),
+          unread: 0
+        });
+      }
     }
 
     // 3. Public rooms
@@ -2809,27 +2955,30 @@ io.on("connection", (socket) => {
         });
       }
 
-      // 2) Official TOMI platform inbox
-      for (const rId in db.rooms) {
+      // 2) Official TOMI platform inbox — exactly one canonical conversation per user.
+      if (currentUser !== PLATFORM_OWNER_USERNAME) {
+        const rId = getPlatformInboxRoomId(currentUser);
         const room = db.rooms[rId];
-        if (!room?.systemRoom || !room.isPrivate) continue;
-        const members = Array.isArray(room.members) ? room.members : [];
-        if (!members.includes(currentUser)) continue;
-        const history = db.roomHistory[rId] || [];
-        const lastMsg = history.length > 0 ? history[history.length - 1] : null;
-        userChats.push({
-          roomId: rId,
-          partner: null,
-          roomName: "TOMI • حساب المنصة",
-          type: "system",
-          isPrivate: true,
-          systemRoom: true,
-          isOnline: true,
-          isHost: false,
-          lastMessage: lastMsg ? (lastMsg.type === "text" ? lastMsg.msg : "[ميديا]") : "رسائل رسمية من TOMI",
-          time: lastMsg ? (lastMsg.time || "") : "",
-          updatedAt: getLastActivityIso(rId, room.updatedAt || room.createdAt || null)
-        });
+        if (room?.systemRoom && room.isPrivate) {
+          const members = Array.isArray(room.members) ? room.members : [];
+          if (members.includes(currentUser)) {
+            const history = db.roomHistory[rId] || [];
+            const lastMsg = history.length > 0 ? history[history.length - 1] : null;
+            userChats.push({
+              roomId: rId,
+              partner: null,
+              roomName: "TOMI • حساب المنصة",
+              type: "system",
+              isPrivate: true,
+              systemRoom: true,
+              isOnline: true,
+              isHost: false,
+              lastMessage: lastMsg ? (lastMsg.type === "text" ? lastMsg.msg : "[ميديا]") : "رسائل رسمية من TOMI",
+              time: lastMsg ? (lastMsg.time || "") : "",
+              updatedAt: getLastActivityIso(rId, room.updatedAt || room.createdAt || null)
+            });
+          }
+        }
       }
 
       // 3) Public rooms owned/joined by the user
@@ -5306,6 +5455,7 @@ async function startServer() {
   await initCloudDatabase();
   db = normalizeDatabaseState(db);
   ensurePlatformOwner();
+  consolidatePlatformInboxes();
   // Browser push notifications are intentionally disabled.
   // TOMI now keeps messaging/calls inside the live web app without requesting notification permission.
   webPushReady = false;
