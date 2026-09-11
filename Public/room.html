@@ -2089,7 +2089,6 @@
                     <div class="header-actions">
                         <button id="audioCallBtn" class="header-btn" title="اتصال صوتي" style="display:none;"><i class="fa-solid fa-phone"></i></button>
                         <button id="videoCallBtn" class="header-btn" title="اتصال فيديو" style="display:none;"><i class="fa-solid fa-video"></i></button>
-                        <button id="notificationToggleBtn" class="header-btn room-notification-btn" title="إشعارات المحادثة" style="display:none;" aria-pressed="true"><i class="fa-solid fa-bell"></i></button>
                         <button id="backgroundBtn" class="header-btn" title="تغيير خلفية المحادثة" style="display:none;"><i class="fa-solid fa-image"></i></button>
                         <button id="clearChatBtn" class="header-btn" title="مسح المحادثة"><i class="fa-solid fa-eraser"></i></button>
                         <button id="deleteRoomBtn" class="header-btn" title="حذف الغرفة" style="display:none;color:#ff6b6b;"><i class="fa-solid fa-trash"></i></button>
@@ -2422,6 +2421,13 @@
         </div>
     </div>
 
+    <!-- Image Lightbox -->
+    <div id="imageLightbox" class="image-lightbox" aria-hidden="true" role="dialog" aria-modal="true" aria-label="معاينة الصورة">
+        <button id="imageLightboxClose" class="image-lightbox-close" type="button" aria-label="إغلاق الصورة">✕</button>
+        <img id="imageLightboxImage" src="" alt="صورة مكبرة">
+        <div id="imageLightboxCaption" class="image-lightbox-caption"></div>
+    </div>
+
     <!-- Platform Admin Modal -->
     <div id="platformAdminModal" class="advanced-modal-overlay">
         <div class="advanced-modal-box" style="max-width:760px;">
@@ -2465,7 +2471,6 @@
     </div>
 
     <script src="/socket.io/socket.io.js"></script>
-    <script src="notifications.js"></script>
     <script>
         function escapeHTML(str) {
             if (!str) return '';
@@ -2915,10 +2920,6 @@
                 apiKey: '',
                 rating: 'g'
             },
-            notifications: {
-                pushSupported: false,
-                vapidPublicKey: ''
-            }
         };
         const pendingUploads = new Map();
         const userProfileCache = new Map();
@@ -2942,8 +2943,7 @@
         let selectedAudioOutputLabel = 'تلقائي';
         let callPrimaryView = 'remote';
         let callRenegotiating = false;
-        let roomNotificationsEnabled = true;
-        let roomNotificationLoadedFor = '';
+        let callMinimized = false;
         let turnCredentialsExpiresAt = 0;
         let turnCredentialFetchPromise = null;
 
@@ -3018,7 +3018,6 @@
         const backgroundBtn = document.getElementById('backgroundBtn');
         const audioCallBtn = document.getElementById('audioCallBtn');
         const videoCallBtn = document.getElementById('videoCallBtn');
-        const notificationToggleBtn = document.getElementById('notificationToggleBtn');
 
         const reportModal = document.getElementById('reportModal');
         const reportTargetLabel = document.getElementById('reportTargetLabel');
@@ -3054,6 +3053,10 @@
         const callUpgradePrompt = document.getElementById('callUpgradePrompt');
         const acceptVideoUpgradeBtn = document.getElementById('acceptVideoUpgradeBtn');
         const rejectVideoUpgradeBtn = document.getElementById('rejectVideoUpgradeBtn');
+        const imageLightbox = document.getElementById('imageLightbox');
+        const imageLightboxClose = document.getElementById('imageLightboxClose');
+        const imageLightboxImage = document.getElementById('imageLightboxImage');
+        const imageLightboxCaption = document.getElementById('imageLightboxCaption');
 
         const platformAdminBtn = document.getElementById('platformAdminBtn');
         const platformAdminModal = document.getElementById('platformAdminModal');
@@ -3246,7 +3249,6 @@
             audioCallBtn.style.display = 'none';
             videoCallBtn.style.display = 'none';
             backgroundBtn.style.display = 'none';
-            notificationToggleBtn.style.display = 'none';
             document.querySelector('.input-area').style.display = 'none';
             statusIndicator.textContent = '';
         }
@@ -3254,7 +3256,6 @@
         function showChatControls() {
             document.getElementById('roomUsersBtn').style.display = currentRoomIsSystem ? 'none' : 'inline-flex';
             clearChatBtn.style.display = currentRoomIsSystem ? 'none' : 'inline-flex';
-            notificationToggleBtn.style.display = roomId ? 'inline-flex' : 'none';
             document.querySelector('.input-area').style.display = currentRoomIsSystem ? 'none' : 'flex';
         }
 
@@ -3390,21 +3391,85 @@
             if (myUsername) socket.emit('get_my_chats', myUsername);
         }
 
+        function resetRoomViewForLiveSwitch() {
+            try { cancelReply(); } catch (_) {}
+            messagesStore = {};
+            deliveredAcknowledged.clear();
+            readAcknowledged.clear();
+            isCurrentHost = false;
+            isCurrentModerator = false;
+            currentShareCode = '';
+            currentRoomName = '';
+            currentRoomIsSystem = false;
+            if (chatContainer) {
+                chatContainer.innerHTML = '<div class="chat-placeholder"><i class="fa-solid fa-spinner fa-spin"></i><h3>جاري فتح المحادثة...</h3></div>';
+            }
+            try { applyChatBackground(null); } catch (_) {}
+        }
+
+        function switchRoomDuringActiveCall(newRoomId, updateHistory = true) {
+            if (!newRoomId || newRoomId === roomId) return;
+            resetRoomViewForLiveSwitch();
+            roomId = newRoomId;
+            currentRoomIsPrivate = roomId.startsWith('private_');
+
+            if (updateHistory) {
+                const newUrl = new URL(window.location.href);
+                newUrl.searchParams.set('roomId', roomId);
+                window.history.pushState({ roomId }, '', newUrl.toString());
+            }
+
+            const meta = savedRooms.find(r => r.id === roomId) || null;
+            if (meta) {
+                maxUsers = meta.maxUsers || maxUsers;
+                isHost = Boolean(meta.isHost);
+                currentShareCode = meta.shareCode || '';
+                currentRoomName = meta.name || '';
+                currentRoomIsPrivate = Boolean(meta.isPrivate);
+                currentRoomIsSystem = Boolean(meta.systemRoom);
+                updateTitleDisplay(meta);
+            } else {
+                updateTitleDisplay();
+            }
+
+            renderSidebarRooms();
+            joinRoom();
+            if (window.innerWidth <= 768) openChatView();
+        }
+
         function switchRoom(newRoomId) {
             if (!newRoomId) {
                 goToConversationsHome();
                 return;
             }
 
+            // أثناء المكالمة لا نعيد تحميل الصفحة، لأن إعادة التحميل تقطع WebRTC.
+            // نبدّل المحادثة داخل نفس الصفحة ونبقي الاتصال مستمراً.
+            if (activeCall) {
+                switchRoomDuringActiveCall(newRoomId);
+                return;
+            }
+
             const newUrl = new URL(window.location.href);
             newUrl.searchParams.set('roomId', newRoomId);
-            // إعادة تحميل بسيطة تمنع بقاء نفس Socket مشتركاً في غرف سابقة.
             window.location.href = newUrl.toString();
         }
 
         function goToConversationsHome() {
             const newUrl = new URL(window.location.href);
             newUrl.searchParams.delete('roomId');
+
+            if (activeCall) {
+                roomId = '';
+                currentRoomIsPrivate = false;
+                currentRoomIsSystem = false;
+                try { socket.emit('leave-room-view'); } catch (_) {}
+                window.history.pushState({ roomId: '' }, '', newUrl.toString());
+                showNoRoomPlaceholder();
+                renderSidebarRooms();
+                return;
+            }
+
             window.location.href = newUrl.toString();
         }
 
@@ -3552,6 +3617,20 @@
             }
         });
 
+        window.addEventListener('popstate', function() {
+            if (!activeCall) return;
+            const params = new URLSearchParams(window.location.search);
+            const targetRoom = params.get('roomId') || '';
+            if (targetRoom && targetRoom !== roomId) {
+                switchRoomDuringActiveCall(targetRoom, false);
+            } else if (!targetRoom && roomId) {
+                roomId = '';
+                try { socket.emit('leave-room-view'); } catch (_) {}
+                showNoRoomPlaceholder();
+                renderSidebarRooms();
+            }
+        });
+
         window.addEventListener('pageshow', () => {
             if (!socket.connected) {
                 try { socket.connect(); } catch (_) {}
@@ -3682,7 +3761,6 @@
                 shareCode: currentShareCode
             };
             updateTitleDisplay({ ...meta, systemRoom: currentRoomIsSystem, name: currentRoomIsSystem ? 'TOMI • حساب المنصة' : meta.name });
-            loadRoomNotificationPreference(true);
 
             if (!currentRoomIsPrivate) {
                 socket.emit('get-room-members', {
@@ -5609,6 +5687,33 @@
             return link;
         }
 
+        function openImageLightbox(src, caption = '') {
+            if (!src || !imageLightbox || !imageLightboxImage) return;
+            imageLightboxImage.src = src;
+            imageLightboxImage.alt = caption || 'صورة مكبرة';
+            if (imageLightboxCaption) imageLightboxCaption.textContent = caption || '';
+            imageLightbox.classList.add('open');
+            imageLightbox.setAttribute('aria-hidden', 'false');
+            document.body.classList.add('image-lightbox-open');
+        }
+
+        function closeImageLightbox() {
+            if (!imageLightbox) return;
+            imageLightbox.classList.remove('open');
+            imageLightbox.setAttribute('aria-hidden', 'true');
+            document.body.classList.remove('image-lightbox-open');
+            if (imageLightboxImage) imageLightboxImage.src = '';
+            if (imageLightboxCaption) imageLightboxCaption.textContent = '';
+        }
+
+        imageLightboxClose?.addEventListener('click', closeImageLightbox);
+        imageLightbox?.addEventListener('click', function(event) {
+            if (event.target === imageLightbox) closeImageLightbox();
+        });
+        document.addEventListener('keydown', function(event) {
+            if (event.key === 'Escape' && imageLightbox?.classList.contains('open')) closeImageLightbox();
+        });
+
         function renderMediaItem(data) {
             if (!data.msgId) data.msgId = 'msg-' + Date.now();
             messagesStore[data.msgId] = data;
@@ -5664,6 +5769,11 @@
                 stickerImg.classList.add('animated-sticker-msg');
                 stickerImg.alt = fileType === 'gif' ? 'GIF' : 'ملصق';
                 stickerImg.onload = () => chatContainer.scrollTop = chatContainer.scrollHeight;
+                if (fileType === 'gif') {
+                    stickerImg.classList.add('message-zoomable-image');
+                    stickerImg.title = 'اضغط لتكبير الصورة';
+                    stickerImg.addEventListener('click', () => openImageLightbox(sourceUrl, data.fileName || 'GIF'));
+                }
                 messageElement.appendChild(stickerImg);
                 mediaSummaryText = fileType === 'gif' ? 'GIF متحرك' : 'ملصق 👾';
             } else if (fileType === 'image') {
@@ -5671,7 +5781,10 @@
                 img.src = sourceUrl;
                 img.alt = data.fileName || 'صورة';
                 img.loading = 'lazy';
+                img.classList.add('message-zoomable-image');
+                img.title = 'اضغط لتكبير الصورة';
                 img.onload = () => chatContainer.scrollTop = chatContainer.scrollHeight;
+                img.addEventListener('click', () => openImageLightbox(sourceUrl, data.fileName || 'صورة'));
                 messageElement.appendChild(img);
                 mediaSummaryText = data.fileName || 'صورة 📷';
             } else if (fileType === 'video') {
@@ -6282,98 +6395,6 @@
         });
 
         // =========================================================
-        // Per-room notification controls
-        // =========================================================
-        function updateRoomNotificationButton() {
-            if (!notificationToggleBtn) return;
-            const icon = notificationToggleBtn.querySelector('i');
-            notificationToggleBtn.classList.toggle('muted', !roomNotificationsEnabled);
-            notificationToggleBtn.setAttribute('aria-pressed', roomNotificationsEnabled ? 'true' : 'false');
-            if (icon) icon.className = roomNotificationsEnabled ? 'fa-solid fa-bell' : 'fa-solid fa-bell-slash';
-
-            const permission = window.TomiNotifications?.getPermission?.() || ('Notification' in window ? Notification.permission : 'unsupported');
-            notificationToggleBtn.classList.toggle('needs-permission', roomNotificationsEnabled && permission !== 'granted' && permission !== 'unsupported');
-            if (!roomNotificationsEnabled) {
-                notificationToggleBtn.title = 'إشعارات هذه المحادثة مكتومة — اضغط للتفعيل';
-            } else if (permission !== 'granted') {
-                notificationToggleBtn.title = 'الإشعارات مفعلة للمحادثة — اضغط للسماح بإشعارات الجهاز';
-            } else {
-                notificationToggleBtn.title = 'إشعارات هذه المحادثة مفعلة — اضغط للكتم';
-            }
-        }
-
-        async function loadRoomNotificationPreference(force = false) {
-            if (!roomId || (!force && roomNotificationLoadedFor === roomId)) return;
-            try {
-                const response = await fetch('/api/notifications/room/' + encodeURIComponent(roomId), { credentials: 'same-origin' });
-                if (!response.ok) return;
-                const data = await response.json();
-                roomNotificationsEnabled = data.enabled !== false;
-                roomNotificationLoadedFor = roomId;
-                notificationToggleBtn.style.display = 'inline-flex';
-                updateRoomNotificationButton();
-            } catch (error) {
-                console.warn('Notification preference load failed:', error);
-            }
-        }
-
-        async function saveRoomNotificationPreference(enabled) {
-            if (!roomId) return false;
-            const response = await fetch('/api/notifications/room/' + encodeURIComponent(roomId), {
-                method: 'POST',
-                credentials: 'same-origin',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ enabled: Boolean(enabled) })
-            });
-            if (!response.ok) throw new Error('notification-preference-save-failed');
-            const data = await response.json();
-            roomNotificationsEnabled = data.enabled !== false;
-            roomNotificationLoadedFor = roomId;
-            updateRoomNotificationButton();
-            return true;
-        }
-
-        notificationToggleBtn.addEventListener('click', async function() {
-            if (!roomId) return;
-            notificationToggleBtn.disabled = true;
-            try {
-                if (roomNotificationsEnabled) {
-                    const permission = window.TomiNotifications?.getPermission?.() || ('Notification' in window ? Notification.permission : 'unsupported');
-                    // The first tap while notifications are enabled grants the device/browser permission.
-                    // Once permission exists, the same button behaves as a normal mute switch.
-                    if (permission !== 'granted' && window.TomiNotifications?.enableFromUserGesture) {
-                        const result = await window.TomiNotifications.enableFromUserGesture();
-                        updateRoomNotificationButton();
-                        if (result?.ok) {
-                            statusIndicator.textContent = '🔔 تم تفعيل إشعارات الجهاز لهذه المحادثة';
-                            setTimeout(() => { if (statusIndicator.textContent.includes('إشعارات الجهاز')) statusIndicator.textContent = ''; }, 2200);
-                        } else {
-                            alert('إشعارات المحادثة ما زالت مفعلة داخل TOMI، لكن المتصفح لم يسمح بإشعارات الجهاز.');
-                        }
-                        return;
-                    }
-                    await saveRoomNotificationPreference(false);
-                    statusIndicator.textContent = '🔕 تم كتم إشعارات هذه المحادثة';
-                } else {
-                    await saveRoomNotificationPreference(true);
-                    if (window.TomiNotifications?.enableFromUserGesture) {
-                        await window.TomiNotifications.enableFromUserGesture();
-                    }
-                    statusIndicator.textContent = '🔔 تم تفعيل إشعارات هذه المحادثة';
-                }
-                setTimeout(() => {
-                    if (statusIndicator.textContent.includes('إشعارات هذه المحادثة')) statusIndicator.textContent = '';
-                }, 2200);
-            } catch (error) {
-                console.error(error);
-                alert('تعذر تغيير إعداد الإشعارات حالياً.');
-            } finally {
-                notificationToggleBtn.disabled = false;
-                updateRoomNotificationButton();
-            }
-        });
-
-        // =========================================================
         // Advanced: reliable two-way WebRTC audio/video calls
         // Private chats only. Supports mute, camera toggle and
         // consensual audio -> video upgrade with renegotiation.
@@ -6653,34 +6674,28 @@
         }
         bindCallViewSwap();
 
-        function callPipSupported() {
-            return Boolean(
-                document.pictureInPictureEnabled ||
-                typeof remoteCallVideo?.webkitSetPresentationMode === 'function'
-            );
+        function updateCallMinimizeUI() {
+            if (!pipCallBtn) return;
+            const icon = pipCallBtn.querySelector('i');
+            pipCallBtn.title = callMinimized ? 'تكبير شاشة المكالمة' : 'تصغير شاشة المكالمة';
+            if (icon) icon.className = callMinimized ? 'fa-solid fa-expand' : 'fa-solid fa-down-left-and-up-right-to-center';
+            callModal?.classList.toggle('call-minimized', callMinimized);
+            document.body.classList.toggle('has-mini-call', Boolean(activeCall && callMinimized));
         }
 
-        async function toggleCallPictureInPicture() {
-            if (!activeCall || activeCall.callType !== 'video') return;
-            try {
-                if (document.pictureInPictureElement) {
-                    await document.exitPictureInPicture();
-                    return;
-                }
-                if (document.pictureInPictureEnabled && typeof remoteCallVideo.requestPictureInPicture === 'function') {
-                    if (remoteCallVideo.readyState < 2) await remoteCallVideo.play().catch(() => {});
-                    await remoteCallVideo.requestPictureInPicture();
-                    return;
-                }
-                if (typeof remoteCallVideo.webkitSetPresentationMode === 'function') {
-                    remoteCallVideo.webkitSetPresentationMode('picture-in-picture');
-                    return;
-                }
-                alert('هذا المتصفح لا يدعم وضع الصورة المصغرة للمكالمات. جرّب Safari على iPhone/iPad أو Chrome/Edge حديث.');
-            } catch (error) {
-                console.warn('Picture-in-Picture:', error);
-                alert('تعذر تصغير مكالمة الفيديو على هذا المتصفح.');
+        function setCallMinimized(minimized) {
+            if (!activeCall) return;
+            callMinimized = Boolean(minimized);
+            updateCallMinimizeUI();
+            // بعد التصغير تبقى الصفحة قابلة للاستخدام بالكامل، بينما WebRTC يستمر دون إعادة تحميل.
+            if (callMinimized && window.innerWidth <= 768) {
+                try { closeUsersPopup(); } catch (_) {}
             }
+        }
+
+        function toggleCallMinimized() {
+            if (!activeCall) return;
+            setCallMinimized(!callMinimized);
         }
 
         function updateCallMediaSession() {
@@ -6712,7 +6727,8 @@
             audioOutputCallBtn.style.display = active ? 'inline-flex' : 'none';
             cameraCallBtn.style.display = active ? 'inline-flex' : 'none';
             endCallBtn.style.display = active ? 'inline-flex' : 'none';
-            pipCallBtn.style.display = active && activeCall?.callType === 'video' && callPipSupported() ? 'inline-flex' : 'none';
+            pipCallBtn.style.display = active ? 'inline-flex' : 'none';
+            updateCallMinimizeUI();
             updateCallMediaSession();
 
             const micIcon = muteCallBtn.querySelector('i');
@@ -7007,6 +7023,9 @@
         function showCallModal({ title, status, incoming = false, callType = 'audio' }) {
             callTitle.textContent = title || (callType === 'video' ? 'مكالمة فيديو' : 'مكالمة صوتية');
             callStatus.textContent = status || '';
+            callMinimized = false;
+            callModal.classList.remove('call-minimized');
+            document.body.classList.remove('has-mini-call');
             callModal.style.display = 'flex';
             acceptCallBtn.style.display = incoming ? 'inline-flex' : 'none';
             rejectCallBtn.style.display = incoming ? 'inline-flex' : 'none';
@@ -7217,8 +7236,9 @@
             flipActiveCamera().catch(() => {});
         });
 
-        pipCallBtn.addEventListener('click', function() {
-            toggleCallPictureInPicture().catch(() => {});
+        pipCallBtn.addEventListener('click', function(event) {
+            event.stopPropagation();
+            toggleCallMinimized();
         });
 
         muteCallBtn.addEventListener('click', function() {
@@ -7421,8 +7441,10 @@
             remoteCallVideo.srcObject = null;
             remoteCallAudio.srcObject = null;
             localCallVideo.srcObject = null;
-            if (document.pictureInPictureElement) { try { document.exitPictureInPicture(); } catch (_) {} }
             callVideos.classList.remove('video-focus-layout');
+            callMinimized = false;
+            callModal.classList.remove('call-minimized');
+            document.body.classList.remove('has-mini-call');
             callPrimaryView = 'remote';
             setPrimaryCallView('remote');
             activeCall = null;
@@ -7448,6 +7470,9 @@
             updateCallMediaSession();
         }
 
+        callTitle?.addEventListener('click', function() {
+            if (activeCall && callMinimized) setCallMinimized(false);
+        });
         endCallBtn.addEventListener('click', () => endActiveCall(true));
         callCloseBtn.addEventListener('click', function() {
             if (incomingCallData) rejectCallBtn.click();

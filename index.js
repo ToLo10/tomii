@@ -1500,7 +1500,7 @@ app.get("/api/health", (_req, res) => {
     database: mongoReady ? "mongodb" : "local-json",
     fileStorage: gridFsBucket ? "mongodb-gridfs" : "local-disk",
     turn: CLOUDFLARE_TURN_CONFIGURED ? "cloudflare" : (staticTurnConfigured ? "static" : "stun-only"),
-    notifications: webPushReady ? "web-push" : "browser-only"
+    notifications: "disabled"
   });
 });
 
@@ -1673,8 +1673,8 @@ app.get("/api/client-config", requireHttpAuth, (_req, res) => {
       iceTransportPolicy: String(process.env.FORCE_TURN_RELAY || "false").toLowerCase() === "true" ? "relay" : "all"
     },
     notifications: {
-      pushSupported: webPushReady,
-      vapidPublicKey: webPushPublicKey
+      pushSupported: false,
+      vapidPublicKey: ""
     },
     
     giphy: {
@@ -4496,7 +4496,7 @@ io.on("connection", (socket) => {
     socket.emit("admin-users-list", { success: true, users });
   });
 
-  // Owner can create reserved short usernames for approved staff.
+  // Owner can create reserved short/special usernames for normal users or approved staff.
   socket.on("admin-create-staff-account", ({
     username,
     password,
@@ -4526,14 +4526,14 @@ io.on("connection", (socket) => {
         return;
       }
 
-      const safeRole = ["admin", "moderator"].includes(role) ? role : "moderator";
+      const safeRole = ["user", "admin", "moderator"].includes(role) ? role : "user";
       db.users[uVal.username] = {
         username: uVal.username,
         password: hashPassword(password),
         role: safeRole,
         displayName: String(displayName || uVal.username).trim().slice(0, 60),
-        staffApproved: true,
-        permissions: normalizePermissions(permissions),
+        staffApproved: safeRole !== "user",
+        permissions: safeRole === "user" ? [] : normalizePermissions(permissions),
         createdByOwner: actor,
         registeredAt: new Date().toISOString(),
         status: "offline",
@@ -5027,7 +5027,8 @@ io.on("connection", (socket) => {
   }
 
   function emitPrivateCallEvent(valid, eventName, payload = {}) {
-    attachSocketToConversation(socket, valid.rId);
+    // Call signaling is delivered through the user's personal Socket.IO room.
+    // Do not move the socket away from the conversation the user is currently browsing.
     io.to(`user_${valid.targetUser}`).emit(eventName, {
       roomId: valid.rId,
       fromUser: valid.actor,
@@ -5145,6 +5146,15 @@ io.on("connection", (socket) => {
       microphoneMuted: microphoneMuted === true,
       cameraEnabled: cameraEnabled !== false
     });
+  });
+
+  socket.on("leave-room-view", () => {
+    const previousRoomId = socket.roomId;
+    if (previousRoomId) {
+      socket.leave(previousRoomId);
+      socket.roomId = null;
+      setImmediate(() => broadcastRoomUsers(previousRoomId));
+    }
   });
 
   socket.on("clear-room-history", async (roomIdOrCode) => {
@@ -5296,7 +5306,10 @@ async function startServer() {
   await initCloudDatabase();
   db = normalizeDatabaseState(db);
   ensurePlatformOwner();
-  initializeWebPush();
+  // Browser push notifications are intentionally disabled.
+  // TOMI now keeps messaging/calls inside the live web app without requesting notification permission.
+  webPushReady = false;
+  webPushPublicKey = "";
   saveDB(db);
 
   server.listen(PORT, () => {

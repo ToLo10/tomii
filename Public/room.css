@@ -3380,20 +3380,6 @@ body {
 /* =========================================================
    TOMI - Functional additions only (keeps the original colors)
    ========================================================= */
-.room-notification-btn { position: relative; }
-.room-notification-btn.muted { opacity: .62; }
-.room-notification-btn[aria-pressed="true"] { opacity: 1; }
-.room-notification-btn:disabled { opacity: .48; cursor: wait; }
-.room-notification-btn.needs-permission::after {
-    content: '';
-    position: absolute;
-    top: 4px;
-    right: 4px;
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: var(--warning);
-}
 
 /* WhatsApp-like video focus: remote video large, self preview small; tap either to swap. */
 .call-videos.video-focus-layout {
@@ -3470,3 +3456,199 @@ body {
         height: 138px;
     }
 }
+
+
+/* ==========================================================================\n   CALL MINI MODE + IMAGE LIGHTBOX\n   Keeps the active WebRTC call alive while the user browses other chats.\n   ========================================================================== */
+.call-modal-box { transition: width .18s ease, height .18s ease, transform .18s ease, opacity .18s ease; }
+
+#callModal.call-minimized {
+    display: block !important;
+    background: transparent !important;
+    pointer-events: none;
+    z-index: 2500;
+}
+
+#callModal.call-minimized .call-modal-box {
+    position: fixed;
+    top: calc(env(safe-area-inset-top, 0px) + 12px);
+    left: 12px;
+    width: min(230px, calc(100vw - 24px));
+    max-width: 230px;
+    min-height: 0;
+    margin: 0;
+    padding: 9px;
+    border-radius: 18px;
+    pointer-events: auto;
+    box-shadow: 0 18px 55px rgba(0,0,0,.55), 0 0 0 1px rgba(139,92,246,.26);
+    backdrop-filter: blur(18px);
+    -webkit-backdrop-filter: blur(18px);
+}
+
+#callModal.call-minimized .advanced-modal-header {
+    min-height: 30px;
+    padding: 0 2px 6px;
+    cursor: pointer;
+}
+
+#callModal.call-minimized .advanced-modal-header h3 {
+    font-size: .76rem;
+    max-width: 180px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+#callModal.call-minimized #callCloseBtn { display: none !important; }
+#callModal.call-minimized .call-status {
+    font-size: .67rem;
+    margin: 3px 0 6px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+#callModal.call-minimized .call-videos {
+    min-height: 112px;
+    height: 112px;
+    gap: 4px;
+    margin: 0 0 7px;
+}
+
+#callModal.call-minimized .call-videos.video-focus-layout {
+    min-height: 112px;
+    height: 112px;
+}
+
+#callModal.call-minimized .call-videos.video-focus-layout .call-video-wrap.call-primary {
+    inset: 0;
+    width: 100%;
+    height: 112px;
+    border-radius: 12px;
+}
+
+#callModal.call-minimized .call-videos.video-focus-layout .call-video-wrap.call-thumbnail {
+    width: 48px;
+    height: 64px;
+    top: 6px;
+    right: 6px;
+    border-radius: 9px;
+}
+
+#callModal.call-minimized .call-video-wrap.call-audio-only {
+    min-height: 72px;
+    height: 72px;
+}
+
+#callModal.call-minimized .call-view-label { display: none; }
+#callModal.call-minimized #callUpgradePrompt { margin: 4px 0 7px; padding: 7px; }
+#callModal.call-minimized .call-upgrade-text { font-size: .66rem; }
+
+#callModal.call-minimized .call-actions {
+    gap: 5px;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    justify-content: center;
+    padding: 1px 0;
+}
+
+#callModal.call-minimized .call-round-btn {
+    width: 34px;
+    height: 34px;
+    min-width: 34px;
+    font-size: .76rem;
+}
+
+#callModal.call-minimized #audioOutputCallBtn,
+#callModal.call-minimized #flipCameraCallBtn {
+    display: none !important;
+}
+
+body.has-mini-call #callModal.call-minimized { pointer-events: none; }
+body.has-mini-call #callModal.call-minimized .call-modal-box { pointer-events: auto; }
+
+/* Image viewer for chat photos. */
+.message-zoomable-image { cursor: zoom-in; }
+.image-lightbox {
+    position: fixed;
+    inset: 0;
+    z-index: 4000;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: max(18px, env(safe-area-inset-top, 0px)) 18px max(18px, env(safe-area-inset-bottom, 0px));
+    background: rgba(3, 3, 10, .94);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+}
+.image-lightbox.open { display: flex; }
+.image-lightbox img {
+    display: block;
+    max-width: min(96vw, 1400px);
+    max-height: 90vh;
+    width: auto;
+    height: auto;
+    object-fit: contain;
+    border-radius: 10px;
+    box-shadow: 0 22px 80px rgba(0,0,0,.58);
+}
+.image-lightbox-close {
+    position: fixed;
+    top: calc(env(safe-area-inset-top, 0px) + 14px);
+    right: 14px;
+    z-index: 4002;
+    width: 44px;
+    height: 44px;
+    border: 1px solid rgba(255,255,255,.18);
+    border-radius: 50%;
+    background: rgba(18,17,31,.88);
+    color: #fff;
+    font-size: 1.25rem;
+    cursor: pointer;
+}
+.image-lightbox-caption {
+    position: fixed;
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 14px);
+    left: 50%;
+    transform: translateX(-50%);
+    max-width: 85vw;
+    padding: 7px 12px;
+    border-radius: 999px;
+    background: rgba(18,17,31,.72);
+    color: #ddd;
+    font-size: .76rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+body.image-lightbox-open { overflow: hidden; }
+
+@media (max-width: 600px) {
+    #callModal.call-minimized .call-modal-box {
+        top: calc(env(safe-area-inset-top, 0px) + 8px);
+        left: 8px;
+        width: min(190px, calc(100vw - 16px));
+        max-width: 190px;
+        border-radius: 15px;
+        padding: 7px;
+    }
+    #callModal.call-minimized .call-videos,
+    #callModal.call-minimized .call-videos.video-focus-layout,
+    #callModal.call-minimized .call-videos.video-focus-layout .call-video-wrap.call-primary {
+        height: 96px;
+        min-height: 96px;
+    }
+    #callModal.call-minimized .call-videos.video-focus-layout .call-video-wrap.call-thumbnail {
+        width: 42px;
+        height: 56px;
+    }
+    #callModal.call-minimized .call-round-btn {
+        width: 32px;
+        height: 32px;
+        min-width: 32px;
+    }
+    .image-lightbox { padding-inline: 8px; }
+    .image-lightbox img { max-width: 98vw; max-height: 86vh; border-radius: 7px; }
+}
+
+#callModal.call-minimized .call-local-wrap.call-audio-only { display: none !important; }
+#callModal.call-minimized .call-remote-wrap.call-audio-only { width: 100%; min-height: 72px; }

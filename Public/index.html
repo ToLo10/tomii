@@ -8,7 +8,6 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <link rel="stylesheet" href="styles.css?v=20260908-frame-cutout-v3">
     <script src="/socket.io/socket.io.js"></script>
-    <script src="notifications.js"></script>
     <style>
         :root {
             --bg-primary: #0f0f1a;
@@ -1569,15 +1568,16 @@
                 </div>
 
                 <div id="adminOwnerCreateBox" class="admin-panel-card" style="display:none;">
-                    <div class="admin-card-title"><i class="fa-solid fa-user-shield"></i> إنشاء حساب مشرف مميز</div>
-                    <p class="section-desc">هذه الميزة لمالك المنصة فقط، ويمكن من خلالها إنشاء Username قصير أو مميز للمشرفين.</p>
+                    <div class="admin-card-title"><i class="fa-solid fa-user-shield"></i> إنشاء حساب مميز</div>
+                    <p class="section-desc">هذه الميزة لمالك المنصة فقط، ويمكن من خلالها إنشاء Username قصير أو مميز كمستخدم عادي أو كمشرف / Admin.</p>
                     <div class="admin-form-grid">
-                        <input id="staffUsernameInput" class="custom-input" maxlength="32" placeholder="Username للمشرف">
+                        <input id="staffUsernameInput" class="custom-input" maxlength="32" placeholder="Username للحساب">
                         <input id="staffDisplayNameInput" class="custom-input" maxlength="60" placeholder="الاسم المعروض">
                         <input id="staffPasswordInput" type="password" class="custom-input" placeholder="كلمة المرور">
                         <select id="staffRoleSelect" class="custom-select">
                             <option value="moderator">مشرف</option>
                             <option value="admin">Admin</option>
+                            <option value="user">مستخدم عادي (بدون صلاحيات)</option>
                         </select>
                     </div>
                     <div id="staffPermissionsBox" class="permission-checks"></div>
@@ -2965,7 +2965,25 @@
                 label.appendChild(document.createTextNode(permission.label));
                 box.appendChild(label);
             });
+            updateCreateAccountRoleUI();
         }
+
+        function updateCreateAccountRoleUI() {
+            const roleSelect = document.getElementById('staffRoleSelect');
+            const box = document.getElementById('staffPermissionsBox');
+            if (!roleSelect || !box) return;
+
+            const isNormalUser = roleSelect.value === 'user';
+            box.querySelectorAll('input[type="checkbox"]').forEach(input => {
+                if (isNormalUser) input.checked = false;
+                input.disabled = isNormalUser;
+            });
+            box.style.opacity = isNormalUser ? '0.45' : '1';
+            box.style.pointerEvents = isNormalUser ? 'none' : 'auto';
+            box.title = isNormalUser ? 'المستخدم العادي لا يمتلك أي صلاحيات إدارية.' : '';
+        }
+
+        document.getElementById('staffRoleSelect')?.addEventListener('change', updateCreateAccountRoleUI);
 
         document.getElementById('createStaffBtn')?.addEventListener('click', () => {
             if (!(savedUsername === 'tomi' || myRole === 'owner')) return;
@@ -2973,7 +2991,7 @@
             const displayName = document.getElementById('staffDisplayNameInput').value.trim();
             const password = document.getElementById('staffPasswordInput').value;
             const role = document.getElementById('staffRoleSelect').value;
-            const permissions = [...document.querySelectorAll('#staffPermissionsBox input:checked')].map(i => i.value);
+            const permissions = role === 'user' ? [] : [...document.querySelectorAll('#staffPermissionsBox input:checked')].map(i => i.value);
 
             if (!username || !password) {
                 showToast('اكتب Username وكلمة مرور للحساب المميز.', 'error');

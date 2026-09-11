@@ -23,3 +23,15 @@ The permission catalog now contains:
 The platform owner can grant/revoke this permission to an approved Admin/Moderator from the normal permissions editor. Authorized users then see the broadcast composer in the platform administration page.
 
 Each recipient receives the announcement in a read-only conversation named `TOMI • حساب المنصة`, whether or not they are friends with the sender. Web Push is also attempted when the recipient has enabled notifications.
+
+
+## Ordinary user option in owner account creator
+- The owner account-creation panel now includes `مستخدم عادي (بدون صلاحيات)`.
+- Normal users created here receive role `user`, no staff badge, `staffApproved: false`, and an empty permissions array.
+- Permission checkboxes are automatically cleared/disabled when this role is selected.
+
+
+## Latest call/chat UX update
+- Removed the per-room browser notification button and disabled Web Push initialization.
+- Active audio/video calls can be minimized inside TOMI and continue while switching between chats without reloading the page.
+- Chat images open in a full-screen lightbox with a close button.
