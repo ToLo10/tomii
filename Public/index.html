@@ -1301,7 +1301,22 @@
             .dashboard-toast { left: 12px; right: 12px; bottom: 12px; max-width: none; }
         }
 
-    </style>
+    
+        /* iPad/tablet Safari: keep the account/logout controls above browser chrome. */
+        @supports (height: 100dvh) {
+            .app-wrapper, .sidebar { min-height: 100dvh; height: 100dvh; }
+        }
+        @media (min-width: 769px) and (max-width: 1180px) {
+            .sidebar {
+                padding-bottom: max(24px, calc(env(safe-area-inset-bottom) + 18px));
+            }
+            .logout-section {
+                margin-top: auto;
+                padding-bottom: 14px;
+                flex-shrink: 0;
+            }
+        }
+</style>
 </head>
 
 <body>
@@ -1571,6 +1586,15 @@
                     </button>
                 </div>
 
+                <div id="adminBroadcastBox" class="admin-panel-card" style="display:none;">
+                    <div class="admin-card-title"><i class="fa-solid fa-bullhorn"></i> رسالة إلى جميع مستخدمي المنصة</div>
+                    <p class="section-desc">ترسل رسالة رسمية من حساب TOMI إلى جميع الحسابات، حتى لو لم يكونوا أصدقاء. تظهر لهم داخل محادثة «TOMI • حساب المنصة» ويمكن أن تصل كإشعار إذا فعّل المستخدم الإشعارات.</p>
+                    <textarea id="platformBroadcastInput" class="custom-input" maxlength="4000" rows="4" placeholder="اكتب رسالة المنصة..."></textarea>
+                    <button id="sendPlatformBroadcastBtn" class="btn-primary" type="button" style="margin-top:10px;">
+                        <i class="fa-solid fa-paper-plane"></i> إرسال للجميع
+                    </button>
+                </div>
+
                 <div class="admin-tabs">
                     <button class="admin-tab-btn active" data-admin-pane="adminUsersPane" id="adminUsersTabBtn">
                         <i class="fa-solid fa-users-gear"></i> المستخدمون
@@ -1793,7 +1817,8 @@
                 myPermissions.some(p => [
                     'manage_platform_bans',
                     'manage_moderators',
-                    'manage_reports'
+                    'manage_reports',
+                    'send_platform_broadcast'
                 ].includes(p));
         }
 
@@ -2071,6 +2096,9 @@
 
             const ownerBox = document.getElementById('adminOwnerCreateBox');
             if (ownerBox) ownerBox.style.display = (savedUsername === 'tomi' || myRole === 'owner') ? 'block' : 'none';
+
+            const broadcastBox = document.getElementById('adminBroadcastBox');
+            if (broadcastBox) broadcastBox.style.display = hasPermission('send_platform_broadcast') ? 'block' : 'none';
 
             const usersTab = document.getElementById('adminUsersTabBtn');
             const reportsTab = document.getElementById('adminReportsTabBtn');
@@ -2503,15 +2531,19 @@
             if (!chat) return null;
             const roomId = typeof chat === 'string' ? chat : (chat.roomId || chat.id || '');
             if (!roomId) return null;
+            const systemRoom = typeof chat === 'string' ? false : Boolean(chat.systemRoom || chat.type === 'system');
             const isPrivate = typeof chat === 'string'
                 ? roomId.startsWith('private_')
-                : Boolean(chat.isPrivate || chat.type === 'private' || roomId.startsWith('private_'));
+                : Boolean(systemRoom || chat.isPrivate || chat.type === 'private' || roomId.startsWith('private_'));
             return {
                 roomId,
                 isPrivate,
-                title: isPrivate
-                    ? (chat.partner ? `محادثة مع ${chat.partner}` : (chat.roomName || 'محادثة خاصة'))
-                    : (chat.roomName || chat.name || 'غرفة عامة'),
+                systemRoom,
+                title: systemRoom
+                    ? (chat.roomName || chat.name || 'TOMI • حساب المنصة')
+                    : (isPrivate
+                        ? (chat.partner ? `محادثة مع ${chat.partner}` : (chat.roomName || 'محادثة خاصة'))
+                        : (chat.roomName || chat.name || 'غرفة عامة')),
                 partner: chat.partner || null,
                 lastMessage: typeof chat.lastMessage === 'string'
                     ? chat.lastMessage
@@ -2565,9 +2597,11 @@
 
                 const icon = document.createElement('div');
                 icon.className = 'chat-history-icon';
-                icon.innerHTML = chat.isPrivate
-                    ? '<i class="fa-solid fa-user-lock"></i>'
-                    : '<i class="fa-solid fa-users"></i>';
+                icon.innerHTML = chat.systemRoom
+                    ? '<i class="fa-solid fa-shield-halved"></i>'
+                    : (chat.isPrivate
+                        ? '<i class="fa-solid fa-user-lock"></i>'
+                        : '<i class="fa-solid fa-users"></i>');
 
                 const text = document.createElement('div');
                 text.className = 'chat-history-text';
@@ -2590,7 +2624,7 @@
 
                 const typeBadge = document.createElement('span');
                 typeBadge.className = `chat-type-badge ${chat.isPrivate ? 'private' : 'public'}`;
-                typeBadge.textContent = chat.isPrivate ? 'خاصة' : 'عامة';
+                typeBadge.textContent = chat.systemRoom ? 'رسمي' : (chat.isPrivate ? 'خاصة' : 'عامة');
                 meta.appendChild(typeBadge);
 
                 if (!chat.isPrivate) {
@@ -2825,6 +2859,39 @@
             closePlatformBanModal();
             showToast(data.unbanned ? 'تم فك الحظر.' : 'تم حظر المستخدم على المنصة.');
             if (canOpenAdmin()) loadAdminData();
+        });
+
+        // ===== Official platform broadcast =====
+        document.getElementById('sendPlatformBroadcastBtn')?.addEventListener('click', () => {
+            if (!hasPermission('send_platform_broadcast')) return;
+            const input = document.getElementById('platformBroadcastInput');
+            const message = input?.value.trim() || '';
+            if (!message) {
+                showToast('اكتب رسالة المنصة أولاً.', 'error');
+                return;
+            }
+            if (!confirm('إرسال هذه الرسالة إلى جميع مستخدمي المنصة؟')) return;
+            const btn = document.getElementById('sendPlatformBroadcastBtn');
+            if (btn) btn.disabled = true;
+            socket.emit('admin-send-platform-broadcast', { message });
+        });
+
+        socket.on('platform-broadcast-result', data => {
+            const btn = document.getElementById('sendPlatformBroadcastBtn');
+            if (btn) btn.disabled = false;
+            if (!data?.success) {
+                showToast(data?.error || 'تعذر إرسال رسالة المنصة.', 'error');
+                return;
+            }
+            const input = document.getElementById('platformBroadcastInput');
+            if (input) input.value = '';
+            showToast(`تم إرسال رسالة TOMI إلى ${Number(data.delivered || 0)} مستخدم.`);
+        });
+
+        socket.on('platform-broadcast', data => {
+            const msg = String(data?.message?.msg || '').slice(0, 120);
+            showToast(msg ? `TOMI: ${msg}` : 'وصلتك رسالة جديدة من TOMI.');
+            refreshData();
         });
 
         // ===== Admin dashboard =====

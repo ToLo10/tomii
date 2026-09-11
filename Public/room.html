@@ -2392,12 +2392,14 @@
             </div>
             <div id="callStatus" class="call-status">جاري التحضير...</div>
             <div class="call-videos" id="callVideos">
-                <div class="call-video-wrap">
+                <div class="call-video-wrap call-remote-wrap call-primary" id="remoteCallWrap" role="button" tabindex="0" aria-label="تكبير صورة الطرف الآخر">
                     <video id="remoteCallVideo" autoplay playsinline></video>
                     <audio id="remoteCallAudio" autoplay></audio>
+                    <span class="call-view-label">الطرف الآخر</span>
                 </div>
-                <div class="call-video-wrap">
+                <div class="call-video-wrap call-local-wrap call-thumbnail" id="localCallWrap" role="button" tabindex="0" aria-label="تكبير صورتك">
                     <video id="localCallVideo" autoplay playsinline muted></video>
+                    <span class="call-view-label">أنت</span>
                 </div>
             </div>
             <div id="callUpgradePrompt" class="call-upgrade-prompt" style="display:none;">
@@ -2414,6 +2416,7 @@
                 <button id="audioOutputCallBtn" type="button" class="call-round-btn call-control" title="اختيار مخرج الصوت" style="display:none;"><i class="fa-solid fa-volume-high"></i></button>
                 <button id="cameraCallBtn" type="button" class="call-round-btn call-control" title="تشغيل/إيقاف الكاميرا" style="display:none;"><i class="fa-solid fa-video"></i></button>
                 <button id="flipCameraCallBtn" type="button" class="call-round-btn call-control" title="تبديل الكاميرا الأمامية/الخلفية" style="display:none;"><i class="fa-solid fa-camera-rotate"></i></button>
+                <button id="pipCallBtn" type="button" class="call-round-btn call-control" title="تصغير مكالمة الفيديو" style="display:none;"><i class="fa-regular fa-window-restore"></i></button>
                 <button id="endCallBtn" type="button" class="call-round-btn call-end" title="إنهاء" style="display:none;"><i class="fa-solid fa-phone-slash"></i></button>
             </div>
         </div>
@@ -2937,6 +2940,7 @@
         let currentCameraFacingMode = 'user';
         let selectedAudioOutputDeviceId = '';
         let selectedAudioOutputLabel = 'تلقائي';
+        let callPrimaryView = 'remote';
         let callRenegotiating = false;
         let roomNotificationsEnabled = true;
         let roomNotificationLoadedFor = '';
@@ -2950,6 +2954,7 @@
         let currentShareCode = '';
         let currentRoomName = '';
         let currentRoomIsPrivate = roomId.startsWith('private_');
+        let currentRoomIsSystem = false;
 
         const roomIdText = document.getElementById('roomIdText');
         const roomHeaderTitle = document.getElementById('roomHeaderTitle');
@@ -3035,12 +3040,15 @@
         const remoteCallVideo = document.getElementById('remoteCallVideo');
         const remoteCallAudio = document.getElementById('remoteCallAudio');
         const localCallVideo = document.getElementById('localCallVideo');
+        const remoteCallWrap = document.getElementById('remoteCallWrap');
+        const localCallWrap = document.getElementById('localCallWrap');
         const acceptCallBtn = document.getElementById('acceptCallBtn');
         const rejectCallBtn = document.getElementById('rejectCallBtn');
         const muteCallBtn = document.getElementById('muteCallBtn');
         const audioOutputCallBtn = document.getElementById('audioOutputCallBtn');
         const cameraCallBtn = document.getElementById('cameraCallBtn');
         const flipCameraCallBtn = document.getElementById('flipCameraCallBtn');
+        const pipCallBtn = document.getElementById('pipCallBtn');
         const endCallBtn = document.getElementById('endCallBtn');
         const callCloseBtn = document.getElementById('callCloseBtn');
         const callUpgradePrompt = document.getElementById('callUpgradePrompt');
@@ -3145,7 +3153,8 @@
                     ...data,
                     audioRecording: { ...clientConfig.audioRecording, ...(data.audioRecording || {}) },
                     webrtc: { ...clientConfig.webrtc, ...(data.webrtc || {}) },
-                    giphy: { ...clientConfig.giphy, ...(data.giphy || {}) }
+                    giphy: { ...clientConfig.giphy, ...(data.giphy || {}) },
+                    notifications: { ...clientConfig.notifications, ...(data.notifications || {}) }
                 };
                 const archiveNotice = document.getElementById('moderationArchiveNotice');
                 const archiveNoticeText = document.getElementById('moderationArchiveNoticeText');
@@ -3169,17 +3178,21 @@
         function normalizeChatRecord(chat) {
             const raw = chat || {};
             const id = raw.roomId || raw.id || '';
-            const privateChat = Boolean(raw.isPrivate || raw.type === 'private' || id.startsWith('private_'));
+            const systemRoom = Boolean(raw.systemRoom || raw.type === 'system');
+            const privateChat = Boolean(systemRoom || raw.isPrivate || raw.type === 'private' || id.startsWith('private_'));
             const partner = raw.partner || null;
 
             return {
                 id,
                 roomId: id,
-                name: privateChat
-                    ? (partner || raw.roomName || raw.name || 'محادثة خاصة')
-                    : (raw.roomName || raw.name || 'غرفة عامة'),
+                name: systemRoom
+                    ? (raw.roomName || raw.name || 'TOMI • حساب المنصة')
+                    : (privateChat
+                        ? (partner || raw.roomName || raw.name || 'محادثة خاصة')
+                        : (raw.roomName || raw.name || 'غرفة عامة')),
                 partner,
                 isPrivate: privateChat,
+                systemRoom,
                 isHost: Boolean(raw.isHost || (raw.owner && raw.owner === myUsername)),
                 isModerator: Boolean(raw.isModerator),
                 owner: raw.owner || null,
@@ -3205,7 +3218,7 @@
         }
 
         function updatePrivateCallUI() {
-            const allowed = Boolean(roomId && currentRoomIsPrivate);
+            const allowed = Boolean(roomId && currentRoomIsPrivate && !currentRoomIsSystem);
             audioCallBtn.style.display = allowed ? 'inline-flex' : 'none';
             videoCallBtn.style.display = allowed ? 'inline-flex' : 'none';
         }
@@ -3239,10 +3252,10 @@
         }
 
         function showChatControls() {
-            document.getElementById('roomUsersBtn').style.display = 'inline-flex';
-            clearChatBtn.style.display = 'inline-flex';
+            document.getElementById('roomUsersBtn').style.display = currentRoomIsSystem ? 'none' : 'inline-flex';
+            clearChatBtn.style.display = currentRoomIsSystem ? 'none' : 'inline-flex';
             notificationToggleBtn.style.display = roomId ? 'inline-flex' : 'none';
-            document.querySelector('.input-area').style.display = 'flex';
+            document.querySelector('.input-area').style.display = currentRoomIsSystem ? 'none' : 'flex';
         }
 
         function updateTitleDisplay(meta = getCurrentRoomMeta()) {
@@ -3252,13 +3265,22 @@
             }
 
             currentRoomIsPrivate = meta ? meta.isPrivate : roomId.startsWith('private_');
+            currentRoomIsSystem = Boolean(meta?.systemRoom);
             currentRoomName = meta ? meta.name : currentRoomName;
             currentShareCode = meta && !meta.isPrivate ? (meta.shareCode || meta.id) : currentShareCode;
 
-            if (currentRoomIsPrivate) {
+            if (currentRoomIsSystem) {
+                roomHeaderTitle.textContent = 'TOMI • حساب المنصة';
+                roomPrivateBadge.style.display = 'inline-block';
+                roomPrivateBadge.textContent = 'رسمي';
+                publicRoomCodeWrap.style.display = 'none';
+                privateRoomSecurityText.style.display = 'none';
+                copyButton.style.display = 'none';
+            } else if (currentRoomIsPrivate) {
                 const partner = meta?.partner || meta?.name || 'الصديق';
                 roomHeaderTitle.textContent = '🔒 محادثة خاصة مع ' + partner;
                 roomPrivateBadge.style.display = 'inline-block';
+                roomPrivateBadge.textContent = 'خاص';
                 publicRoomCodeWrap.style.display = 'none';
                 privateRoomSecurityText.style.display = 'inline';
                 copyButton.style.display = 'none';
@@ -3603,8 +3625,10 @@
             isCurrentHost = !!data.isHost;
             isCurrentModerator = !!data.isModerator;
             currentRoomIsPrivate = !!data.isPrivate;
+            currentRoomIsSystem = !!data.systemRoom;
             currentShareCode = data.shareCode || '';
             currentRoomName = data.roomName || currentRoomName;
+            if (currentRoomIsSystem) currentRoomName = 'TOMI • حساب المنصة';
             maxUsers = Number(data.maxUsers || maxUsers) || 24;
 
             if (data.role || data.badge || data.permissions) {
@@ -3626,19 +3650,19 @@
             modControls.style.display = (!currentRoomIsPrivate && mayUseRoomModeration) ? 'flex' : 'none';
 
             updatePrivateCallUI();
-            const mayChangeBackground = currentRoomIsPrivate || isCurrentHost || myUsername === 'tomi';
+            const mayChangeBackground = !currentRoomIsSystem && (currentRoomIsPrivate || isCurrentHost || myUsername === 'tomi');
             backgroundBtn.style.display = mayChangeBackground ? 'inline-flex' : 'none';
 
             socket.emit('get-chat-background', { roomId });
 
             // في الغرف العامة مسح السجل يظهر للمالك/المشرف فقط.
             // في المحادثة الخاصة يبقى متاحاً لطرفي المحادثة.
-            clearChatBtn.style.display = (
+            clearChatBtn.style.display = (!currentRoomIsSystem && (
                 currentRoomIsPrivate ||
                 isCurrentHost ||
                 myUsername === 'tomi' ||
                 hasPermission('manage_rooms')
-            ) ? 'inline-flex' : 'none';
+            )) ? 'inline-flex' : 'none';
 
             capacityInput.value = maxUsers;
             if (roomMembersCountLabel) {
@@ -3652,11 +3676,12 @@
                 name: currentRoomName,
                 partner: null,
                 isPrivate: currentRoomIsPrivate,
+                systemRoom: currentRoomIsSystem,
                 isHost: isCurrentHost,
                 maxUsers,
                 shareCode: currentShareCode
             };
-            updateTitleDisplay(meta);
+            updateTitleDisplay({ ...meta, systemRoom: currentRoomIsSystem, name: currentRoomIsSystem ? 'TOMI • حساب المنصة' : meta.name });
             loadRoomNotificationPreference(true);
 
             if (!currentRoomIsPrivate) {
@@ -6558,7 +6583,11 @@
                 }
             }
 
-            alert('المتصفح على هذا الجهاز لا يسمح للموقع بتبديل السبيكر/سماعة الأذن مباشرة. استخدم مخرج الصوت من لوحة الهاتف أثناء المكالمة.');
+            // There is no cross-browser Web API that can force Android/iOS from
+            // loudspeaker to the phone receiver when setSinkId/selectAudioOutput are unavailable.
+            // Keep the call alive and guide the user to the OS route selector instead.
+            callStatus.textContent = 'هذا المتصفح يترك اختيار السبيكر/سماعة الأذن للنظام';
+            alert('المتصفح الحالي لا يعطي مواقع الويب صلاحية إجبار التحويل بين السبيكر وسماعة الأذن. المكالمة مستمرة؛ غيّر مخرج الصوت من لوحة الصوت/البلوتوث في الهاتف، أو استخدم Chrome/Edge/Safari حديث إذا ظهر اختيار المخرج.');
         }
 
         function attachRemoteMedia() {
@@ -6566,22 +6595,24 @@
             const hasVideo = stream.getVideoTracks().some(track => track.readyState === 'live');
             const shouldShowVideo = Boolean(activeCall?.callType === 'video' || hasVideo);
 
+            // Keep remote audio on one dedicated <audio> element in both audio and video
+            // calls. This makes setSinkId/selectAudioOutput considerably more reliable
+            // across Chrome/Edge/Android browsers and avoids double playback.
+            remoteCallAudio.srcObject = stream;
+            remoteCallAudio.muted = false;
+            remoteCallAudio.volume = 1;
+            safePlayMedia(remoteCallAudio);
+            applySelectedAudioOutput().catch(() => {});
+
             if (shouldShowVideo) {
                 remoteCallVideo.srcObject = stream;
-                remoteCallVideo.muted = false;
-                remoteCallVideo.volume = 1;
+                remoteCallVideo.muted = true;
+                remoteCallVideo.volume = 0;
                 remoteCallVideo.style.display = 'block';
-                remoteCallAudio.srcObject = null;
-                applySelectedAudioOutput().catch(() => {});
                 safePlayMedia(remoteCallVideo);
             } else {
-                remoteCallAudio.srcObject = stream;
-                remoteCallAudio.muted = false;
-                remoteCallAudio.volume = 1;
                 remoteCallVideo.srcObject = null;
                 remoteCallVideo.style.display = 'none';
-                applySelectedAudioOutput().catch(() => {});
-                safePlayMedia(remoteCallAudio);
             }
         }
 
@@ -6600,12 +6631,89 @@
             }
         }
 
+        function setPrimaryCallView(view = 'remote') {
+            callPrimaryView = view === 'local' ? 'local' : 'remote';
+            if (!remoteCallWrap || !localCallWrap) return;
+            const remotePrimary = callPrimaryView === 'remote';
+            remoteCallWrap.classList.toggle('call-primary', remotePrimary);
+            remoteCallWrap.classList.toggle('call-thumbnail', !remotePrimary);
+            localCallWrap.classList.toggle('call-primary', !remotePrimary);
+            localCallWrap.classList.toggle('call-thumbnail', remotePrimary);
+        }
+
+        function bindCallViewSwap() {
+            const activate = (view) => {
+                if (!activeCall || activeCall.callType !== 'video') return;
+                setPrimaryCallView(view);
+            };
+            remoteCallWrap?.addEventListener('click', () => activate('remote'));
+            localCallWrap?.addEventListener('click', () => activate('local'));
+            remoteCallWrap?.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') activate('remote'); });
+            localCallWrap?.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') activate('local'); });
+        }
+        bindCallViewSwap();
+
+        function callPipSupported() {
+            return Boolean(
+                document.pictureInPictureEnabled ||
+                typeof remoteCallVideo?.webkitSetPresentationMode === 'function'
+            );
+        }
+
+        async function toggleCallPictureInPicture() {
+            if (!activeCall || activeCall.callType !== 'video') return;
+            try {
+                if (document.pictureInPictureElement) {
+                    await document.exitPictureInPicture();
+                    return;
+                }
+                if (document.pictureInPictureEnabled && typeof remoteCallVideo.requestPictureInPicture === 'function') {
+                    if (remoteCallVideo.readyState < 2) await remoteCallVideo.play().catch(() => {});
+                    await remoteCallVideo.requestPictureInPicture();
+                    return;
+                }
+                if (typeof remoteCallVideo.webkitSetPresentationMode === 'function') {
+                    remoteCallVideo.webkitSetPresentationMode('picture-in-picture');
+                    return;
+                }
+                alert('هذا المتصفح لا يدعم وضع الصورة المصغرة للمكالمات. جرّب Safari على iPhone/iPad أو Chrome/Edge حديث.');
+            } catch (error) {
+                console.warn('Picture-in-Picture:', error);
+                alert('تعذر تصغير مكالمة الفيديو على هذا المتصفح.');
+            }
+        }
+
+        function updateCallMediaSession() {
+            if (!('mediaSession' in navigator)) return;
+            try {
+                navigator.mediaSession.metadata = activeCall ? new MediaMetadata({
+                    title: activeCall.callType === 'video' ? 'مكالمة فيديو TOMI' : 'مكالمة صوتية TOMI',
+                    artist: activeCall.targetUser || 'TOMI',
+                    album: 'TOMI'
+                }) : null;
+                const safeHandler = (action, handler) => {
+                    try { navigator.mediaSession.setActionHandler(action, handler); } catch (_) {}
+                };
+                if (activeCall) {
+                    safeHandler('hangup', () => endActiveCall(true));
+                    safeHandler('togglemicrophone', () => muteCallBtn.click());
+                    safeHandler('togglecamera', () => cameraCallBtn.click());
+                } else {
+                    safeHandler('hangup', null);
+                    safeHandler('togglemicrophone', null);
+                    safeHandler('togglecamera', null);
+                }
+            } catch (_) {}
+        }
+
         function updateCallControlUI() {
             const active = Boolean(activeCall);
             muteCallBtn.style.display = active ? 'inline-flex' : 'none';
             audioOutputCallBtn.style.display = active ? 'inline-flex' : 'none';
             cameraCallBtn.style.display = active ? 'inline-flex' : 'none';
             endCallBtn.style.display = active ? 'inline-flex' : 'none';
+            pipCallBtn.style.display = active && activeCall?.callType === 'video' && callPipSupported() ? 'inline-flex' : 'none';
+            updateCallMediaSession();
 
             const micIcon = muteCallBtn.querySelector('i');
             if (micIcon) micIcon.className = microphoneMuted
@@ -6642,13 +6750,16 @@
             const videoMode = callType === 'video';
             const wraps = callVideos.querySelectorAll('.call-video-wrap');
             wraps.forEach(wrap => wrap.classList.toggle('call-audio-only', !videoMode));
+            callVideos.classList.toggle('video-focus-layout', videoMode);
             localCallVideo.style.display = videoMode ? 'block' : 'none';
             remoteCallVideo.style.display = videoMode ? 'block' : 'none';
             if (videoMode) {
+                setPrimaryCallView(callPrimaryView || 'remote');
                 attachLocalMedia();
                 attachRemoteMedia();
-            } else if (remoteCallStream) {
-                attachRemoteMedia();
+            } else {
+                callVideos.classList.remove('video-focus-layout');
+                if (remoteCallStream) attachRemoteMedia();
             }
         }
 
@@ -6905,6 +7016,7 @@
                 audioOutputCallBtn.style.display = 'none';
                 cameraCallBtn.style.display = 'none';
                 flipCameraCallBtn.style.display = 'none';
+                pipCallBtn.style.display = 'none';
                 endCallBtn.style.display = 'none';
             }
             updateCallVideoLayout(callType);
@@ -6939,6 +7051,7 @@
                     await refreshTurnCredentialsForCall();
                 }
                 currentCameraFacingMode = 'user';
+                callPrimaryView = 'remote';
                 localCallStream = await getCallMedia(callType);
                 activeCall = { callId, roomId, targetUser, callType, outgoing: true, upgradePending: false };
                 microphoneMuted = false;
@@ -7008,6 +7121,7 @@
                     await refreshTurnCredentialsForCall();
                 }
                 currentCameraFacingMode = 'user';
+                callPrimaryView = 'remote';
                 localCallStream = await getCallMedia(data.callType);
                 activeCall = {
                     callId:data.callId, roomId:data.roomId, targetUser:data.fromUser,
@@ -7101,6 +7215,10 @@
 
         flipCameraCallBtn.addEventListener('click', function() {
             flipActiveCamera().catch(() => {});
+        });
+
+        pipCallBtn.addEventListener('click', function() {
+            toggleCallPictureInPicture().catch(() => {});
         });
 
         muteCallBtn.addEventListener('click', function() {
@@ -7303,6 +7421,10 @@
             remoteCallVideo.srcObject = null;
             remoteCallAudio.srcObject = null;
             localCallVideo.srcObject = null;
+            if (document.pictureInPictureElement) { try { document.exitPictureInPicture(); } catch (_) {} }
+            callVideos.classList.remove('video-focus-layout');
+            callPrimaryView = 'remote';
+            setPrimaryCallView('remote');
             activeCall = null;
             incomingCallData = null;
             pendingVideoUpgrade = null;
@@ -7321,7 +7443,9 @@
             audioOutputCallBtn.style.display = 'none';
             cameraCallBtn.style.display = 'none';
             flipCameraCallBtn.style.display = 'none';
+            pipCallBtn.style.display = 'none';
             endCallBtn.style.display = 'none';
+            updateCallMediaSession();
         }
 
         endCallBtn.addEventListener('click', () => endActiveCall(true));
@@ -7350,6 +7474,14 @@
 
         socket.on('message-delete-result', function(data) {
             if (data?.success === false) alert('❌ ' + (data.error || 'تعذر حذف الرسالة'));
+        });
+
+        socket.on('platform-broadcast', function(data) {
+            if (!data?.message) return;
+            const text = String(data.message.msg || '').slice(0, 180);
+            statusIndicator.textContent = text ? 'رسالة جديدة من TOMI: ' + text : 'رسالة جديدة من TOMI';
+            setTimeout(() => { if (statusIndicator.textContent.startsWith('رسالة جديدة من TOMI')) statusIndicator.textContent = ''; }, 5000);
+            loadSavedRooms();
         });
 
         socket.on('conversation-updated', function() {

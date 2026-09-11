@@ -95,3 +95,13 @@ The account's internal username remains stable in this build because current pri
 - Added an audio-output control during calls. Supporting browsers can choose/cycle speaker, earpiece, Bluetooth, or other audio outputs.
 - Added front/rear camera switching during video calls using WebRTC track replacement without ending the call.
 - Kept mute, camera on/off, audio-to-video upgrade, Cloudflare TURN, MongoDB/GridFS, and mobile upload fixes intact.
+
+## 2026-09-11 — Calls, notifications, official platform broadcast, iPad layout
+- Restored the original project color palette; new work is functional/layout-only.
+- Per-room notification mute/unmute remains stored on the server and Web Push stays supported.
+- Video calls now use a WhatsApp-like focus layout: tap remote/local video to swap large/small views.
+- Added Picture-in-Picture call minimization where the browser/OS supports it, plus Media Session integration for better background-call handling.
+- Improved audio routing by keeping remote audio on one dedicated audio element and using selectAudioOutput/setSinkId where browsers expose them; unsupported browsers fall back to the OS audio-route control without ending the call.
+- Front/back camera switching remains available during video calls.
+- Added owner-grantable `send_platform_broadcast` permission. Authorized staff can send one official TOMI message to every account; messages are persisted in each user's read-only “TOMI • حساب المنصة” conversation and also use Web Push when enabled.
+- Improved iPad/tablet sidebar sizing with dynamic viewport/safe-area handling so Logout stays reachable above Safari browser chrome.

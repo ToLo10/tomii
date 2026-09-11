@@ -509,6 +509,48 @@ function getLastActivityIso(roomId, fallbackIso = null) {
   return fallbackIso || null;
 }
 
+// Official TOMI platform inbox. It is a read-only private room created for
+// each user when the owner/staff sends a platform-wide announcement.
+function getPlatformInboxRoomId(username) {
+  const digest = crypto.createHash("sha256").update(String(username || "")).digest("hex").slice(0, 24);
+  return `private_platform_${digest}`;
+}
+
+function ensurePlatformInbox(username) {
+  if (!username || !db.users[username] || username === PLATFORM_OWNER_USERNAME) return null;
+  const roomId = getPlatformInboxRoomId(username);
+  const now = new Date().toISOString();
+
+  if (!db.privateChats[roomId]) {
+    db.privateChats[roomId] = {
+      roomId,
+      members: [PLATFORM_OWNER_USERNAME, username],
+      isPrivate: true,
+      systemRoom: true,
+      createdAt: now
+    };
+  } else {
+    db.privateChats[roomId].members = [PLATFORM_OWNER_USERNAME, username];
+    db.privateChats[roomId].isPrivate = true;
+    db.privateChats[roomId].systemRoom = true;
+  }
+
+  const room = ensurePrivateRoomDocument(roomId);
+  if (!room) return null;
+  room.roomName = "TOMI • حساب المنصة";
+  room.systemRoom = true;
+  room.readOnly = true;
+  room.platformAccount = true;
+  room.members = [PLATFORM_OWNER_USERNAME, username];
+  room.updatedAt = room.updatedAt || now;
+  if (!Array.isArray(db.roomHistory[roomId])) db.roomHistory[roomId] = [];
+  return { roomId, room };
+}
+
+function isPlatformSystemRoom(roomId) {
+  return Boolean(db.rooms?.[roomId]?.systemRoom);
+}
+
 // =========================================================
 // Platform owner, permissions, receipts, sessions & uploads
 // =========================================================
@@ -524,7 +566,8 @@ const ALL_PERMISSIONS = Object.freeze([
   "manage_room_bans",
   "delete_messages",
   "manage_backgrounds",
-  "create_special_staff_accounts"
+  "create_special_staff_accounts",
+  "send_platform_broadcast"
 ]);
 
 function normalizePermissions(list) {
@@ -1932,6 +1975,10 @@ app.post("/api/upload", uploadLimiter, requireHttpAuth, singleUpload, async (req
         safeUnlink(req.file.path);
         return res.status(403).json({ error: "لا تملك صلاحية رفع ملف لهذه المحادثة" });
       }
+      if (isPlatformSystemRoom(roomId)) {
+        safeUnlink(req.file.path);
+        return res.status(403).json({ error: "حساب المنصة مخصص لاستقبال الرسائل الرسمية فقط" });
+      }
     } else if (!["report", "avatar", "frame"].includes(context)) {
       safeUnlink(req.file.path);
       return res.status(400).json({ error: "معرّف المحادثة مطلوب" });
@@ -2303,7 +2350,29 @@ app.get("/api/my-conversations/:username", requireHttpAuth, (req, res) => {
       }
     }
 
-    // 2. Public rooms
+    // 2. Official TOMI platform inbox
+    for (const rId in db.rooms) {
+      const room = db.rooms[rId];
+      if (!room?.systemRoom || !room.isPrivate || !Array.isArray(room.members) || !room.members.includes(username)) continue;
+      const history = db.roomHistory[rId] || [];
+      const lastMsg = history.length > 0 ? history[history.length - 1] : null;
+      conversations.push({
+        roomId: rId,
+        name: "TOMI • حساب المنصة",
+        roomName: "TOMI • حساب المنصة",
+        type: "system",
+        partner: null,
+        isPrivate: true,
+        systemRoom: true,
+        isOnline: true,
+        lastMessage: lastMsg ? (lastMsg.type === "text" ? lastMsg.msg : "[ميديا]") : "رسائل رسمية من TOMI",
+        time: lastMsg ? lastMsg.time : "",
+        updatedAt: getLastActivityIso(rId, room.updatedAt || room.createdAt || null),
+        unread: 0
+      });
+    }
+
+    // 3. Public rooms
     for (const rId in db.rooms) {
       const room = db.rooms[rId];
       if (!room.isPrivate && room.members && room.members.includes(username)) {
@@ -2740,7 +2809,30 @@ io.on("connection", (socket) => {
         });
       }
 
-      // 2) Public rooms owned/joined by the user
+      // 2) Official TOMI platform inbox
+      for (const rId in db.rooms) {
+        const room = db.rooms[rId];
+        if (!room?.systemRoom || !room.isPrivate) continue;
+        const members = Array.isArray(room.members) ? room.members : [];
+        if (!members.includes(currentUser)) continue;
+        const history = db.roomHistory[rId] || [];
+        const lastMsg = history.length > 0 ? history[history.length - 1] : null;
+        userChats.push({
+          roomId: rId,
+          partner: null,
+          roomName: "TOMI • حساب المنصة",
+          type: "system",
+          isPrivate: true,
+          systemRoom: true,
+          isOnline: true,
+          isHost: false,
+          lastMessage: lastMsg ? (lastMsg.type === "text" ? lastMsg.msg : "[ميديا]") : "رسائل رسمية من TOMI",
+          time: lastMsg ? (lastMsg.time || "") : "",
+          updatedAt: getLastActivityIso(rId, room.updatedAt || room.createdAt || null)
+        });
+      }
+
+      // 3) Public rooms owned/joined by the user
       for (const rId in db.rooms) {
         const room = db.rooms[rId];
         if (!room || room.isPrivate) continue;
@@ -3131,6 +3223,8 @@ io.on("connection", (socket) => {
         shareCode: roomDoc.isPrivate ? null : (roomDoc.shareCode || rId),
         memberCount: Array.isArray(roomDoc.members) ? roomDoc.members.length : 0,
         background: roomDoc.background || null,
+        systemRoom: Boolean(roomDoc.systemRoom),
+        readOnly: Boolean(roomDoc.readOnly),
         role: userRole,
         badge: getPlatformBadge(actor),
         permissions: getUserPermissions(actor)
@@ -3545,6 +3639,10 @@ io.on("connection", (socket) => {
         socket.emit("message-rejected", { reason: "لا تملك صلاحية إرسال رسائل في هذه المحادثة." });
         return;
       }
+      if (roomDoc.systemRoom) {
+        socket.emit("message-rejected", { reason: "حساب TOMI الرسمي مخصص لاستقبال رسائل المنصة فقط." });
+        return;
+      }
 
       if (!roomDoc.isPrivate) {
         const banCheck = checkRoomBan(rId, actor);
@@ -3675,6 +3773,10 @@ io.on("connection", (socket) => {
         socket.emit("message-rejected", { reason: "لا تملك صلاحية إرسال ملفات في هذه المحادثة." });
         return;
       }
+      if (roomDoc.systemRoom) {
+        socket.emit("message-rejected", { reason: "حساب TOMI الرسمي مخصص لاستقبال رسائل المنصة فقط." });
+        return;
+      }
 
       if (!roomDoc.isPrivate) {
         const banCheck = checkRoomBan(rId, actor);
@@ -3770,6 +3872,10 @@ io.on("connection", (socket) => {
 
       if (!roomDoc || !canUserAccessRoom(rId, actor)) {
         socket.emit("message-rejected", { reason: "لا تملك صلاحية إرسال ملف في هذه المحادثة." });
+        return;
+      }
+      if (roomDoc.systemRoom) {
+        socket.emit("message-rejected", { reason: "حساب TOMI الرسمي مخصص لاستقبال رسائل المنصة فقط." });
         return;
       }
       if (!file || file.uploader !== actor || file.roomId !== rId) {
@@ -4537,9 +4643,81 @@ io.on("connection", (socket) => {
         { id: "manage_room_bans", label: "الحظر داخل الغرف" },
         { id: "delete_messages", label: "حذف الرسائل المخالفة" },
         { id: "manage_backgrounds", label: "إدارة الخلفيات" },
-        { id: "create_special_staff_accounts", label: "إنشاء حسابات مشرفين مميزة" }
+        { id: "create_special_staff_accounts", label: "إنشاء حسابات مشرفين مميزة" },
+        { id: "send_platform_broadcast", label: "إرسال رسالة لجميع مستخدمي المنصة" }
       ]
     });
+  });
+
+  // 📣 Official platform-wide broadcast. The owner can grant this permission
+  // to selected admins/moderators from the existing permissions editor.
+  socket.on("admin-send-platform-broadcast", ({ message } = {}) => {
+    const actor = socket.userId;
+    if (!actor || !(actor === PLATFORM_OWNER_USERNAME || hasPermission(actor, "send_platform_broadcast"))) {
+      socket.emit("platform-broadcast-result", { success: false, error: "لا تملك صلاحية إرسال رسائل المنصة" });
+      return;
+    }
+
+    const cleanMessage = String(message || "").trim().slice(0, 4000);
+    if (!cleanMessage) {
+      socket.emit("platform-broadcast-result", { success: false, error: "اكتب الرسالة أولاً" });
+      return;
+    }
+
+    try {
+      const createdAt = new Date().toISOString();
+      const displayTime = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      let delivered = 0;
+
+      for (const username of Object.keys(db.users)) {
+        if (!username || username === PLATFORM_OWNER_USERNAME) continue;
+        const inbox = ensurePlatformInbox(username);
+        if (!inbox) continue;
+
+        const messageData = {
+          roomId: inbox.roomId,
+          type: "text",
+          msg: cleanMessage,
+          msgId: "platform-" + Date.now() + "-" + crypto.randomBytes(6).toString("hex"),
+          userId: PLATFORM_OWNER_USERNAME,
+          username: PLATFORM_OWNER_USERNAME,
+          displayName: "TOMI",
+          platformAccount: true,
+          systemBroadcast: true,
+          sentBy: actor,
+          time: displayTime,
+          createdAt,
+          replyTo: null,
+          reactions: [],
+          deliveredTo: [{ userId: PLATFORM_OWNER_USERNAME, username: PLATFORM_OWNER_USERNAME, time: displayTime, at: createdAt }],
+          readBy: [{ userId: PLATFORM_OWNER_USERNAME, username: PLATFORM_OWNER_USERNAME, time: displayTime, at: createdAt }],
+          status: "sent"
+        };
+
+        db.roomHistory[inbox.roomId].push(messageData);
+        inbox.room.updatedAt = createdAt;
+        delivered += 1;
+
+        io.to(inbox.roomId).emit("broadcast-message", messageData);
+        io.to(`user_${username}`).emit("conversation-updated", { roomId: inbox.roomId, message: messageData });
+        io.to(`user_${username}`).emit("platform-broadcast", { roomId: inbox.roomId, message: messageData });
+
+        sendPushToUser(username, inbox.roomId, {
+          title: "TOMI • حساب المنصة",
+          body: cleanMessage.slice(0, 180),
+          url: `/room.html?roomId=${encodeURIComponent(inbox.roomId)}`,
+          tag: `platform-${messageData.msgId}`,
+          type: "message",
+          requireInteraction: false
+        }).catch(() => {});
+      }
+
+      saveDB(db);
+      socket.emit("platform-broadcast-result", { success: true, delivered, message: "تم إرسال رسالة المنصة" });
+    } catch (error) {
+      console.error("platform broadcast:", error);
+      socket.emit("platform-broadcast-result", { success: false, error: "تعذر إرسال رسالة المنصة" });
+    }
   });
 
   // 🔑 Change password for the currently authenticated account.

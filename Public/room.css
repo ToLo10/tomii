@@ -3378,48 +3378,12 @@ body {
 
 
 /* =========================================================
-   TOMI - Per-room notifications + call device controls
+   TOMI - Functional additions only (keeps the original colors)
    ========================================================= */
-.room-notification-btn {
-    position: relative;
-}
-
-.room-notification-btn.muted {
-    color: #ff8b9b !important;
-    background: rgba(255, 107, 129, 0.10) !important;
-}
-
-.room-notification-btn[aria-pressed="true"] {
-    color: #a88cff;
-}
-
-.room-notification-btn:disabled {
-    opacity: .55;
-    cursor: wait;
-}
-
-#flipCameraCallBtn,
-#audioOutputCallBtn {
-    transition: transform .18s ease, filter .18s ease, background .18s ease;
-}
-
-#flipCameraCallBtn:active,
-#audioOutputCallBtn:active {
-    transform: scale(.94);
-}
-
-@media (max-width: 430px) {
-    .call-actions {
-        gap: 7px;
-    }
-
-    .call-round-btn {
-        width: 44px;
-        height: 44px;
-        flex: 0 0 44px;
-    }
-}
-
+.room-notification-btn { position: relative; }
+.room-notification-btn.muted { opacity: .62; }
+.room-notification-btn[aria-pressed="true"] { opacity: 1; }
+.room-notification-btn:disabled { opacity: .48; cursor: wait; }
 .room-notification-btn.needs-permission::after {
     content: '';
     position: absolute;
@@ -3428,6 +3392,81 @@ body {
     width: 6px;
     height: 6px;
     border-radius: 50%;
-    background: #f7b731;
-    box-shadow: 0 0 0 2px #161522;
+    background: var(--warning);
+}
+
+/* WhatsApp-like video focus: remote video large, self preview small; tap either to swap. */
+.call-videos.video-focus-layout {
+    display: block !important;
+    position: relative;
+    min-height: min(58vh, 520px);
+    overflow: hidden;
+    border-radius: 14px;
+}
+.call-videos.video-focus-layout .call-video-wrap {
+    transition: width .2s ease, height .2s ease, inset .2s ease, transform .2s ease;
+    cursor: pointer;
+}
+.call-videos.video-focus-layout .call-video-wrap.call-primary {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    z-index: 1;
+    border-radius: 14px;
+}
+.call-videos.video-focus-layout .call-video-wrap.call-thumbnail {
+    position: absolute;
+    left: 12px;
+    bottom: 12px;
+    width: clamp(96px, 23%, 180px);
+    height: clamp(128px, 34%, 220px);
+    z-index: 3;
+    border: 1px solid var(--border-light);
+    box-shadow: var(--shadow-lg);
+    border-radius: 14px;
+}
+.call-videos.video-focus-layout .call-video-wrap video {
+    width: 100%;
+    height: 100%;
+    max-height: none;
+    object-fit: cover;
+}
+.call-view-label {
+    position: absolute;
+    inset-inline-start: 8px;
+    bottom: 7px;
+    z-index: 4;
+    padding: 3px 7px;
+    border-radius: 999px;
+    background: var(--overlay-darker);
+    color: var(--text-primary);
+    font-size: .66rem;
+    pointer-events: none;
+}
+.call-video-wrap.call-primary .call-view-label { opacity: .75; }
+#pipCallBtn, #flipCameraCallBtn, #audioOutputCallBtn { touch-action: manipulation; }
+
+/* iPad/tablet Safari: keep logout reachable above the browser bottom chrome. */
+@supports (height: 100dvh) {
+    .app-wrapper, .main-sidebar, .content-area { height: 100dvh !important; }
+}
+@media (min-width: 769px) and (max-width: 1180px) {
+    .main-sidebar {
+        padding-bottom: max(24px, calc(env(safe-area-inset-bottom) + 18px)) !important;
+    }
+    .main-sidebar .logout-section {
+        margin-top: auto !important;
+        padding-bottom: 12px !important;
+        flex-shrink: 0;
+    }
+}
+@media (max-width: 600px) {
+    .call-videos.video-focus-layout { min-height: min(52vh, 460px); }
+    .call-videos.video-focus-layout .call-video-wrap.call-thumbnail {
+        left: 9px;
+        bottom: 9px;
+        width: 100px;
+        height: 138px;
+    }
 }
