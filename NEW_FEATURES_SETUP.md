@@ -47,3 +47,32 @@ Each recipient receives the announcement in a read-only conversation named `TOMI
 - The user can resize the floating call window with +/- buttons or the corner resize grip.
 - The chosen size and position are remembered on the device and clamped back into view after orientation/viewport changes.
 - Expanding the call restores the normal full call UI without interrupting WebRTC.
+
+## تحديث 2026-09-12
+
+- استمرار المكالمة عند تبديل المحادثات داخل room.html بدون إعادة تحميل.
+- عند وجود مكالمة وفتح الرئيسية/البحث/الإعدادات يفتح TOMI الصفحة المطلوبة في تبويب آخر حتى يبقى تبويب WebRTC حياً.
+- وضع خلفية للمكالمة + Picture-in-Picture للفيديو حيث يدعمه المتصفح.
+- مشاركة الشاشة أثناء المكالمة عبر getDisplayMedia حيث يدعمه المتصفح.
+- تسجيل الفويز صار يحتوي إلغاء وإرسال صريحين، مع اختيار MP4/AAC على Safari عند توفره وWebM/Opus كبديل.
+- دعم HTTP Range لملفات GridFS والقرص لتحسين تشغيل الصوت والفيديو على Safari/iPhone/iPad.
+- تثبيت تمرير المحادثة ومنع قفز القائمة عند ظهور/اختفاء لوحة المفاتيح أو تحميل الوسائط.
+- زر القائمة الجانبية يبقى متاحاً داخل شاشة المحادثة على الهاتف.
+- إضافة صفحة الغرف الصوتية العامة مع 8 مقاعد، رمز اختياري، صورة واسم، إدارة مقاعد، مشرفين، طرد وحظر خاص بالغرفة.
+- مشرف الغرفة الصوتية لا يستطيع تنزيل مشرف آخر؛ مالك الغرفة ومالك المنصة فقط يديران رتب المشرفين.
+
+### Voice room temporary kick
+The room owner/platform owner can choose **طرد مؤقت بمدة** from a member's management sheet. The user is removed immediately and cannot re-enter until the selected duration expires. The maximum UI/server duration is 10080 minutes (7 days).
+
+
+## Stability / retention update
+- TOMI now keeps the newest 50 messages per conversation by default (`CHAT_HISTORY_LIMIT=50`).
+- Old chat attachments that are no longer referenced are deleted from GridFS/local storage automatically.
+- Abandoned chat uploads are cleaned after 6 hours.
+- A memory guard runs every 30 seconds: warning at 300 MB RSS, cleanup at 340 MB, and controlled restart only after sustained critical usage at 440 MB.
+- `/api/health` reports RSS/heap/external memory plus memory-guard status.
+- Node starts with `--expose-gc --max-old-space-size=320` to leave native-memory headroom inside a 512 MB Render instance.
+- Large media remains HTTP/GridFS streamed; Socket.IO is for messaging/signaling, not raw large files.
+
+### Recent chat/call additions
+No new environment variables are required for these additions. After deploy, test voice-note recording, unread badges, pin/unpin, screen sharing from both landscape and portrait devices, and audio-call minimization/Picture-in-Picture on the target browsers.

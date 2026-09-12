@@ -110,3 +110,53 @@ The account's internal username remains stable in this build because current pri
 - Fixed duplicate `TOMI • حساب المنصة` entries in chat history.
 - Legacy duplicate system rooms are automatically consolidated on startup.
 - Future platform-wide announcements append to one official conversation per user.
+
+
+## Voice rooms session fix
+- Fixed the voice rooms page incorrectly treating a valid `/api/session` response as logged out.
+- Voice rooms now wait for the Socket.IO connection before requesting the room list.
+- Temporary network/server errors no longer force a logout; the page retries automatically.
+- `/api/session` now also returns `authenticated: true` for backward compatibility.
+
+## Render memory stability fix
+- Reduced Socket.IO maximum inbound payload to 2 MB; files continue to use `/api/upload` streaming.
+- Disabled large legacy Base64 media messages while preserving lightweight HTTPS sticker URLs.
+- Added one-time migration of legacy Base64 chat media to MongoDB GridFS.
+- Reworked MongoDB saves so only one state write can be active/pending, removing repeated full JSON clones.
+- Reduced MongoDB pool size and serialized Telegram media copies; Telegram archive copies are capped at 4 MB by default (8 MB hard cap).
+- Chat room joins now load the latest 300 messages instead of broadcasting an unbounded history in one Socket.IO payload.
+- Added cleanup for expired sessions/TURN credential cache.
+- `/api/health` now reports RSS/heap/external memory in MB.
+- Start command uses a 384 MB V8 heap ceiling to leave room for native buffers inside a 512 MB Render instance.
+
+## Voice rooms professional redesign + temporary exclusion
+- Rebuilt the voice-room stage with an immersive professional live-room layout inspired by the supplied reference.
+- Preserved live seats, room ownership, moderators, seat locking, force mute, seat removal, room code, image/name editing, WebRTC audio, Cloudflare TURN config, MongoDB/GridFS, and the prior Render memory protections.
+- Added room sharing with direct `voice-rooms.html?room=...` links and auto-open on arrival.
+- Added local listen/headphones control and cleaner member management sheets.
+- Added owner-selected temporary room exclusion (1 minute to 7 days). Expired exclusions are removed automatically on the next join attempt.
+- Room moderators still cannot demote or manage other moderators; room owner/platform owner retain role control.
+
+## 2026-09-12 — Reliable media delivery fix
+- Fixed videos/files getting stuck at 100% after upload.
+- Chat media is now published in the same authenticated HTTP upload transaction instead of depending on a second Socket.IO step.
+- Added idempotent media publishing so retries do not create duplicate messages.
+- Kept Socket.IO publish as a compatibility fallback for already-open older clients.
+- Added clearer upload states and server-side upload error logging.
+
+## Media reliability and playback update
+- Added a second Socket.IO delivery path for media through each participant's personal user room, preventing images/files from disappearing after brief mobile reconnects.
+- Added upload idempotency by message ID so mobile retry does not duplicate messages.
+- Added client/server media type hints and legacy MP4 metadata repair for Android gallery videos that were incorrectly stored as audio.
+- Added HTTP HEAD, byte-range streaming, ETag/private browser caching, and bounded ephemeral local media cache in front of GridFS for smoother video/audio playback.
+- Upload UI now shows real progress, transferred bytes, measured upload speed, ETA, and server-save phase.
+- Added client upload queue (max 2 concurrent uploads) and captures the destination room at upload start so switching chats cannot misroute a file.
+
+## 2026-09-12 - Voice notes, unread badges, pinned messages, screen sharing & background calls
+- Added Telegram-style custom voice-note player with waveform, play/pause, seek and duration.
+- New voice notes persist lightweight waveform/duration metadata with the chat message.
+- Added per-conversation unread counters in the conversations window and in-room chat sidebar.
+- Added message pin/unpin support with a pinned-message strip (up to 10 recent pinned messages per chat).
+- Screen sharing now uses contain/full-frame rendering and signals screen-share state to the other peer so desktop/phone screens are not cropped.
+- Audio calls can use an in-page floating mini window and, on browsers that support it, a synthetic Picture-in-Picture audio-call card for background browsing/apps.
+- Preserved the existing 50-message retention, Memory Guard, GridFS media delivery, Cloudflare TURN, voice rooms and moderation features.

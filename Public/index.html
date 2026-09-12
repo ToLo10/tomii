@@ -1315,6 +1315,8 @@
                 flex-shrink: 0;
             }
         }
+
+        .chat-unread-count { min-width:26px;height:26px;padding:0 8px;border-radius:999px;background:#2ea6ff;color:#fff;font-size:.76rem;font-weight:800;display:inline-flex;align-items:center;justify-content:center;box-shadow:0 5px 16px rgba(46,166,255,.24); }
 </style>
 </head>
 
@@ -1346,6 +1348,10 @@
                 <a href="#" id="navChatMenu" class="nav-item">
                     <i class="fa-solid fa-comment-dots"></i>
                     <span>نافذة الدردشة</span>
+                </a>
+                <a href="voice-rooms.html" id="navVoiceRooms" class="nav-item">
+                    <i class="fa-solid fa-microphone-lines"></i>
+                    <span>الغرف الصوتية</span>
                 </a>
                 <a href="#" id="navFriends" class="nav-item">
                     <i class="fa-solid fa-user-group"></i>
@@ -2165,6 +2171,17 @@
             loadAdminData();
         });
 
+
+        function openRequestedSectionFromUrl() {
+            const requested = new URLSearchParams(window.location.search).get('section');
+            if (requested === 'search') navSearch?.click();
+            else if (requested === 'requests') navRequests?.click();
+            else if (requested === 'friends') navFriends?.click();
+            else if (requested === 'chats') navChatMenu?.click();
+            else if (requested === 'admin' && canOpenAdmin()) navAdmin?.click();
+            else navHome?.click();
+        }
+
         // ===== Session/bootstrap =====
         async function bootstrap() {
             const ok = await ensureHttpSession();
@@ -2191,6 +2208,7 @@
             }
             applyIdentity(data);
             refreshData();
+            setTimeout(openRequestedSectionFromUrl, 0);
         });
 
         socket.on('platform-banned', data => {
@@ -2553,7 +2571,8 @@
                 isHost: !!chat.isHost,
                 memberCount: Number(chat.memberCount || 0),
                 maxUsers: Number(chat.maxUsers || 24),
-                updatedAt: chat.updatedAt || null
+                updatedAt: chat.updatedAt || null,
+                unread: Math.max(0, Number(chat.unread || 0) || 0)
             };
         }
 
@@ -2621,6 +2640,14 @@
 
                 const meta = document.createElement('div');
                 meta.className = 'chat-history-meta';
+
+                if (chat.unread > 0) {
+                    const unread = document.createElement('span');
+                    unread.className = 'chat-unread-count';
+                    unread.textContent = chat.unread > 99 ? '99+' : String(chat.unread);
+                    unread.title = `${chat.unread} رسالة غير مقروءة`;
+                    meta.appendChild(unread);
+                }
 
                 const typeBadge = document.createElement('span');
                 typeBadge.className = `chat-type-badge ${chat.isPrivate ? 'private' : 'public'}`;
@@ -2892,6 +2919,10 @@
             const msg = String(data?.message?.msg || '').slice(0, 120);
             showToast(msg ? `TOMI: ${msg}` : 'وصلتك رسالة جديدة من TOMI.');
             refreshData();
+        });
+
+        socket.on('conversation-updated', () => {
+            socket.emit('get_my_chats', savedUsername);
         });
 
         // ===== Admin dashboard =====

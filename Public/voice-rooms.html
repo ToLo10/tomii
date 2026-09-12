@@ -1,0 +1,538 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#0f0e19">
+  <title>TOMI - الغرف الصوتية</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
+  <link rel="stylesheet" href="voice-rooms.css">
+</head>
+<body>
+  <div class="app-shell">
+    <div id="sidebarOverlay" class="sidebar-overlay"></div>
+    <aside class="sidebar" id="sidebar">
+      <div class="brand"><i class="fa-solid fa-comments"></i><strong>TOMI</strong></div>
+      <nav>
+        <a href="index.html"><i class="fa-solid fa-house"></i><span>الرئيسية</span></a>
+        <a href="index.html"><i class="fa-solid fa-magnifying-glass"></i><span>البحث عن أشخاص</span></a>
+        <a href="room.html"><i class="fa-solid fa-comment-dots"></i><span>نافذة الدردشة</span></a>
+        <a href="voice-rooms.html" class="active"><i class="fa-solid fa-microphone-lines"></i><span>الغرف الصوتية</span></a>
+        <a href="settings.html"><i class="fa-solid fa-gear"></i><span>الإعدادات</span></a>
+      </nav>
+      <button id="logoutBtn" class="logout"><i class="fa-solid fa-right-from-bracket"></i> تسجيل خروج</button>
+    </aside>
+
+    <main class="main">
+      <section id="roomsSection" class="rooms-home">
+        <header class="topbar">
+          <button id="menuBtn" class="icon-btn"><i class="fa-solid fa-bars"></i></button>
+          <div class="heading-block">
+            <span class="eyebrow"><i class="fa-solid fa-wave-square"></i> TOMI LIVE</span>
+            <h1>الغرف الصوتية</h1>
+            <p>غرف عامة مباشرة لكل مستخدمي TOMI</p>
+          </div>
+          <button id="createRoomBtn" class="primary"><i class="fa-solid fa-plus"></i> إنشاء غرفة</button>
+        </header>
+
+        <div class="rooms-intro">
+          <div>
+            <span class="live-dot"></span>
+            <strong>ادخل، اسمع، أو خذ مقعد واحچي</strong>
+            <p>الغرف تظهر لكل المستخدمين مباشرة، ويمكن حماية الغرفة برمز دخول.</p>
+          </div>
+          <i class="fa-solid fa-headphones-simple"></i>
+        </div>
+
+        <div id="roomsGrid" class="rooms-grid">
+          <div class="loading"><i class="fa-solid fa-spinner fa-spin"></i> جاري تحميل الغرف...</div>
+        </div>
+      </section>
+
+      <section id="roomStage" class="room-stage hidden">
+        <div class="voice-experience" id="voiceExperience">
+          <div class="ambient ambient-one"></div>
+          <div class="ambient ambient-two"></div>
+          <div class="ambient ambient-three"></div>
+
+          <header class="voice-room-top">
+            <div class="voice-brand">TOMI <i class="fa-solid fa-comments"></i></div>
+            <button id="listenersPill" class="top-pill live-pill" type="button">
+              <span class="live-dot"></span><span>مباشر</span><span class="pill-divider"></span>
+              <i class="fa-solid fa-user-group"></i><strong id="liveMemberCount">0</strong>
+            </button>
+            <div class="top-pill room-name-pill"><i class="fa-solid fa-headphones-simple"></i><span id="roomName">غرفة صوتية</span></div>
+            <button id="shareRoomBtn" class="top-action" title="مشاركة الغرفة"><i class="fa-solid fa-share-nodes"></i></button>
+            <button id="roomSettingsBtn" class="top-action hidden" title="إدارة الغرفة"><i class="fa-solid fa-gear"></i></button>
+            <button id="backRoomsBtn" class="top-action" title="الرجوع للغرف"><i class="fa-solid fa-arrow-left"></i></button>
+          </header>
+
+          <div class="room-status-line" id="roomMeta"></div>
+
+          <div class="seat-area">
+            <div id="seatGrid" class="seat-grid"></div>
+            <button id="takeSeatBtn" class="seat-shortcut"><i class="fa-solid fa-chair"></i> خذ أول مقعد متاح</button>
+            <button id="leaveSeatBtn" class="seat-shortcut leave-seat hidden"><i class="fa-solid fa-arrow-down"></i> اترك المقعد وابقَ مستمعاً</button>
+          </div>
+
+          <section class="room-info-grid">
+            <article class="room-rules-card glass-card">
+              <div class="card-title"><i class="fa-solid fa-shield-heart"></i><strong>قوانين الغرفة</strong></div>
+              <div class="rule-row"><span class="rule-icon"><i class="fa-solid fa-heart"></i></span><div><strong>الاحترام أولاً</strong><small>نحترم الجميع ونتقبل الآراء</small></div></div>
+              <div class="rule-row"><span class="rule-icon"><i class="fa-solid fa-volume-xmark"></i></span><div><strong>ممنوع الإزعاج</strong><small>لا للتشاتم أو أي سلوك مزعج</small></div></div>
+              <div class="rule-row"><span class="rule-icon"><i class="fa-solid fa-people-group"></i></span><div><strong>استمتعوا بوقتكم</strong><small>جلسة صوتية جميلة للجميع</small></div></div>
+            </article>
+
+            <article class="invite-card glass-card">
+              <button id="inviteFriendsBtn" class="invite-big"><i class="fa-solid fa-user-plus"></i> دعوة الأصدقاء</button>
+              <div class="listeners-summary">
+                <span>المستمعون (<strong id="listenersCount">0</strong>)</span>
+                <div id="listenerAvatars" class="listener-avatars"></div>
+              </div>
+              <button id="openMembersBtn" class="listening-now"><i class="fa-solid fa-wave-square"></i><span>عرض الموجودين الآن</span><i class="fa-solid fa-chevron-left"></i></button>
+            </article>
+          </section>
+
+          <div id="remoteAudios" aria-hidden="true"></div>
+        </div>
+
+        <nav class="voice-toolbar" aria-label="أدوات الغرفة الصوتية">
+          <button id="openChatBtn" class="toolbar-item" type="button"><span class="tool-icon"><i class="fa-regular fa-comment"></i></span><small>الدردشة</small></button>
+          <button id="toolbarInviteBtn" class="toolbar-item" type="button"><span class="tool-icon"><i class="fa-solid fa-user-plus"></i></span><small>دعوة</small></button>
+          <button id="myMicBtn" class="toolbar-item mic-tool muted" type="button" disabled><span class="tool-icon"><i class="fa-solid fa-microphone-slash"></i></span><small>الميكروفون</small></button>
+          <button id="listenToggleBtn" class="toolbar-item" type="button"><span class="tool-icon"><i class="fa-solid fa-headphones"></i></span><small>سماعات</small></button>
+          <button id="leaveRoomBtn" class="toolbar-item leave-tool" type="button"><span class="tool-icon"><i class="fa-solid fa-phone-slash"></i></span><small>مغادرة الغرفة</small></button>
+        </nav>
+      </section>
+    </main>
+  </div>
+
+  <div id="createModal" class="modal hidden">
+    <div class="modal-box">
+      <button class="modal-close" data-close="createModal">✕</button>
+      <span class="modal-kicker"><i class="fa-solid fa-microphone-lines"></i> غرفة جديدة</span>
+      <h3>إنشاء غرفة صوتية</h3>
+      <label>اسم الغرفة<input id="createName" maxlength="60" placeholder="مثلاً: سوالف الليل"></label>
+      <label>رمز الدخول (اختياري)<input id="createCode" maxlength="40" placeholder="اتركه فارغاً لتكون مفتوحة"></label>
+      <button id="createConfirmBtn" class="primary full">إنشاء الغرفة</button>
+    </div>
+  </div>
+
+  <div id="settingsModal" class="modal hidden">
+    <div class="modal-box">
+      <button class="modal-close" data-close="settingsModal">✕</button>
+      <span class="modal-kicker"><i class="fa-solid fa-gear"></i> الإدارة</span>
+      <h3>إدارة الغرفة الصوتية</h3>
+      <label>اسم الغرفة<input id="editRoomName" maxlength="60"></label>
+      <label>رمز جديد (اتركه فارغاً بدون تغيير)<input id="editRoomCode" maxlength="40"></label>
+      <div class="row"><button id="saveRoomSettings" class="primary">حفظ</button><button id="clearRoomCode" class="secondary">إزالة الرمز</button></div>
+      <label class="upload-label"><i class="fa-regular fa-image"></i> تغيير صورة الغرفة<input id="roomImageInput" type="file" accept="image/*"></label>
+      <button id="deleteVoiceRoom" class="danger full">حذف الغرفة</button>
+    </div>
+  </div>
+
+  <div id="membersModal" class="modal hidden">
+    <div class="modal-box members-modal-box">
+      <button class="modal-close" data-close="membersModal">✕</button>
+      <span class="modal-kicker"><i class="fa-solid fa-users"></i> الغرفة الآن</span>
+      <h3>الموجودون في الغرفة</h3>
+      <div id="membersList" class="members-list"></div>
+    </div>
+  </div>
+
+  <div id="memberActionModal" class="modal bottom-sheet-modal hidden">
+    <div class="modal-box action-sheet">
+      <button class="modal-close" data-close="memberActionModal">✕</button>
+      <div class="member-action-head">
+        <div id="actionAvatar" class="action-avatar"></div>
+        <div><strong id="actionDisplayName">مستخدم</strong><small id="actionUsername"></small></div>
+      </div>
+      <div class="action-list">
+        <button id="actionMuteBtn"><i class="fa-solid fa-microphone-slash"></i><span>كتم الصوت</span></button>
+        <button id="actionRemoveSeatBtn"><i class="fa-solid fa-chair"></i><span>إزالة من المقعد</span></button>
+        <button id="actionLockSeatBtn"><i class="fa-solid fa-lock"></i><span>إغلاق المقعد وإزالة المستخدم</span></button>
+        <button id="actionRoleBtn"><i class="fa-solid fa-user-shield"></i><span>ترقية إلى مشرف</span></button>
+        <button id="actionKickBtn"><i class="fa-solid fa-person-walking-arrow-right"></i><span>طرد من الغرفة</span></button>
+        <button id="actionTempKickBtn"><i class="fa-solid fa-clock"></i><span>طرد مؤقت بمدة</span></button>
+        <button id="actionBanBtn" class="danger-row"><i class="fa-solid fa-ban"></i><span>حظر دائم من الغرفة</span></button>
+      </div>
+    </div>
+  </div>
+
+  <div id="tempKickModal" class="modal hidden">
+    <div class="modal-box">
+      <button class="modal-close" data-close="tempKickModal">✕</button>
+      <span class="modal-kicker"><i class="fa-solid fa-clock"></i> طرد مؤقت</span>
+      <h3>حدد مدة منع الدخول</h3>
+      <p class="modal-note">بعد انتهاء المدة يگدر المستخدم يدخل الغرفة من جديد تلقائياً.</p>
+      <label>المدة بالدقائق<input id="tempKickMinutes" type="number" min="1" max="10080" value="30" inputmode="numeric"></label>
+      <div class="duration-presets">
+        <button type="button" data-minutes="5">5 د</button>
+        <button type="button" data-minutes="30">30 د</button>
+        <button type="button" data-minutes="60">ساعة</button>
+        <button type="button" data-minutes="1440">يوم</button>
+      </div>
+      <button id="confirmTempKickBtn" class="danger full">تأكيد الطرد المؤقت</button>
+    </div>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+  (() => {
+    const $ = id => document.getElementById(id);
+    const socket = io({ autoConnect:false, reconnection:true, reconnectionAttempts:Infinity });
+    let me = null;
+    let clientConfig = {};
+    let rooms = [];
+    let currentRoom = null;
+    let currentState = null;
+    let localMicStream = null;
+    let serverMuted = false;
+    let listeningEnabled = true;
+    let selectedMember = null;
+    let pendingAutoJoin = new URLSearchParams(location.search).get('room') || '';
+    let autoJoinAttempted = false;
+    const peers = new Map();
+
+    const escapeHTML = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    const isStaff = () => currentState && me && (me.username === currentState.owner || currentState.moderators?.includes(me.username) || me.username === 'tomi');
+    const isOwner = () => currentState && me && (me.username === currentState.owner || me.username === 'tomi');
+    const mySeat = () => currentState?.seats?.find(s => s.username === me?.username) || null;
+    const profileFor = username => currentState?.memberProfiles?.find(p => p.username === username) || {username, displayName: username, avatar: ''};
+    const canActOn = username => {
+      if(!isStaff() || !username || username === me?.username) return false;
+      if(isOwner()) return username !== currentState?.owner || me?.username === 'tomi';
+      return username !== currentState?.owner && !currentState?.moderators?.includes(username);
+    };
+
+    function initials(name){
+      const text=String(name||'T').trim();
+      return (text.split(/\s+/).slice(0,2).map(x=>x[0]).join('') || 'T').toUpperCase();
+    }
+    function avatarMarkup(profile, className=''){
+      const name=profile?.displayName||profile?.username||'TOMI';
+      if(profile?.avatar) return `<img class="${className}" src="${escapeHTML(profile.avatar)}" alt="${escapeHTML(name)}">`;
+      return `<span class="avatar-fallback ${className}">${escapeHTML(initials(name))}</span>`;
+    }
+
+    function showRoomsStatus(message, isError = false){
+      const grid = $('roomsGrid');
+      if (!grid) return;
+      grid.innerHTML = `<div class="${isError ? 'empty' : 'loading'}">${isError ? '<i class="fa-solid fa-triangle-exclamation"></i>' : '<i class="fa-solid fa-spinner fa-spin"></i>'}<strong>${escapeHTML(message)}</strong>${isError ? '<span>راح نحاول نعيد الاتصال تلقائياً.</span>' : ''}</div>`;
+    }
+
+    async function fetchSession(){
+      try{
+        const response = await fetch('/api/session', { method:'GET', credentials:'same-origin', cache:'no-store' });
+        if(response.status === 401 || response.status === 403){ location.replace('login.html'); return null; }
+        if(!response.ok) throw new Error('session-http-' + response.status);
+        const data = await response.json();
+        if(!data?.username) throw new Error('session-invalid-payload');
+        return data;
+      }catch(err){ console.warn('Voice rooms session check failed:', err); return undefined; }
+    }
+
+    async function bootstrap(){
+      showRoomsStatus('جاري التحقق من الحساب...');
+      let session = await fetchSession();
+      if(session === undefined){
+        for(let i=0; i<2 && session === undefined; i++){
+          await new Promise(resolve => setTimeout(resolve, 900 * (i + 1)));
+          session = await fetchSession();
+        }
+      }
+      if(session == null) return;
+      if(session === undefined){ showRoomsStatus('تعذر الاتصال بالخادم مؤقتاً', true); setTimeout(bootstrap, 2500); return; }
+      me = session;
+      clientConfig = await fetch('/api/client-config',{credentials:'same-origin',cache:'no-store'}).then(r=>r.ok?r.json():({})).catch(()=>({}));
+      if(!socket.connected) socket.connect(); else refreshRooms();
+    }
+
+    function refreshRooms(){
+      if(!me) return;
+      if(!socket.connected){ showRoomsStatus('جاري الاتصال بالخادم...'); return; }
+      socket.emit('voice-rooms-get');
+    }
+
+    socket.on('connect', () => { if(me) refreshRooms(); });
+    socket.on('connect_error', err => { console.warn('Voice rooms socket connection failed:', err?.message || err); if(me) showRoomsStatus('تعذر الاتصال بالغرف الصوتية مؤقتاً', true); });
+    socket.on('disconnect', reason => { if(me && reason !== 'io client disconnect' && !currentRoom) showRoomsStatus('انقطع الاتصال، جاري إعادة الربط...', false); });
+    socket.on('voice-rooms-list', data => {
+      rooms = Array.isArray(data)?data:[];
+      renderRooms();
+      if(pendingAutoJoin && !autoJoinAttempted && !currentRoom){
+        const target=rooms.find(r=>r.id===pendingAutoJoin);
+        if(target){ autoJoinAttempted=true; joinRoom(target); }
+      }
+    });
+
+    function renderRooms(){
+      const grid=$('roomsGrid'); grid.innerHTML='';
+      if(!rooms.length){ grid.innerHTML='<div class="empty"><i class="fa-solid fa-microphone-slash"></i><strong>ماكو غرف صوتية حالياً</strong><span>أنشئ أول غرفة وابدأ الحديث</span></div>'; return; }
+      rooms.forEach(r=>{
+        const card=document.createElement('button'); card.className='room-card';
+        const img=r.image?`<img src="${escapeHTML(r.image)}" alt="">`:`<div class="room-placeholder"><i class="fa-solid fa-microphone-lines"></i></div>`;
+        card.innerHTML=`<div class="room-card-glow"></div>${img}<div class="room-card-info"><div class="room-card-title"><strong>${escapeHTML(r.name)}</strong>${r.protected?'<i class="fa-solid fa-lock"></i>':''}</div><span><span class="live-dot"></span>${r.memberCount||0} موجود الآن</span><small>${r.protected?'غرفة محمية برمز':'غرفة عامة للجميع'}</small></div><span class="join-arrow"><i class="fa-solid fa-chevron-left"></i></span>`;
+        card.onclick=()=>joinRoom(r); grid.appendChild(card);
+      });
+    }
+
+    function joinRoom(r){
+      let code='';
+      if(r.protected && me.username!==r.owner && me.username!=='tomi') code=prompt('هذه الغرفة محمية. أدخل الرمز:')||'';
+      socket.emit('voice-room-join',{roomId:r.id,code},res=>{
+        if(!res?.success){ alert(res?.error||'تعذر الدخول'); return; }
+        currentRoom=r.id; currentState=res.room; pendingAutoJoin='';
+        $('roomsSection').classList.add('hidden'); $('roomStage').classList.remove('hidden'); document.body.classList.add('in-voice-room');
+        history.replaceState(null,'',`voice-rooms.html?room=${encodeURIComponent(r.id)}`);
+        renderState();
+        (res.peers||[]).forEach(peer=>ensurePeer(peer, me.username.localeCompare(peer)<0));
+      });
+    }
+
+    socket.on('voice-room-state', state=>{
+      if(!state || state.id!==currentRoom) return;
+      currentState=state; renderState();
+      (state.members||[]).filter(u=>u!==me.username).forEach(u=>ensurePeer(u,false));
+      for(const p of [...peers.keys()]) if(!(state.members||[]).includes(p)) closePeer(p);
+      syncLocalSeatMedia();
+    });
+    socket.on('voice-room-peer-joined', d=>{ if(d.roomId===currentRoom && d.username!==me.username) ensurePeer(d.username, me.username.localeCompare(d.username)<0); });
+    socket.on('voice-room-peer-left', d=>{ if(d.roomId===currentRoom) closePeer(d.username); });
+    socket.on('voice-room-kicked', d=>{
+      if(d.roomId!==currentRoom) return;
+      let message='تم طردك من الغرفة';
+      if(d.temporary) message=`تم طردك مؤقتاً من الغرفة لمدة ${d.durationMinutes||''} دقيقة`;
+      else if(d.banned) message='تم حظرك من هذه الغرفة';
+      alert(message); leaveRoom(true);
+    });
+    socket.on('voice-room-deleted', d=>{ if(d.roomId===currentRoom){alert('تم حذف الغرفة');leaveRoom(true);} });
+    socket.on('voice-room-seat-removed', d=>{ if(d.roomId===currentRoom){ stopMic(); alert(d.reason||'تمت إزالتك من المقعد'); } });
+    socket.on('voice-room-force-mute', d=>{
+      if(d.roomId!==currentRoom) return; serverMuted=Boolean(d.muted);
+      if(localMicStream) localMicStream.getAudioTracks().forEach(t=>t.enabled=!serverMuted);
+      updateMicButton();
+    });
+
+    function renderState(){
+      if(!currentState) return;
+      $('roomName').textContent=currentState.name;
+      $('liveMemberCount').textContent=currentState.memberCount||0;
+      $('listenersCount').textContent=currentState.memberCount||0;
+      $('roomMeta').textContent=`المالك: ${currentState.owner}${currentState.protected?' • غرفة محمية برمز':''}`;
+      $('roomSettingsBtn').classList.toggle('hidden',!isStaff());
+      $('editRoomName').value=currentState.name||'';
+      const bg=currentState.image ? `url("${String(currentState.image).replace(/"/g,'\\"')}")` : 'none';
+      $('voiceExperience').style.setProperty('--room-bg-image',bg);
+      renderSeats(); renderMembers(); renderListenerAvatars(); updateMicButton(); updateListeningButton();
+    }
+
+    function sortedSeats(){
+      const arr=[...(currentState?.seats||[])];
+      return arr.sort((a,b)=>{
+        const wa=a.role==='owner'?0:a.username?1:2;
+        const wb=b.role==='owner'?0:b.username?1:2;
+        return wa-wb || a.seat-b.seat;
+      });
+    }
+
+    function renderSeats(){
+      const host=$('seatGrid'); host.innerHTML='';
+      sortedSeats().forEach((s,index)=>{
+        const box=document.createElement('div');
+        const isHost=s.role==='owner' && s.username;
+        box.className='seat '+(s.locked?'locked ':'')+(s.username?'occupied ':'')+(isHost?'owner-seat ':'');
+        box.dataset.seat=String(s.seat);
+        const profile=s.username?profileFor(s.username):null;
+        const avatar=s.username ? avatarMarkup({...(profile||{}),avatar:s.avatar||profile?.avatar,displayName:s.displayName||profile?.displayName,username:s.username},'seat-avatar-img') : `<div class="seat-plus">${s.locked?'<i class="fa-solid fa-lock"></i>':'<i class="fa-solid fa-plus"></i>'}</div>`;
+        const waveform=s.username && !s.muted ? '<span class="waveform"><i></i><i></i><i></i><i></i><i></i></span>' : '';
+        const crown=s.role==='owner'?'<span class="crown"><i class="fa-solid fa-crown"></i></span>':'';
+        const micBadge=s.username?`<span class="mic-badge ${s.muted?'off':''}"><i class="fa-solid ${s.muted?'fa-microphone-slash':'fa-microphone'}"></i></span>`:'';
+        const roleLabel=s.role==='owner'?'المالك':s.role==='moderator'?'مشرف':'';
+        box.innerHTML=`<div class="seat-visual">${crown}${avatar}${waveform}${micBadge}</div><strong>${s.username?escapeHTML(s.displayName||s.username):s.locked?'مقعد مغلق':'مقعد فارغ'}</strong>${roleLabel?`<span class="seat-role">${roleLabel}</span>`:''}`;
+        if(!s.username && !s.locked) box.onclick=()=>takeSeat(s.seat);
+        if(isStaff()){
+          const manage=document.createElement('button'); manage.className='seat-manage'; manage.innerHTML='<i class="fa-solid fa-ellipsis"></i>';
+          manage.title=s.username?'إدارة العضو':s.locked?'فتح المقعد':'قفل المقعد';
+          manage.onclick=e=>{
+            e.stopPropagation();
+            if(s.username) openMemberActions(s.username,s.seat);
+            else seatAction(s.seat,s.locked?'unlock':'lock');
+          };
+          box.appendChild(manage);
+        }
+        host.appendChild(box);
+      });
+    }
+
+    function renderListenerAvatars(){
+      const host=$('listenerAvatars'); host.innerHTML='';
+      const profiles=currentState?.memberProfiles||[];
+      profiles.slice(0,5).forEach(p=>{
+        const wrap=document.createElement('span'); wrap.className='listener-avatar'; wrap.innerHTML=avatarMarkup(p,'listener-avatar-img'); wrap.title=p.displayName||p.username; host.appendChild(wrap);
+      });
+      if(profiles.length>5){ const more=document.createElement('span'); more.className='listener-avatar more'; more.textContent=`+${profiles.length-5}`; host.appendChild(more); }
+    }
+
+    function renderMembers(){
+      const list=$('membersList'); list.innerHTML='';
+      const profiles=currentState?.memberProfiles?.length ? currentState.memberProfiles : (currentState?.members||[]).map(username=>profileFor(username));
+      profiles.forEach(p=>{
+        const username=p.username;
+        const row=document.createElement('div'); row.className='member-row';
+        const role=username===currentState.owner?'مالك':currentState.moderators?.includes(username)?'مشرف':'مستمع';
+        row.innerHTML=`<div class="member-profile">${avatarMarkup(p,'member-avatar')}<div><strong>${escapeHTML(p.displayName||username)}</strong><span>@${escapeHTML(username)} • ${role}</span></div></div>`;
+        if(canActOn(username)){
+          const action=document.createElement('button'); action.className='member-more'; action.innerHTML='<i class="fa-solid fa-ellipsis-vertical"></i>'; action.onclick=()=>openMemberActions(username,currentState?.seats?.find(s=>s.username===username)?.seat||null); row.appendChild(action);
+        }
+        list.appendChild(row);
+      });
+    }
+
+    function openMemberActions(username,seatNo){
+      if(!canActOn(username)) return;
+      const profile=profileFor(username); const seat=currentState?.seats?.find(s=>s.username===username)||null;
+      selectedMember={username,seat:seatNo||seat?.seat||null,muted:Boolean(seat?.muted),isModerator:currentState?.moderators?.includes(username)};
+      $('actionAvatar').innerHTML=avatarMarkup(profile,'action-avatar-img');
+      $('actionDisplayName').textContent=profile.displayName||username; $('actionUsername').textContent='@'+username;
+      $('actionMuteBtn').classList.toggle('hidden',!selectedMember.seat);
+      $('actionMuteBtn').querySelector('span').textContent=selectedMember.muted?'فتح المايك':'كتم الصوت';
+      $('actionMuteBtn').querySelector('i').className=`fa-solid ${selectedMember.muted?'fa-microphone':'fa-microphone-slash'}`;
+      $('actionRemoveSeatBtn').classList.toggle('hidden',!selectedMember.seat);
+      $('actionLockSeatBtn').classList.toggle('hidden',!selectedMember.seat);
+      $('actionRoleBtn').classList.toggle('hidden',!isOwner() || username===currentState.owner);
+      $('actionRoleBtn').querySelector('span').textContent=selectedMember.isModerator?'تنزيل من مشرف':'ترقية إلى مشرف';
+      $('actionTempKickBtn').classList.toggle('hidden',!isOwner());
+      $('memberActionModal').classList.remove('hidden');
+    }
+
+    function closeMemberActions(){ $('memberActionModal').classList.add('hidden'); }
+
+    function takeSeat(seat){
+      socket.emit('voice-room-take-seat',{roomId:currentRoom,seat},async res=>{
+        if(!res?.success){alert(res?.error||'تعذر أخذ المقعد');return;}
+        try{await startMic();}catch(e){socket.emit('voice-room-leave-seat',{roomId:currentRoom});alert('لازم تسمح للمايكروفون حتى تجلس على المقعد');}
+      });
+    }
+    $('takeSeatBtn').onclick=()=>takeSeat(0);
+    $('leaveSeatBtn').onclick=()=>socket.emit('voice-room-leave-seat',{roomId:currentRoom},()=>stopMic());
+
+    async function startMic(){
+      if(localMicStream) return localMicStream;
+      localMicStream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true},video:false});
+      serverMuted=false; await updateOutgoingTracks(); updateMicButton(); return localMicStream;
+    }
+    function stopMic(){ localMicStream?.getTracks().forEach(t=>t.stop()); localMicStream=null; serverMuted=false; updateOutgoingTracks(); updateMicButton(); }
+    async function syncLocalSeatMedia(){
+      const seated=Boolean(mySeat());
+      if(!seated && localMicStream) stopMic();
+      $('takeSeatBtn').classList.toggle('hidden',seated);
+      $('leaveSeatBtn').classList.toggle('hidden',!seated);
+      $('myMicBtn').disabled=!seated;
+    }
+    function updateMicButton(){
+      const t=localMicStream?.getAudioTracks?.()[0]; const on=Boolean(t?.enabled && !serverMuted);
+      $('myMicBtn').classList.toggle('muted',!on); $('myMicBtn').classList.toggle('active',on);
+      $('myMicBtn').querySelector('.tool-icon').innerHTML=`<i class="fa-solid ${on?'fa-microphone':'fa-microphone-slash'}"></i>`;
+      $('myMicBtn').querySelector('small').textContent=serverMuted?'مكتوم من الإدارة':on?'الميكروفون':'الميكروفون مغلق';
+    }
+    $('myMicBtn').onclick=()=>{
+      const t=localMicStream?.getAudioTracks?.()[0];
+      if(!t){ if(!mySeat()) takeSeat(0); return; }
+      if(serverMuted){alert('تم كتمك بواسطة إدارة الغرفة');return;}
+      t.enabled=!t.enabled; updateMicButton();
+    };
+
+    function setRemoteAudioEnabled(enabled){
+      listeningEnabled=Boolean(enabled);
+      document.querySelectorAll('#remoteAudios audio').forEach(a=>a.muted=!listeningEnabled);
+      updateListeningButton();
+    }
+    function updateListeningButton(){
+      $('listenToggleBtn').classList.toggle('muted',!listeningEnabled);
+      $('listenToggleBtn').querySelector('.tool-icon').innerHTML=`<i class="fa-solid ${listeningEnabled?'fa-headphones':'fa-volume-xmark'}"></i>`;
+      $('listenToggleBtn').querySelector('small').textContent=listeningEnabled?'سماعات':'الصوت مكتوم';
+    }
+    $('listenToggleBtn').onclick=()=>setRemoteAudioEnabled(!listeningEnabled);
+
+    function seatAction(seat,action){ socket.emit('voice-room-seat-control',{roomId:currentRoom,seat,action},r=>{ if(!r?.success)alert(r?.error||'تعذر التنفيذ'); else closeMemberActions(); }); }
+    function roleAction(targetUser,action){ socket.emit('voice-room-role',{roomId:currentRoom,targetUser,action},r=>{ if(!r?.success)alert(r?.error||'تعذر التنفيذ'); else closeMemberActions(); }); }
+    function kickUser(targetUser,{ban=false,tempMinutes=0}={}){
+      if(ban&&!confirm('حظر هذا المستخدم من هذه الغرفة فقط بشكل دائم؟'))return;
+      socket.emit('voice-room-kick',{roomId:currentRoom,targetUser,ban,tempMinutes},r=>{ if(!r?.success)alert(r?.error||'تعذر التنفيذ'); else { closeMemberActions(); $('tempKickModal').classList.add('hidden'); } });
+    }
+
+    $('actionMuteBtn').onclick=()=>{ if(selectedMember?.seat) seatAction(selectedMember.seat,selectedMember.muted?'unmute':'mute'); };
+    $('actionRemoveSeatBtn').onclick=()=>{ if(selectedMember?.seat) seatAction(selectedMember.seat,'remove'); };
+    $('actionLockSeatBtn').onclick=()=>{ if(selectedMember?.seat && confirm('إغلاق هذا المقعد وإزالة المستخدم منه؟')) seatAction(selectedMember.seat,'lock'); };
+    $('actionRoleBtn').onclick=()=>{ if(selectedMember) roleAction(selectedMember.username,selectedMember.isModerator?'demote':'promote'); };
+    $('actionKickBtn').onclick=()=>{ if(selectedMember && confirm('طرد هذا المستخدم من الغرفة الآن؟ يگدر يرجع بعدها.')) kickUser(selectedMember.username); };
+    $('actionBanBtn').onclick=()=>{ if(selectedMember) kickUser(selectedMember.username,{ban:true}); };
+    $('actionTempKickBtn').onclick=()=>{ if(!selectedMember)return; closeMemberActions(); $('tempKickModal').classList.remove('hidden'); $('tempKickMinutes').focus(); };
+    $('confirmTempKickBtn').onclick=()=>{
+      if(!selectedMember)return; const minutes=Math.floor(Number($('tempKickMinutes').value||0));
+      if(!Number.isFinite(minutes)||minutes<1||minutes>10080){alert('اختر مدة بين دقيقة و 10080 دقيقة (7 أيام)');return;}
+      if(confirm(`طرد ${selectedMember.username} ومنعه من الرجوع لمدة ${minutes} دقيقة؟`)) kickUser(selectedMember.username,{tempMinutes:minutes});
+    };
+    document.querySelectorAll('[data-minutes]').forEach(b=>b.onclick=()=>{$('tempKickMinutes').value=b.dataset.minutes});
+
+    // WebRTC mesh for room audio
+    function makePc(peer){
+      const pc=new RTCPeerConnection({iceServers:clientConfig?.webrtc?.iceServers||[{urls:'stun:stun.l.google.com:19302'}]});
+      const transceiver=pc.addTransceiver('audio',{direction:localMicStream?'sendrecv':'recvonly'});
+      if(localMicStream?.getAudioTracks()[0]) transceiver.sender.replaceTrack(localMicStream.getAudioTracks()[0]).catch(()=>{});
+      pc.onicecandidate=e=>{if(e.candidate)socket.emit('voice-room-webrtc-ice',{roomId:currentRoom,targetUser:peer,candidate:e.candidate});};
+      pc.ontrack=e=>{
+        let a=document.getElementById('voice-audio-'+CSS.escape(peer));
+        if(!a){a=document.createElement('audio');a.id='voice-audio-'+peer;a.autoplay=true;a.playsInline=true;a.muted=!listeningEnabled;$('remoteAudios').appendChild(a);}
+        a.srcObject=e.streams[0]||new MediaStream([e.track]); a.play().catch(()=>{});
+      };
+      pc.onconnectionstatechange=()=>{if(['failed','closed'].includes(pc.connectionState))closePeer(peer);};
+      peers.set(peer,{pc,transceiver,makingOffer:false,ignoreOffer:false,polite:me.username.localeCompare(peer)>0}); return peers.get(peer);
+    }
+    async function ensurePeer(peer,offer=false){ if(!peer||peer===me.username)return null; const obj=peers.get(peer)||makePc(peer); if(offer)await makeOffer(peer); return obj; }
+    async function makeOffer(peer){ const obj=peers.get(peer)||makePc(peer); if(obj.makingOffer)return; obj.makingOffer=true; try{const offer=await obj.pc.createOffer();await obj.pc.setLocalDescription(offer);socket.emit('voice-room-webrtc-offer',{roomId:currentRoom,targetUser:peer,offer:obj.pc.localDescription});}catch(e){}finally{obj.makingOffer=false;} }
+    async function updateOutgoingTracks(){ const track=localMicStream?.getAudioTracks?.()[0]||null; for(const [peer,obj] of peers){try{obj.transceiver.direction=track?'sendrecv':'recvonly';await obj.transceiver.sender.replaceTrack(track);await makeOffer(peer);}catch(e){}} }
+    socket.on('voice-room-webrtc-offer',async d=>{ if(d.roomId!==currentRoom||!d.fromUser||!d.offer)return; const obj=await ensurePeer(d.fromUser,false); const collision=obj.makingOffer||obj.pc.signalingState!=='stable'; obj.ignoreOffer=!obj.polite&&collision; if(obj.ignoreOffer)return; try{if(collision&&obj.polite)await obj.pc.setLocalDescription({type:'rollback'});await obj.pc.setRemoteDescription(d.offer);const ans=await obj.pc.createAnswer();await obj.pc.setLocalDescription(ans);socket.emit('voice-room-webrtc-answer',{roomId:currentRoom,targetUser:d.fromUser,answer:obj.pc.localDescription});}catch(e){} });
+    socket.on('voice-room-webrtc-answer',async d=>{if(d.roomId!==currentRoom||!d.fromUser||!d.answer)return;const obj=peers.get(d.fromUser);if(obj)try{await obj.pc.setRemoteDescription(d.answer)}catch(e){}});
+    socket.on('voice-room-webrtc-ice',async d=>{if(d.roomId!==currentRoom||!d.fromUser||!d.candidate)return;const obj=await ensurePeer(d.fromUser,false);try{await obj.pc.addIceCandidate(d.candidate)}catch(e){if(!obj.ignoreOffer)console.warn(e)}});
+    function closePeer(peer){const o=peers.get(peer);if(o){try{o.pc.close()}catch(e){}peers.delete(peer)}const a=document.getElementById('voice-audio-'+CSS.escape(peer));a?.remove();}
+    function closeAllPeers(){[...peers.keys()].forEach(closePeer);}
+
+    function leaveRoom(kicked=false){
+      if(currentRoom&&!kicked)socket.emit('voice-room-leave',{roomId:currentRoom}); stopMic(); closeAllPeers(); currentRoom=null;currentState=null;selectedMember=null;
+      document.body.classList.remove('in-voice-room'); $('roomStage').classList.add('hidden');$('roomsSection').classList.remove('hidden'); history.replaceState(null,'','voice-rooms.html'); refreshRooms();
+    }
+    $('leaveRoomBtn').onclick=()=>leaveRoom(false); $('backRoomsBtn').onclick=()=>leaveRoom(false);
+
+    function shareCurrentRoom(){
+      if(!currentRoom)return; const url=`${location.origin}/voice-rooms.html?room=${encodeURIComponent(currentRoom)}`; const title=currentState?.name||'غرفة TOMI الصوتية';
+      if(navigator.share){navigator.share({title,text:`انضم إلى ${title} على TOMI`,url}).catch(()=>{});}
+      else navigator.clipboard?.writeText(url).then(()=>alert('تم نسخ رابط الغرفة')).catch(()=>prompt('انسخ رابط الغرفة:',url));
+    }
+    $('shareRoomBtn').onclick=shareCurrentRoom; $('inviteFriendsBtn').onclick=shareCurrentRoom; $('toolbarInviteBtn').onclick=shareCurrentRoom;
+    $('openChatBtn').onclick=()=>window.open('room.html','_blank','noopener');
+    $('openMembersBtn').onclick=()=>$('membersModal').classList.remove('hidden');
+    $('listenersPill').onclick=()=>$('membersModal').classList.remove('hidden');
+
+    $('createRoomBtn').onclick=()=>$('createModal').classList.remove('hidden');
+    $('createConfirmBtn').onclick=()=>socket.emit('voice-room-create',{name:$('createName').value,code:$('createCode').value},r=>{if(!r?.success){alert(r?.error||'تعذر الإنشاء');return;}$('createModal').classList.add('hidden');$('createName').value='';$('createCode').value='';joinRoom(r.room)});
+    $('roomSettingsBtn').onclick=()=>$('settingsModal').classList.remove('hidden');
+    $('saveRoomSettings').onclick=()=>socket.emit('voice-room-update',{roomId:currentRoom,name:$('editRoomName').value,code:$('editRoomCode').value},r=>{if(!r?.success)alert(r?.error||'تعذر الحفظ');else $('settingsModal').classList.add('hidden')});
+    $('clearRoomCode').onclick=()=>socket.emit('voice-room-update',{roomId:currentRoom,clearCode:true},r=>{if(!r?.success)alert(r?.error||'تعذر إزالة الرمز');else $('editRoomCode').value=''});
+    $('deleteVoiceRoom').onclick=()=>{if(confirm('حذف الغرفة الصوتية نهائياً؟'))socket.emit('voice-room-delete',{roomId:currentRoom},r=>{if(!r?.success)alert(r?.error||'تعذر الحذف')})};
+    $('roomImageInput').onchange=async e=>{const f=e.target.files?.[0];if(!f)return;const fd=new FormData();fd.append('file',f);fd.append('context','voice-room-image');const r=await fetch('/api/upload',{method:'POST',body:fd,credentials:'include'}).then(x=>x.json()).catch(()=>null);if(!r?.success){alert(r?.error||'تعذر رفع الصورة');return;}socket.emit('voice-room-update',{roomId:currentRoom,imageFileId:r.fileId},x=>{if(!x?.success)alert(x?.error||'تعذر حفظ الصورة')});};
+    document.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>$(b.dataset.close).classList.add('hidden'));
+    document.querySelectorAll('.modal').forEach(modal=>modal.addEventListener('click',e=>{if(e.target===modal)modal.classList.add('hidden')}));
+
+    const sidebar=$('sidebar'),overlay=$('sidebarOverlay');
+    $('menuBtn').onclick=()=>{sidebar.classList.toggle('open');overlay.classList.toggle('show')};
+    overlay.onclick=()=>{sidebar.classList.remove('open');overlay.classList.remove('show')};
+    $('logoutBtn').onclick=async()=>{await fetch('/api/logout',{method:'POST',credentials:'include'}).catch(()=>{});location.href='login.html'};
+
+    window.addEventListener('beforeunload',()=>{if(currentRoom)socket.emit('voice-room-leave',{roomId:currentRoom})});
+    bootstrap();
+  })();
+  </script>
+</body>
+</html>

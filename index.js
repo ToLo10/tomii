@@ -5,6 +5,8 @@ const server = createServer(app);
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
+const { Readable } = require("node:stream");
+const { pipeline } = require("node:stream/promises");
 const { Server } = require("socket.io");
 const crypto = require("crypto");
 require("dotenv").config();
@@ -16,10 +18,12 @@ const helmet = require("helmet");
 const rateLimitModule = require("express-rate-limit");
 const rateLimit = rateLimitModule.rateLimit || rateLimitModule;
 const mongoose = require("mongoose");
-const webpush = require("web-push");
+let webpush = null; // Lazy-loaded only if browser push is explicitly enabled.
 
 const io = new Server(server, {
-  maxHttpBufferSize: 1e8 // 100MB
+  // Chat media is uploaded through /api/upload. Keep Socket.IO payloads small so
+  // a legacy/base64 event cannot consume hundreds of MB of RAM.
+  maxHttpBufferSize: 2 * 1024 * 1024 // 2MB: more than enough for chat + WebRTC signaling
 });
 
 // =========================================================
@@ -49,9 +53,11 @@ const cloudflareTurnCredentialCache = new Map();
 
 let mongoReady = false;
 let mongoSaveTimer = null;
-let mongoSaveInFlight = Promise.resolve();
+let mongoSaveRunning = false;
+let mongoSaveDirty = false;
 let ChatifyState = null;
 let gridFsBucket = null;
+const MONGO_SAVE_DEBOUNCE_MS = Math.max(750, Number(process.env.MONGO_SAVE_DEBOUNCE_MS || 1500) || 1500);
 
 function emptyDatabase() {
   return {
@@ -71,7 +77,9 @@ function emptyDatabase() {
     telegramTopics: {},
     notificationPreferences: {},
     pushSubscriptions: {},
-    pushConfig: {}
+    pushConfig: {},
+    voiceRooms: {},
+    voiceRoomBans: {}
   };
 }
 
@@ -99,24 +107,72 @@ function loadDB() {
 
 let db = loadDB();
 
-function snapshotForMongo(data) {
-  return JSON.parse(JSON.stringify(data));
+// =========================================================
+// Stability guard: keep chat state bounded on small Render instances.
+// Only the newest messages are retained per conversation. Older chat media is
+// deleted from GridFS/local storage once no retained message references it.
+// This intentionally does NOT delete avatars, frames, reports or voice-room art.
+// =========================================================
+const CHAT_HISTORY_LIMIT = Math.min(500, Math.max(10, Number(process.env.CHAT_HISTORY_LIMIT || 50) || 50));
+const UNSENT_CHAT_UPLOAD_TTL_MS = Math.max(
+  60 * 60 * 1000,
+  Number(process.env.UNSENT_CHAT_UPLOAD_TTL_MS || 6 * 60 * 60 * 1000) || 6 * 60 * 60 * 1000
+);
+const MEMORY_WARN_MB = Math.max(220, Number(process.env.MEMORY_WARN_MB || 300) || 300);
+const MEMORY_CLEANUP_MB = Math.max(MEMORY_WARN_MB + 20, Number(process.env.MEMORY_CLEANUP_MB || 340) || 340);
+const MEMORY_CRITICAL_MB = Math.max(MEMORY_CLEANUP_MB + 40, Number(process.env.MEMORY_CRITICAL_MB || 440) || 440);
+const MEMORY_GUARD_INTERVAL_MS = Math.max(15_000, Number(process.env.MEMORY_GUARD_INTERVAL_MS || 30_000) || 30_000);
+const MEMORY_CRITICAL_STRIKES = Math.max(2, Number(process.env.MEMORY_CRITICAL_STRIKES || 3) || 3);
+let memoryGuardStatus = "normal";
+let memoryCriticalStrikes = 0;
+let memoryRestartRequested = false;
+let uploadDeletionChain = Promise.resolve();
+
+async function persistMongoStateNow() {
+  if (!mongoReady || !ChatifyState) return;
+  if (mongoSaveRunning) {
+    mongoSaveDirty = true;
+    return;
+  }
+
+  mongoSaveRunning = true;
+  mongoSaveDirty = false;
+  try {
+    // IMPORTANT: do not JSON.stringify/parse the whole database here. The old
+    // implementation created a complete second copy of every message on every
+    // save and could queue several snapshots while MongoDB was busy. On a 512MB
+    // Render instance that can trigger an OOM restart. Mongoose/BSON will serialize
+    // the object for the write; only one write is allowed in flight at a time.
+    await ChatifyState.findOneAndUpdate(
+      { key: "main" },
+      { $set: { state: db, updatedAt: new Date() } },
+      { upsert: true, setDefaultsOnInsert: true }
+    ).exec();
+  } catch (err) {
+    console.error("MongoDB save failed:", err.message);
+  } finally {
+    mongoSaveRunning = false;
+    if (mongoSaveDirty) {
+      clearTimeout(mongoSaveTimer);
+      mongoSaveTimer = setTimeout(() => {
+        mongoSaveTimer = null;
+        persistMongoStateNow().catch(() => {});
+      }, MONGO_SAVE_DEBOUNCE_MS);
+      mongoSaveTimer.unref?.();
+    }
+  }
 }
 
-function scheduleMongoSave(data) {
+function scheduleMongoSave() {
   if (!mongoReady || !ChatifyState) return;
+  mongoSaveDirty = true;
+  if (mongoSaveRunning) return;
   clearTimeout(mongoSaveTimer);
   mongoSaveTimer = setTimeout(() => {
-    const snapshot = snapshotForMongo(data);
-    mongoSaveInFlight = mongoSaveInFlight
-      .catch(() => {})
-      .then(() => ChatifyState.findOneAndUpdate(
-        { key: "main" },
-        { $set: { state: snapshot, updatedAt: new Date() } },
-        { upsert: true, setDefaultsOnInsert: true }
-      ).exec())
-      .catch(err => console.error("MongoDB save failed:", err.message));
-  }, 250);
+    mongoSaveTimer = null;
+    persistMongoStateNow().catch(() => {});
+  }, MONGO_SAVE_DEBOUNCE_MS);
+  mongoSaveTimer.unref?.();
 }
 
 function saveDB(data) {
@@ -127,7 +183,253 @@ function saveDB(data) {
       console.error("Error saving local DB backup:", e.message);
     }
   }
-  scheduleMongoSave(data);
+  scheduleMongoSave();
+}
+
+function messageFileIds(message) {
+  const ids = [];
+  if (message && typeof message === "object" && message.fileId) ids.push(String(message.fileId));
+  return ids;
+}
+
+function isChatUploadReferenced(fileId) {
+  if (!fileId) return false;
+  for (const history of Object.values(db.roomHistory || {})) {
+    if (!Array.isArray(history)) continue;
+    if (history.some(message => String(message?.fileId || "") === fileId)) return true;
+  }
+  return false;
+}
+
+function queuePhysicalUploadDelete(record) {
+  if (!record) return;
+  uploadDeletionChain = uploadDeletionChain
+    .catch(() => {})
+    .then(async () => {
+      try {
+        // The local cache is only a short-lived acceleration layer for recently
+        // uploaded media. Always remove it together with the canonical upload.
+        if (record.cacheStoredName) {
+          await fs.promises.unlink(path.join(UPLOAD_DIR, record.cacheStoredName)).catch(() => {});
+        }
+        if (record.storage === "gridfs" && record.gridFsId && gridFsBucket) {
+          await gridFsBucket.delete(new mongoose.Types.ObjectId(record.gridFsId));
+        } else if (record.storedName) {
+          await fs.promises.unlink(path.join(UPLOAD_DIR, record.storedName)).catch(() => {});
+        }
+      } catch (err) {
+        // A missing file is already effectively cleaned. Do not turn cleanup into
+        // a server-fatal path.
+        if (!/not found|FileNotFound/i.test(String(err?.message || ""))) {
+          console.warn("Upload cleanup skipped:", err?.message || err);
+        }
+      }
+    });
+}
+
+function pruneChatUploadIfUnreferenced(fileId) {
+  const id = String(fileId || "");
+  if (!id || isChatUploadReferenced(id)) return false;
+  const record = db.uploads?.[id];
+  if (!record || record.context !== "chat") return false;
+  delete db.uploads[id];
+  queuePhysicalUploadDelete(record);
+  return true;
+}
+
+function trimRoomHistory(roomId, limit = CHAT_HISTORY_LIMIT) {
+  const history = db.roomHistory?.[roomId];
+  if (!Array.isArray(history) || history.length <= limit) return { removedMessages: 0, removedUploads: 0 };
+  const removed = history.splice(0, history.length - limit);
+  const removedIds = new Set(removed.map(message => String(message?.msgId || "")).filter(Boolean));
+  const roomDoc = db.rooms?.[roomId];
+  if (roomDoc && Array.isArray(roomDoc.pinnedMessageIds) && removedIds.size) {
+    roomDoc.pinnedMessageIds = roomDoc.pinnedMessageIds.filter(id => !removedIds.has(String(id)));
+  }
+  let removedUploads = 0;
+  for (const message of removed) {
+    for (const fileId of messageFileIds(message)) {
+      if (pruneChatUploadIfUnreferenced(fileId)) removedUploads += 1;
+    }
+  }
+  return { removedMessages: removed.length, removedUploads };
+}
+
+function appendRoomMessage(roomId, messageData) {
+  if (!db.roomHistory[roomId]) db.roomHistory[roomId] = [];
+  db.roomHistory[roomId].push(messageData);
+  return trimRoomHistory(roomId);
+}
+
+function countUnreadMessages(roomId, username) {
+  if (!roomId || !username) return 0;
+  const history = Array.isArray(db.roomHistory?.[roomId]) ? db.roomHistory[roomId] : [];
+  let count = 0;
+  for (const msg of history) {
+    if (!msg || msg.deleted || msg.userId === username) continue;
+    const readBy = Array.isArray(msg.readBy) ? msg.readBy : [];
+    const read = readBy.some(entry => (typeof entry === "object" ? entry.userId : entry) === username);
+    if (!read) count += 1;
+  }
+  return count;
+}
+
+function normalizePinnedMessageIds(roomDoc) {
+  if (!roomDoc) return [];
+  if (!Array.isArray(roomDoc.pinnedMessageIds)) roomDoc.pinnedMessageIds = [];
+  roomDoc.pinnedMessageIds = [...new Set(roomDoc.pinnedMessageIds.map(String).filter(Boolean))].slice(-10);
+  return roomDoc.pinnedMessageIds;
+}
+
+function canPinRoomMessage(roomId, actor) {
+  const roomDoc = db.rooms?.[roomId];
+  if (!roomDoc || !actor || !canUserAccessRoom(roomId, actor)) return false;
+  if (roomDoc.isPrivate) return true;
+  return roomDoc.owner === actor ||
+    (Array.isArray(roomDoc.moderators) && roomDoc.moderators.includes(actor)) ||
+    actor === PLATFORM_OWNER_USERNAME ||
+    hasPermission(actor, "manage_rooms");
+}
+
+function removeRoomHistoryAndFiles(roomId) {
+  const history = Array.isArray(db.roomHistory?.[roomId]) ? db.roomHistory[roomId] : [];
+  const fileIds = [];
+  for (const message of history) fileIds.push(...messageFileIds(message));
+  delete db.roomHistory[roomId];
+  for (const fileId of fileIds) pruneChatUploadIfUnreferenced(fileId);
+}
+
+function trimAllRoomHistories() {
+  let removedMessages = 0;
+  let removedUploads = 0;
+  for (const roomId of Object.keys(db.roomHistory || {})) {
+    const result = trimRoomHistory(roomId);
+    removedMessages += result.removedMessages;
+    removedUploads += result.removedUploads;
+  }
+  if (removedMessages > 0) {
+    console.log(`🧹 History retention: removed ${removedMessages} old message(s), queued ${removedUploads} old chat upload(s) for deletion; keeping last ${CHAT_HISTORY_LIMIT} per chat.`);
+  }
+  return { removedMessages, removedUploads };
+}
+
+async function migrateLegacyBase64MediaToGridFS() {
+  if (!mongoReady || !gridFsBucket) return 0;
+  let migrated = 0;
+
+  for (const [roomId, history] of Object.entries(db.roomHistory || {})) {
+    if (!Array.isArray(history)) continue;
+    for (const msg of history) {
+      const dataUri = typeof msg?.fileData === "string" ? msg.fileData : "";
+      if (!dataUri.startsWith("data:")) continue;
+
+      const comma = dataUri.indexOf(",");
+      if (comma < 0) continue;
+      const header = dataUri.slice(5, comma);
+      if (!/;base64(?:;|$)/i.test(header)) continue;
+      const mimeType = header.split(";")[0] || "application/octet-stream";
+      const fileType = msg.fileType || classifyFileType(mimeType, "");
+      const ext = mime.extension(mimeType) || "bin";
+      const fileId = msg.fileId || ("upl_" + crypto.randomBytes(16).toString("hex"));
+      const fileName = msg.fileName || `legacy-${msg.msgId || Date.now()}.${ext}`;
+      let decodedBytes = 0;
+
+      try {
+        const uploadStream = gridFsBucket.openUploadStream(fileName, {
+          metadata: { fileId, mimeType, uploadedAt: new Date(), migratedFromBase64: true }
+        });
+        const dataStart = comma + 1;
+        const chunkChars = 256 * 1024; // divisible by four
+        function* decodedChunks() {
+          let pos = dataStart;
+          while (pos < dataUri.length) {
+            let end = Math.min(dataUri.length, pos + chunkChars);
+            if (end < dataUri.length) end -= (end - pos) % 4;
+            if (end <= pos) end = dataUri.length;
+            const buf = Buffer.from(dataUri.slice(pos, end), "base64");
+            decodedBytes += buf.length;
+            yield buf;
+            pos = end;
+          }
+        }
+        await pipeline(Readable.from(decodedChunks()), uploadStream);
+
+        db.uploads[fileId] = {
+          fileId,
+          storedName: null,
+          gridFsId: String(uploadStream.id),
+          storage: "gridfs",
+          originalName: String(fileName).slice(0, 180),
+          mimeType,
+          fileType,
+          size: decodedBytes,
+          uploader: msg.userId || msg.username || "unknown",
+          roomId,
+          context: "chat",
+          createdAt: msg.createdAt || new Date().toISOString(),
+          migratedFromBase64: true
+        };
+        msg.fileId = fileId;
+        msg.fileUrl = `/api/files/${encodeURIComponent(fileId)}`;
+        msg.fileName = fileName;
+        msg.mimeType = mimeType;
+        msg.fileSize = decodedBytes;
+        delete msg.fileData;
+        migrated += 1;
+      } catch (err) {
+        console.warn(`Legacy media migration skipped (${roomId}):`, err.message);
+      }
+    }
+  }
+
+  if (migrated) {
+    console.log(`♻️ Migrated ${migrated} legacy Base64 media message(s) to GridFS`);
+    // Persist the smaller state before accepting normal traffic.
+    await persistMongoStateNow();
+  }
+  return migrated;
+}
+
+function repairLegacyMediaMetadata() {
+  let repaired = 0;
+  const byFileId = db.uploads || {};
+  for (const record of Object.values(byFileId)) {
+    if (!record || typeof record !== "object") continue;
+    const name = String(record.originalName || "").toLowerCase();
+    const ext = path.extname(name);
+    const isVoice = /^voice[-_]/i.test(path.basename(name));
+    if (!isVoice && [".mp4", ".m4v"].includes(ext) && record.fileType === "audio") {
+      record.fileType = "video";
+      record.mimeType = "video/mp4";
+      repaired += 1;
+    } else if (!isVoice && ext === ".mov" && record.fileType === "audio") {
+      record.fileType = "video";
+      record.mimeType = "video/quicktime";
+      repaired += 1;
+    }
+  }
+
+  for (const history of Object.values(db.roomHistory || {})) {
+    if (!Array.isArray(history)) continue;
+    for (const msg of history) {
+      if (!msg?.fileId) continue;
+      const record = byFileId[msg.fileId];
+      if (!record) continue;
+      if (msg.fileType !== record.fileType || msg.mimeType !== record.mimeType) {
+        msg.fileType = record.fileType;
+        msg.mimeType = record.mimeType;
+        msg.fileName = msg.fileName || record.originalName;
+        msg.fileSize = msg.fileSize || record.size;
+        repaired += 1;
+      }
+    }
+  }
+
+  if (repaired) {
+    console.log(`🛠️ Repaired ${repaired} legacy media metadata field(s)`);
+    scheduleMongoSave();
+  }
+  return repaired;
 }
 
 async function initCloudDatabase() {
@@ -139,7 +441,8 @@ async function initCloudDatabase() {
   try {
     await mongoose.connect(MONGODB_URI, {
       serverSelectionTimeoutMS: 15000,
-      maxPoolSize: 10
+      maxPoolSize: 5,
+      minPoolSize: 0
     });
 
     const stateSchema = new mongoose.Schema({
@@ -159,11 +462,13 @@ async function initCloudDatabase() {
       console.log("☁️ MongoDB Atlas state loaded successfully");
     } else {
       db = normalizeDatabaseState(db);
-      await ChatifyState.create({ key: "main", state: snapshotForMongo(db), updatedAt: new Date() });
+      await ChatifyState.create({ key: "main", state: db, updatedAt: new Date() });
       console.log("☁️ MongoDB Atlas initialized from chat_database.json");
     }
 
     mongoReady = true;
+    await migrateLegacyBase64MediaToGridFS();
+    repairLegacyMediaMetadata();
   } catch (err) {
     mongoReady = false;
     gridFsBucket = null;
@@ -173,14 +478,13 @@ async function initCloudDatabase() {
 
 async function flushCloudDatabase() {
   clearTimeout(mongoSaveTimer);
+  mongoSaveTimer = null;
   if (!mongoReady || !ChatifyState) return;
-  const snapshot = snapshotForMongo(db);
-  await mongoSaveInFlight.catch(() => {});
-  await ChatifyState.findOneAndUpdate(
-    { key: "main" },
-    { $set: { state: snapshot, updatedAt: new Date() } },
-    { upsert: true }
-  ).exec();
+  mongoSaveDirty = true;
+  while (mongoSaveRunning) {
+    await new Promise(resolve => setTimeout(resolve, 25));
+  }
+  await persistMongoStateNow();
 }
 
 // =========================================================
@@ -919,6 +1223,7 @@ function initializeWebPush() {
     }
 
     if (!publicKey || !privateKey) {
+      if (!webpush) webpush = require("web-push");
       const generated = webpush.generateVAPIDKeys();
       publicKey = generated.publicKey;
       privateKey = generated.privateKey;
@@ -928,6 +1233,7 @@ function initializeWebPush() {
     }
 
     const subject = String(process.env.VAPID_SUBJECT || "mailto:admin@tomii.local").trim();
+    if (!webpush) webpush = require("web-push");
     webpush.setVapidDetails(subject, publicKey, privateKey);
     webPushPublicKey = publicKey;
     webPushReady = true;
@@ -1151,14 +1457,46 @@ const MAX_UPLOAD_BYTES = Math.max(
 const UPLOAD_DIR = path.join(__dirname, "uploads");
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
-function classifyFileType(mimeType, originalName = "") {
+// Keep a bounded local copy of *recent* media after it has been persisted to
+// GridFS. Render's ephemeral disk is much faster than repeatedly seeking a
+// remote GridFS object, which greatly reduces video/audio buffering immediately
+// after upload. GridFS remains the source of truth and the cache is disposable.
+const MEDIA_LOCAL_CACHE_TTL_MS = Math.max(
+  2 * 60 * 1000,
+  Number(process.env.MEDIA_LOCAL_CACHE_TTL_MS || 20 * 60 * 1000)
+);
+const MEDIA_LOCAL_CACHE_MAX_FILE_BYTES = Math.max(
+  8 * 1024 * 1024,
+  Number(process.env.MEDIA_LOCAL_CACHE_MAX_FILE_BYTES || 128 * 1024 * 1024)
+);
+
+function classifyFileType(mimeType, originalName = "", clientHint = "") {
   const mt = String(mimeType || "").toLowerCase();
-  const ext = path.extname(originalName).toLowerCase();
+  const name = String(originalName || "").toLowerCase();
+  const ext = path.extname(name).toLowerCase();
+  const hint = String(clientHint || "").toLowerCase();
+  const videoExts = new Set([".mp4", ".m4v", ".mov", ".webm", ".mkv", ".avi", ".3gp", ".3g2", ".mpeg", ".mpg"]);
+  const audioExts = new Set([".m4a", ".mp3", ".aac", ".wav", ".ogg", ".opus", ".flac", ".weba"]);
+  const imageExts = new Set([".jpg", ".jpeg", ".png", ".webp", ".bmp", ".heic", ".heif", ".avif"]);
+  const looksLikeVoiceRecording = /^voice[-_]/i.test(path.basename(name));
+
+  // Explicit client hints are used only when they agree with a plausible file
+  // extension/MIME. This fixes Android gallery files occasionally reported as
+  // audio/mp4 even though the selected file is an MP4 video.
+  if (hint === "audio" && (mt.startsWith("audio/") || audioExts.has(ext) || looksLikeVoiceRecording)) return "audio";
+  if (hint === "video" && (mt.startsWith("video/") || videoExts.has(ext))) return "video";
+  if (hint === "gif" && (mt === "image/gif" || ext === ".gif")) return "gif";
+  if (hint === "image" && (mt.startsWith("image/") || imageExts.has(ext))) return ext === ".gif" ? "gif" : "image";
+  if (hint === "pdf" && (mt === "application/pdf" || ext === ".pdf")) return "pdf";
+
   if (mt === "application/pdf" || ext === ".pdf") return "pdf";
   if (mt === "image/gif" || ext === ".gif") return "gif";
-  if (mt.startsWith("image/")) return "image";
+  if (mt.startsWith("image/") || imageExts.has(ext)) return "image";
   if (mt.startsWith("video/")) return "video";
-  if (mt.startsWith("audio/")) return "audio";
+  if (mt.startsWith("audio/") || audioExts.has(ext) || looksLikeVoiceRecording) return "audio";
+  // If a generic/incorrect mobile MIME reaches us, a known video extension is
+  // still a stronger signal than application/octet-stream.
+  if (videoExts.has(ext)) return "video";
   return "file";
 }
 
@@ -1196,12 +1534,14 @@ function safeUnlink(filePath) {
 }
 
 
-async function persistUploadedFileToCloud(reqFile, fileId) {
+async function persistUploadedFileToCloud(reqFile, fileId, { keepLocalCache = false } = {}) {
   if (!reqFile) throw new Error("الملف غير موجود");
   if (!mongoReady || !gridFsBucket) {
     return {
       storage: "local",
       storedName: reqFile.filename,
+      cacheStoredName: null,
+      cacheExpiresAt: null,
       gridFsId: null,
       size: reqFile.size
     };
@@ -1223,24 +1563,67 @@ async function persistUploadedFileToCloud(reqFile, fileId) {
     input.pipe(uploadStream);
   });
 
-  safeUnlink(reqFile.path);
+  const cacheStoredName = keepLocalCache ? reqFile.filename : null;
+  if (!keepLocalCache) safeUnlink(reqFile.path);
   return {
     storage: "gridfs",
     storedName: null,
+    cacheStoredName,
+    cacheExpiresAt: cacheStoredName ? new Date(Date.now() + MEDIA_LOCAL_CACHE_TTL_MS).toISOString() : null,
     gridFsId: String(uploadStream.id),
     size: reqFile.size
   };
 }
 
-function streamGridFsFile(record, res) {
+function parseHttpByteRange(rangeHeader, totalSize) {
+  const match = /^bytes=(\d*)-(\d*)$/i.exec(String(rangeHeader || "").trim());
+  if (!match || !Number.isFinite(totalSize) || totalSize <= 0) return null;
+  let start = match[1] ? Number(match[1]) : null;
+  let end = match[2] ? Number(match[2]) : null;
+  if (start == null && end == null) return null;
+  if (start == null) {
+    const suffix = Math.max(0, Math.min(totalSize, end || 0));
+    start = Math.max(0, totalSize - suffix);
+    end = totalSize - 1;
+  } else {
+    end = end == null ? totalSize - 1 : Math.min(end, totalSize - 1);
+  }
+  if (start < 0 || start >= totalSize || end < start) return { invalid: true };
+  return { start, end };
+}
+
+function streamGridFsFile(record, req, res) {
   if (!gridFsBucket || !record?.gridFsId) return false;
   try {
     const objectId = new mongoose.Types.ObjectId(record.gridFsId);
-    const stream = gridFsBucket.openDownloadStream(objectId);
+    const totalSize = Number(record.size || 0);
+    const range = parseHttpByteRange(req?.headers?.range, totalSize);
+    if (range?.invalid) {
+      res.status(416).setHeader("Content-Range", `bytes */${totalSize}`);
+      res.end();
+      return true;
+    }
+
+    const opts = {};
+    if (range) {
+      opts.start = range.start;
+      // GridFS end is exclusive.
+      opts.end = range.end + 1;
+      res.status(206);
+      res.setHeader("Content-Range", `bytes ${range.start}-${range.end}/${totalSize}`);
+      res.setHeader("Content-Length", String(range.end - range.start + 1));
+    } else if (totalSize > 0) {
+      res.setHeader("Content-Length", String(totalSize));
+    }
+    res.setHeader("Accept-Ranges", "bytes");
+
+    const stream = gridFsBucket.openDownloadStream(objectId, opts);
     stream.on("error", () => {
       if (!res.headersSent) res.status(404).json({ error: "الملف غير موجود في التخزين السحابي" });
       else res.end();
     });
+    res.on("close", () => stream.destroy());
+    try { res.flushHeaders?.(); } catch (_) {}
     stream.pipe(res);
     return true;
   } catch {
@@ -1398,10 +1781,11 @@ async function sendTelegramMedia({ roomId, userId, username, time, fileData, fil
   await telegramApiRequest(telegramMethod, form);
 }
 
-const TELEGRAM_MAX_COPY_BYTES = Math.max(
-  1024 * 1024,
-  Number(process.env.TELEGRAM_MAX_COPY_BYTES || 20 * 1024 * 1024)
+const TELEGRAM_MAX_COPY_BYTES = Math.min(
+  8 * 1024 * 1024,
+  Math.max(1024 * 1024, Number(process.env.TELEGRAM_MAX_COPY_BYTES || 4 * 1024 * 1024) || 4 * 1024 * 1024)
 );
+let telegramMediaCopyChain = Promise.resolve();
 
 async function readStoredUploadBuffer(record) {
   if (!record || Number(record.size || 0) > TELEGRAM_MAX_COPY_BYTES) return null;
@@ -1429,7 +1813,7 @@ async function readStoredUploadBuffer(record) {
   return null;
 }
 
-async function sendTelegramStoredUpload({ roomId, userId, username, time, record }) {
+async function sendTelegramStoredUploadUnsafe({ roomId, userId, username, time, record }) {
   if (!telegramLoggingEnabled || !record) return;
   const threadId = await ensureTelegramTopic(roomId);
   const header = telegramMessageHeader(roomId, userId, username, time);
@@ -1454,6 +1838,14 @@ async function sendTelegramStoredUpload({ roomId, userId, username, time, record
   form.append("caption", `${header}\n\n${record.originalName}`.slice(0, 1024));
   form.append(field, new Blob([buffer], { type: record.mimeType || "application/octet-stream" }), record.originalName || "file");
   await telegramApiRequest(method, form);
+}
+
+async function sendTelegramStoredUpload(args) {
+  const task = telegramMediaCopyChain
+    .catch(() => {})
+    .then(() => sendTelegramStoredUploadUnsafe(args));
+  telegramMediaCopyChain = task.catch(() => {});
+  return task;
 }
 
 async function forwardToTelegram(payload) {
@@ -1498,8 +1890,9 @@ async function waitForTelegramQueue(roomId) {
 
 const desktopPath = path.join(os.homedir(), "Desktop");
 const archiveFolder = path.join(desktopPath, "Admin_Chat_Archive");
+const LOCAL_ARCHIVE_ENABLED = String(process.env.LOCAL_ARCHIVE_ENABLED || "false").toLowerCase() === "true";
 
-if (!fs.existsSync(archiveFolder)) {
+if (LOCAL_ARCHIVE_ENABLED && !fs.existsSync(archiveFolder)) {
   try {
     fs.mkdirSync(archiveFolder, { recursive: true });
   } catch (e) {
@@ -1508,7 +1901,7 @@ if (!fs.existsSync(archiveFolder)) {
 }
 
 function logMessageToFile(roomId, text) {
-  if (!fs.existsSync(archiveFolder)) return;
+  if (!LOCAL_ARCHIVE_ENABLED || !fs.existsSync(archiveFolder)) return;
   const roomLogFile = path.join(archiveFolder, `Room_${roomId}_History.txt`);
   const timestamp = new Date().toLocaleString();
   fs.appendFile(roomLogFile, `[${timestamp}] ${text}\n`, (err) => {
@@ -1517,7 +1910,7 @@ function logMessageToFile(roomId, text) {
 }
 
 function saveMediaToFile(roomId, userId, username, fileData, fileType) {
-  if (!fs.existsSync(archiveFolder)) return;
+  if (!LOCAL_ARCHIVE_ENABLED || !fs.existsSync(archiveFolder)) return;
   try {
     const mediaFolder = path.join(archiveFolder, `Room_${roomId}_Media`);
     if (!fs.existsSync(mediaFolder)) {
@@ -1644,7 +2037,22 @@ app.get("/api/health", (_req, res) => {
     database: mongoReady ? "mongodb" : "local-json",
     fileStorage: gridFsBucket ? "mongodb-gridfs" : "local-disk",
     turn: CLOUDFLARE_TURN_CONFIGURED ? "cloudflare" : (staticTurnConfigured ? "static" : "stun-only"),
-    notifications: "disabled"
+    notifications: "disabled",
+    historyLimitPerChat: CHAT_HISTORY_LIMIT,
+    memory: (() => {
+      const m = process.memoryUsage();
+      const mb = value => Math.round(value / 1024 / 1024);
+      return {
+        rssMB: mb(m.rss),
+        heapUsedMB: mb(m.heapUsed),
+        heapTotalMB: mb(m.heapTotal),
+        externalMB: mb(m.external),
+        status: memoryGuardStatus,
+        warnAtMB: MEMORY_WARN_MB,
+        cleanupAtMB: MEMORY_CLEANUP_MB,
+        criticalAtMB: MEMORY_CRITICAL_MB
+      };
+    })()
   });
 });
 
@@ -1661,6 +2069,34 @@ const uploadLimiter = rateLimit({
   standardHeaders: "draft-8",
   legacyHeaders: false
 });
+
+const MAX_CONCURRENT_UPLOADS_PER_USER = Math.max(
+  1,
+  Math.min(4, Number(process.env.MAX_CONCURRENT_UPLOADS_PER_USER || 2) || 2)
+);
+const activeUploadsByUser = new Map();
+function limitConcurrentUploads(req, res, next) {
+  const username = req.authUser;
+  if (!username) return next();
+  const current = Number(activeUploadsByUser.get(username) || 0);
+  if (current >= MAX_CONCURRENT_UPLOADS_PER_USER) {
+    return res.status(429).json({
+      error: `للحفاظ على استقرار السيرفر يمكنك رفع ${MAX_CONCURRENT_UPLOADS_PER_USER} ملف/ملفات في نفس الوقت. انتظر اكتمال الرفع الحالي.`
+    });
+  }
+  activeUploadsByUser.set(username, current + 1);
+  let released = false;
+  const release = () => {
+    if (released) return;
+    released = true;
+    const count = Number(activeUploadsByUser.get(username) || 1) - 1;
+    if (count <= 0) activeUploadsByUser.delete(username);
+    else activeUploadsByUser.set(username, count);
+  };
+  res.once("finish", release);
+  res.once("close", release);
+  next();
+}
 
 const turnCredentialLimiter = rateLimit({
   windowMs: 5 * 60 * 1000,
@@ -1763,6 +2199,7 @@ app.get("/api/session", requireHttpAuth, (req, res) => {
   const user = db.users[req.authUser];
   res.json({
     success: true,
+    authenticated: true,
     username: user.username,
     displayName: user.displayName,
     role: getPublicRole(user.username),
@@ -1825,7 +2262,7 @@ app.get("/api/client-config", requireHttpAuth, (_req, res) => {
       // GIPHY requires browser/client-side API calls. The browser receives
       // this Web API key and requests GIPHY directly; the server does not proxy media.
       apiKey: process.env.GIPHY_API_KEY || "",
-      rating: "g"
+      rating: "r"
     }
   });
 });
@@ -2102,9 +2539,138 @@ app.get("/api/room/bans/:roomId", requireHttpAuth, (req, res) => {
   }
 });
 
+
+// Publish an already-uploaded file as a chat message. Keeping this on the HTTP
+// side makes mobile uploads reliable even when Android/iOS suspends Socket.IO
+// while the system Gallery / file picker is open. The function is idempotent:
+// repeating the publish request for the same file returns the existing message.
+function publishStoredUploadMessage({ actor, roomIdOrCode, fileId, msgId, time, replyTo, voiceDurationMs, voiceWaveform }) {
+  if (!actor || !roomIdOrCode || !fileId) {
+    return { success: false, status: 400, error: "بيانات إرسال الملف غير كاملة" };
+  }
+
+  const rId = getCanonicalRoomId(roomIdOrCode);
+  const roomDoc = db.rooms[rId];
+  const file = db.uploads[fileId];
+
+  if (!roomDoc || !canUserAccessRoom(rId, actor)) {
+    return { success: false, status: 403, error: "لا تملك صلاحية إرسال ملف في هذه المحادثة." };
+  }
+  if (roomDoc.systemRoom) {
+    return { success: false, status: 403, error: "حساب TOMI الرسمي مخصص لاستقبال رسائل المنصة فقط." };
+  }
+  if (!file || file.uploader !== actor || file.roomId !== rId) {
+    return { success: false, status: 400, error: "الملف غير صالح أو لم يتم رفعه لهذه المحادثة." };
+  }
+
+  if (!roomDoc.isPrivate) {
+    const banCheck = checkRoomBan(rId, actor);
+    if (banCheck.banned) {
+      return { success: false, status: 403, error: "أنت محظور من هذه الغرفة", ban: banCheck };
+    }
+  }
+
+  // Idempotency across mobile retries. A request can finish on the server while
+  // Android temporarily suspends the browser and the client retries. The same
+  // msgId must never create a second chat message, even if the retry produced a
+  // new temporary upload record.
+  const requestedMsgId = String(msgId || "").trim();
+  if (requestedMsgId) {
+    const existingByMsgId = (db.roomHistory[rId] || []).find(m => m.msgId === requestedMsgId);
+    if (existingByMsgId) return { success: true, messageData: existingByMsgId, duplicate: true };
+  }
+  if (file.messageId) {
+    const existing = (db.roomHistory[rId] || []).find(m => m.msgId === file.messageId || m.fileId === fileId);
+    if (existing) return { success: true, messageData: existing, duplicate: true };
+  }
+
+  const createdAt = new Date().toISOString();
+  const displayTime = time || new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const user = db.users[actor] || {};
+  const safeReply = replyTo && typeof replyTo === "object" ? replyTo : null;
+
+  const messageData = {
+    roomId: rId,
+    type: "media",
+    msgId: msgId || ("msg-" + Date.now() + "-" + crypto.randomBytes(4).toString("hex")),
+    fileId,
+    fileUrl: `/api/files/${encodeURIComponent(fileId)}`,
+    fileName: file.originalName,
+    fileType: file.fileType,
+    mimeType: file.mimeType,
+    fileSize: file.size,
+    userId: actor,
+    username: actor,
+    displayName: user.displayName || actor,
+    time: displayTime,
+    createdAt,
+    replyTo: safeReply,
+    reactions: [],
+    deliveredTo: [{ userId: actor, username: actor, time: displayTime, at: createdAt }],
+    readBy: [{ userId: actor, username: actor, time: displayTime, at: createdAt }],
+    status: "sent"
+  };
+  if (file.fileType === "audio" && /^voice[-_]/i.test(String(file.originalName || ""))) {
+    const duration = Math.max(0, Math.min(60 * 60 * 1000, Number(voiceDurationMs || 0) || 0));
+    let waveform = Array.isArray(voiceWaveform) ? voiceWaveform : [];
+    waveform = waveform.map(v => Math.max(0.06, Math.min(1, Number(v) || 0.06))).slice(0, 80);
+    if (duration) messageData.voiceDurationMs = duration;
+    if (waveform.length) messageData.voiceWaveform = waveform;
+    messageData.voiceNote = true;
+  }
+
+  appendRoomMessage(rId, messageData);
+  roomDoc.updatedAt = createdAt;
+  file.sentAt = createdAt;
+  file.messageId = messageData.msgId;
+  saveDB(db);
+
+  if (telegramLoggingEnabled) {
+    enqueueTelegramTask(rId, () => sendTelegramStoredUpload({
+      roomId: rId,
+      userId: actor,
+      username: actor,
+      time: displayTime,
+      record: file
+    }));
+  }
+  if (!roomDoc.isPrivate) {
+    logMessageToFile(
+      rId,
+      `[ملف - ${file.fileType}] ${user.displayName || actor} (${actor}) أرسل ${file.originalName} (${file.size} bytes)`
+    );
+  }
+
+  // Broadcast after persistence. Clients currently inside the room receive the
+  // media immediately, while other online participants refresh their chat list.
+  io.to(rId).emit("receive-media", messageData);
+  for (const participant of getRoomAudience(rId)) {
+    if (participant !== actor) {
+      // Deliver through the user's personal Socket.IO room as a second reliable
+      // path. The client de-duplicates by msgId, so this is safe even when that
+      // user's socket is also joined to the conversation room. It fixes media
+      // disappearing when a mobile browser briefly lost its room membership.
+      io.to(`user_${participant}`).emit("receive-media", messageData);
+      io.to(`user_${participant}`).emit("conversation-updated", {
+        roomId: rId,
+        message: messageData
+      });
+    }
+  }
+  notifyRoomParticipants(rId, actor, {
+    title: user.displayName || actor,
+    body: mediaNotificationBody(messageData.fileType, messageData.fileName),
+    url: `/room.html?roomId=${encodeURIComponent(rId)}`,
+    tag: `msg-${messageData.msgId}`,
+    type: "media"
+  }).catch(() => {});
+
+  return { success: true, messageData };
+}
+
 // 📎 HTTP uploads with progress support on the client.
 // Files are written directly to disk instead of being converted to Base64.
-app.post("/api/upload", uploadLimiter, requireHttpAuth, singleUpload, async (req, res) => {
+app.post("/api/upload", uploadLimiter, requireHttpAuth, limitConcurrentUploads, singleUpload, async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: "لم يتم اختيار ملف" });
 
@@ -2123,7 +2689,7 @@ app.post("/api/upload", uploadLimiter, requireHttpAuth, singleUpload, async (req
         safeUnlink(req.file.path);
         return res.status(403).json({ error: "حساب المنصة مخصص لاستقبال الرسائل الرسمية فقط" });
       }
-    } else if (!["report", "avatar", "frame"].includes(context)) {
+    } else if (!["report", "avatar", "frame", "voice-room-image"].includes(context)) {
       safeUnlink(req.file.path);
       return res.status(400).json({ error: "معرّف المحادثة مطلوب" });
     }
@@ -2133,17 +2699,22 @@ app.post("/api/upload", uploadLimiter, requireHttpAuth, singleUpload, async (req
       return res.status(403).json({ error: "رفع الإطارات متاح لمالك المنصة فقط" });
     }
 
-    const fileType = classifyFileType(req.file.mimetype, req.file.originalname);
-    if (["background", "avatar", "frame"].includes(context) && !["image", "gif"].includes(fileType)) {
+    const clientFileType = String(req.body.clientFileType || "").trim().toLowerCase();
+    const fileType = classifyFileType(req.file.mimetype, req.file.originalname, clientFileType);
+    if (["background", "avatar", "frame", "voice-room-image"].includes(context) && !["image", "gif"].includes(fileType)) {
       safeUnlink(req.file.path);
       return res.status(400).json({ error: "خلفية المحادثة يجب أن تكون صورة" });
     }
 
     const fileId = req.generatedUploadId || path.parse(req.file.filename).name;
-    const cloudFile = await persistUploadedFileToCloud(req.file, fileId);
+    const keepLocalCache = ["image", "gif", "video", "audio"].includes(fileType)
+      && Number(req.file.size || 0) <= MEDIA_LOCAL_CACHE_MAX_FILE_BYTES;
+    const cloudFile = await persistUploadedFileToCloud(req.file, fileId, { keepLocalCache });
     db.uploads[fileId] = {
       fileId,
       storedName: cloudFile.storedName,
+      cacheStoredName: cloudFile.cacheStoredName || null,
+      cacheExpiresAt: cloudFile.cacheExpiresAt || null,
       gridFsId: cloudFile.gridFsId,
       storage: cloudFile.storage,
       originalName: String(req.file.originalname || "file").slice(0, 180),
@@ -2163,6 +2734,41 @@ app.post("/api/upload", uploadLimiter, requireHttpAuth, singleUpload, async (req
 
     saveDB(db);
 
+    let publishedMessage = null;
+    const publishToChat = context === "chat" && roomId && String(req.body.publishToChat || "") === "1";
+    if (publishToChat) {
+      let replyTo = null;
+      if (req.body.replyTo) {
+        try { replyTo = JSON.parse(String(req.body.replyTo)); } catch (_) { replyTo = null; }
+      }
+      let voiceWaveform = [];
+      if (req.body.voiceWaveform) {
+        try {
+          const parsed = JSON.parse(String(req.body.voiceWaveform));
+          if (Array.isArray(parsed)) voiceWaveform = parsed;
+        } catch (_) {}
+      }
+      const publishResult = publishStoredUploadMessage({
+        actor: uploader,
+        roomIdOrCode: roomId,
+        fileId,
+        msgId: String(req.body.msgId || "").trim() || undefined,
+        time: String(req.body.time || "").trim() || undefined,
+        replyTo,
+        voiceDurationMs: Number(req.body.voiceDurationMs || 0) || 0,
+        voiceWaveform
+      });
+      if (!publishResult.success) {
+        return res.status(publishResult.status || 400).json({
+          success: false,
+          uploaded: true,
+          fileId,
+          error: publishResult.error || "تم رفع الملف لكن تعذر إرساله للمحادثة"
+        });
+      }
+      publishedMessage = publishResult.messageData;
+    }
+
     res.json({
       success: true,
       fileId,
@@ -2170,45 +2776,129 @@ app.post("/api/upload", uploadLimiter, requireHttpAuth, singleUpload, async (req
       fileType,
       mimeType: db.uploads[fileId].mimeType,
       size: req.file.size,
-      url: `/api/files/${encodeURIComponent(fileId)}`
+      url: `/api/files/${encodeURIComponent(fileId)}`,
+      message: publishedMessage
     });
   } catch (err) {
     safeUnlink(req.file?.path);
-    res.status(500).json({ error: "تعذر حفظ الملف" });
+    console.error("Upload/publish failed:", err?.stack || err?.message || err);
+    res.status(500).json({ error: "تعذر حفظ أو إرسال الملف" });
   }
 });
 
-app.get("/api/files/:fileId", requireHttpAuth, (req, res) => {
-  const record = db.uploads[req.params.fileId];
-  if (!record) return res.status(404).json({ error: "الملف غير موجود" });
-
-  const viewer = req.authUser;
+function canViewerOpenUpload(record, viewer) {
+  if (!record || !viewer) return false;
   let allowed = record.uploader === viewer;
-
-  if (!allowed && record.roomId) {
-    allowed = canUserAccessRoom(record.roomId, viewer);
-  }
-
-  if (!allowed && ["avatar", "frame"].includes(record.context)) {
-    allowed = true;
-  }
-
+  if (!allowed && record.roomId) allowed = canUserAccessRoom(record.roomId, viewer);
+  if (!allowed && ["avatar", "frame", "voice-room-image"].includes(record.context)) allowed = true;
   if (!allowed && record.context === "report") {
     allowed = viewer === PLATFORM_OWNER_USERNAME || hasPermission(viewer, "manage_reports");
   }
+  return allowed;
+}
 
-  if (!allowed) return res.status(403).json({ error: "لا تملك صلاحية فتح هذا الملف" });
+function effectiveStoredMimeType(record) {
+  const name = String(record?.originalName || "").toLowerCase();
+  const ext = path.extname(name);
+  const mimeType = String(record?.mimeType || "application/octet-stream").toLowerCase();
+  const isVoice = /^voice[-_]/i.test(path.basename(name));
+  // Repair already-stored Android gallery videos that arrived as audio/mp4.
+  if (!isVoice && [".mp4", ".m4v"].includes(ext)) return "video/mp4";
+  if (!isVoice && ext === ".mov") return "video/quicktime";
+  if (!isVoice && ext === ".webm" && record?.fileType === "video") return "video/webm";
+  return mimeType || "application/octet-stream";
+}
 
-  res.type(record.mimeType || "application/octet-stream");
+function setStoredFileResponseHeaders(record, res) {
+  const fileId = String(record.fileId || "file");
+  const totalSize = Number(record.size || 0);
+  res.type(effectiveStoredMimeType(record));
+  res.setHeader("Accept-Ranges", "bytes");
+  res.setHeader("Cache-Control", "private, max-age=86400, immutable");
+  res.setHeader("ETag", `\"${fileId}-${totalSize}\"`);
+  if (record.createdAt) {
+    const createdMs = Date.parse(record.createdAt);
+    if (Number.isFinite(createdMs)) res.setHeader("Last-Modified", new Date(createdMs).toUTCString());
+  }
   const inline = ["image", "gif", "video", "audio", "pdf"].includes(record.fileType);
   const safeName = String(record.originalName || "file").replace(/["\r\n]/g, "_");
   res.setHeader(
     "Content-Disposition",
     `${inline ? "inline" : "attachment"}; filename*=UTF-8''${encodeURIComponent(safeName)}`
   );
+}
+
+function serveLocalStoredFile(fullPath, record, req, res) {
+  let totalSize = Number(record.size || 0);
+  try {
+    if (!totalSize) totalSize = fs.statSync(fullPath).size;
+  } catch {
+    return false;
+  }
+  const range = parseHttpByteRange(req.headers.range, totalSize);
+  if (range?.invalid) {
+    res.status(416).setHeader("Content-Range", `bytes */${totalSize}`);
+    res.end();
+    return true;
+  }
+  if (range) {
+    res.status(206);
+    res.setHeader("Content-Range", `bytes ${range.start}-${range.end}/${totalSize}`);
+    res.setHeader("Content-Length", String(range.end - range.start + 1));
+    const stream = fs.createReadStream(fullPath, { start: range.start, end: range.end });
+    res.on("close", () => stream.destroy());
+    stream.pipe(res);
+    return true;
+  }
+  res.setHeader("Content-Length", String(totalSize));
+  const stream = fs.createReadStream(fullPath);
+  res.on("close", () => stream.destroy());
+  stream.pipe(res);
+  return true;
+}
+
+function resolveAuthorizedUpload(req, res) {
+  const record = db.uploads[req.params.fileId];
+  if (!record) {
+    res.status(404).json({ error: "الملف غير موجود" });
+    return null;
+  }
+  if (!canViewerOpenUpload(record, req.authUser)) {
+    res.status(403).json({ error: "لا تملك صلاحية فتح هذا الملف" });
+    return null;
+  }
+  return record;
+}
+
+app.head("/api/files/:fileId", requireHttpAuth, (req, res) => {
+  const record = resolveAuthorizedUpload(req, res);
+  if (!record) return;
+  setStoredFileResponseHeaders(record, res);
+  if (Number(record.size || 0) > 0) res.setHeader("Content-Length", String(record.size));
+  res.status(200).end();
+});
+
+app.get("/api/files/:fileId", requireHttpAuth, (req, res) => {
+  const record = resolveAuthorizedUpload(req, res);
+  if (!record) return;
+
+  setStoredFileResponseHeaders(record, res);
+  const etag = `\"${String(record.fileId || "file")}-${Number(record.size || 0)}\"`;
+  if (!req.headers.range && req.headers["if-none-match"] === etag) return res.status(304).end();
+
+  // Prefer the bounded ephemeral cache immediately after upload. This avoids a
+  // remote GridFS round-trip for every browser byte-range seek while a newly
+  // shared video is being watched. If the cache has expired or Render restarted,
+  // transparently fall back to GridFS.
+  if (record.cacheStoredName) {
+    const cachePath = path.join(UPLOAD_DIR, record.cacheStoredName);
+    if (fs.existsSync(cachePath)) {
+      return serveLocalStoredFile(cachePath, record, req, res);
+    }
+  }
 
   if (record.storage === "gridfs" && record.gridFsId) {
-    if (!streamGridFsFile(record, res)) {
+    if (!streamGridFsFile(record, req, res)) {
       return res.status(404).json({ error: "الملف غير موجود في التخزين السحابي" });
     }
     return;
@@ -2218,9 +2908,8 @@ app.get("/api/files/:fileId", requireHttpAuth, (req, res) => {
   if (!record.storedName || !fs.existsSync(fullPath)) {
     return res.status(404).json({ error: "الملف غير موجود على الخادم" });
   }
-  res.sendFile(fullPath);
+  serveLocalStoredFile(fullPath, record, req, res);
 });
-
 
 // =========================================================
 // Account settings + owner-managed avatar frames
@@ -2489,7 +3178,7 @@ app.get("/api/my-conversations/:username", requireHttpAuth, (req, res) => {
           isOnline: activeOnlineUsers.has(partner),
           lastMessage: lastMsg ? (lastMsg.type === "text" ? lastMsg.msg : "[ميديا]") : "ابدأ المحادثة الآن",
           time: lastMsg ? lastMsg.time : "",
-          unread: 0
+          unread: countUnreadMessages(roomId, username)
         });
       }
     }
@@ -2513,7 +3202,7 @@ app.get("/api/my-conversations/:username", requireHttpAuth, (req, res) => {
           lastMessage: lastMsg ? (lastMsg.type === "text" ? lastMsg.msg : "[ميديا]") : "رسائل رسمية من TOMI",
           time: lastMsg ? lastMsg.time : "",
           updatedAt: getLastActivityIso(rId, room.updatedAt || room.createdAt || null),
-          unread: 0
+          unread: countUnreadMessages(rId, username)
         });
       }
     }
@@ -2535,7 +3224,7 @@ app.get("/api/my-conversations/:username", requireHttpAuth, (req, res) => {
           memberCount: room.members ? room.members.length : 0,
           lastMessage: lastMsg ? (lastMsg.type === "text" ? lastMsg.msg : "[ميديا]") : "لا توجد رسائل بعد",
           time: lastMsg ? lastMsg.time : "",
-          unread: 0
+          unread: countUnreadMessages(rId, username)
         });
       }
     }
@@ -2618,6 +3307,160 @@ function attachSocketToConversation(socket, roomId) {
     setImmediate(() => broadcastRoomUsers(previousRoomId));
   }
 }
+
+
+// =========================================================
+// Voice Rooms: public server-wide rooms with seats + room moderation
+// =========================================================
+const VOICE_ROOM_SEAT_COUNT = 8;
+const voiceRoomRuntime = new Map();
+
+function getVoiceRoomRuntime(roomId) {
+  if (!voiceRoomRuntime.has(roomId)) {
+    voiceRoomRuntime.set(roomId, {
+      members: new Map(), // username -> Set(socket.id)
+      seats: new Map(),   // seat number -> username
+      lockedSeats: new Set(),
+      mutedUsers: new Set()
+    });
+  }
+  return voiceRoomRuntime.get(roomId);
+}
+
+function hashVoiceRoomCode(value) {
+  return crypto.createHash("sha256").update(String(value || "")).digest("hex");
+}
+
+function isVoiceRoomModerator(room, username) {
+  if (!room || !username) return false;
+  return username === PLATFORM_OWNER_USERNAME ||
+    room.owner === username ||
+    (Array.isArray(room.moderators) && room.moderators.includes(username));
+}
+
+function mayActOnVoiceRoomTarget(room, actor, target) {
+  if (!room || !actor || !target) return false;
+  if (actor === PLATFORM_OWNER_USERNAME || room.owner === actor) return true;
+  if (!Array.isArray(room.moderators) || !room.moderators.includes(actor)) return false;
+  // A room moderator can manage normal members, but cannot act on owner/moderators.
+  if (room.owner === target) return false;
+  if (room.moderators.includes(target)) return false;
+  return true;
+}
+
+function getActiveVoiceRoomBan(roomId, username) {
+  const entry = db.voiceRoomBans?.[roomId]?.[username];
+  if (!entry?.banned) return null;
+
+  if (entry.expiresAt) {
+    const expiresAtMs = Date.parse(entry.expiresAt);
+    if (Number.isFinite(expiresAtMs) && expiresAtMs <= Date.now()) {
+      delete db.voiceRoomBans[roomId][username];
+      if (Object.keys(db.voiceRoomBans[roomId] || {}).length === 0) {
+        delete db.voiceRoomBans[roomId];
+      }
+      saveDB(db);
+      return null;
+    }
+  }
+
+  return entry;
+}
+
+function voiceRoomMemberProfile(room, username) {
+  const user = db.users?.[username] || {};
+  return {
+    username,
+    displayName: user.displayName || username,
+    avatar: user.avatar || "",
+    role: username === room.owner ? "owner" :
+      (Array.isArray(room.moderators) && room.moderators.includes(username) ? "moderator" : "listener")
+  };
+}
+
+function voiceRoomPublic(roomId) {
+  const room = db.voiceRooms?.[roomId];
+  if (!room) return null;
+  const runtime = getVoiceRoomRuntime(roomId);
+  const members = Array.from(runtime.members.keys());
+  const seats = Array.from({ length: VOICE_ROOM_SEAT_COUNT }, (_, i) => {
+    const seatNo = i + 1;
+    const username = runtime.seats.get(seatNo) || null;
+    const user = username ? (db.users[username] || {}) : null;
+    return {
+      seat: seatNo,
+      locked: runtime.lockedSeats.has(seatNo),
+      username,
+      displayName: username ? (user?.displayName || username) : "",
+      avatar: username ? (user?.avatar || "") : "",
+      frame: username ? getActiveFrame(username) : null,
+      muted: username ? runtime.mutedUsers.has(username) : false,
+      role: username ? (
+        username === room.owner ? "owner" :
+        (room.moderators || []).includes(username) ? "moderator" : "user"
+      ) : null
+    };
+  });
+  return {
+    id: roomId,
+    name: room.name || "غرفة صوتية",
+    owner: room.owner,
+    moderators: Array.isArray(room.moderators) ? room.moderators : [],
+    image: room.imageFileId ? `/api/files/${encodeURIComponent(room.imageFileId)}` : (room.image || ""),
+    protected: Boolean(room.codeHash),
+    createdAt: room.createdAt,
+    memberCount: members.length,
+    members,
+    memberProfiles: members.map(username => voiceRoomMemberProfile(room, username)),
+    seats
+  };
+}
+
+function listVoiceRooms() {
+  return Object.keys(db.voiceRooms || {})
+    .map(id => voiceRoomPublic(id))
+    .filter(Boolean)
+    .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+}
+
+function emitVoiceRoomsList() {
+  io.emit("voice-rooms-list", listVoiceRooms());
+}
+
+function emitVoiceRoomState(roomId) {
+  const state = voiceRoomPublic(roomId);
+  if (!state) return;
+  io.to(`voice_${roomId}`).emit("voice-room-state", state);
+  emitVoiceRoomsList();
+}
+
+function cleanupVoiceRoomSocket(socket) {
+  const roomId = socket.voiceRoomId;
+  const username = socket.userId;
+  if (!roomId || !username) return;
+  const runtime = voiceRoomRuntime.get(roomId);
+  if (!runtime) return;
+
+  const sockets = runtime.members.get(username);
+  if (sockets) {
+    sockets.delete(socket.id);
+    if (sockets.size === 0) {
+      runtime.members.delete(username);
+      for (const [seatNo, occupant] of runtime.seats.entries()) {
+        if (occupant === username) runtime.seats.delete(seatNo);
+      }
+      runtime.mutedUsers.delete(username);
+      io.to(`voice_${roomId}`).emit("voice-room-peer-left", { roomId, username });
+    }
+  }
+  socket.leave(`voice_${roomId}`);
+  socket.voiceRoomId = null;
+  emitVoiceRoomState(roomId);
+}
+
+app.get("/api/voice-rooms", requireHttpAuth, (_req, res) => {
+  res.json({ success: true, rooms: listVoiceRooms() });
+});
 
 io.on("connection", (socket) => {
   if (socket.sessionUser) {
@@ -2951,7 +3794,8 @@ io.on("connection", (socket) => {
             ? (lastMsg.type === "text" ? lastMsg.msg : "[ميديا]")
             : "ابدأ المحادثة الآن",
           time: lastMsg ? (lastMsg.time || "") : "",
-          updatedAt: getLastActivityIso(roomId, f.createdAt || null)
+          updatedAt: getLastActivityIso(roomId, f.createdAt || null),
+          unread: countUnreadMessages(roomId, currentUser)
         });
       }
 
@@ -2975,7 +3819,8 @@ io.on("connection", (socket) => {
               isHost: false,
               lastMessage: lastMsg ? (lastMsg.type === "text" ? lastMsg.msg : "[ميديا]") : "رسائل رسمية من TOMI",
               time: lastMsg ? (lastMsg.time || "") : "",
-              updatedAt: getLastActivityIso(rId, room.updatedAt || room.createdAt || null)
+              updatedAt: getLastActivityIso(rId, room.updatedAt || room.createdAt || null),
+              unread: countUnreadMessages(rId, currentUser)
             });
           }
         }
@@ -3008,7 +3853,8 @@ io.on("connection", (socket) => {
             ? (lastMsg.type === "text" ? lastMsg.msg : "[ميديا]")
             : "ابدأ المحادثة الآن",
           time: lastMsg ? (lastMsg.time || "") : "",
-          updatedAt: getLastActivityIso(rId, room.updatedAt || room.createdAt || null)
+          updatedAt: getLastActivityIso(rId, room.updatedAt || room.createdAt || null),
+          unread: countUnreadMessages(rId, currentUser)
         });
       }
 
@@ -3376,11 +4222,19 @@ io.on("connection", (socket) => {
         readOnly: Boolean(roomDoc.readOnly),
         role: userRole,
         badge: getPlatformBadge(actor),
-        permissions: getUserPermissions(actor)
+        permissions: getUserPermissions(actor),
+        pinnedMessageIds: normalizePinnedMessageIds(roomDoc)
       });
 
       const history = db.roomHistory[rId] || [];
-      socket.emit("load-history", history);
+      // The server intentionally retains only a bounded recent window. Sending
+      // the same bounded window prevents join-time RAM/network spikes.
+      const recentHistory = history.length > CHAT_HISTORY_LIMIT ? history.slice(-CHAT_HISTORY_LIMIT) : history;
+      socket.emit("load-history", recentHistory);
+      socket.emit("pinned-messages-updated", { roomId: rId, pinnedMessageIds: normalizePinnedMessageIds(roomDoc) });
+      if (history.length > recentHistory.length) {
+        socket.emit("history-window-info", { total: history.length, loaded: recentHistory.length });
+      }
 
       broadcastRoomUsers(rId);
       if (!roomDoc.isPrivate) emitRoomMembers(rId);
@@ -3650,7 +4504,7 @@ io.on("connection", (socket) => {
       delete db.rooms[rId];
       if (db.publicRooms[rId]) delete db.publicRooms[rId];
       if (db.roomBans[rId]) delete db.roomBans[rId];
-      if (db.roomHistory[rId]) delete db.roomHistory[rId];
+      if (db.roomHistory[rId]) removeRoomHistoryAndFiles(rId);
       saveDB(db);
     }
   });
@@ -3851,8 +4705,7 @@ io.on("connection", (socket) => {
         status: "sent"
       };
 
-      if (!db.roomHistory[rId]) db.roomHistory[rId] = [];
-      db.roomHistory[rId].push(messageData);
+      appendRoomMessage(rId, messageData);
       roomDoc.updatedAt = createdAt;
       saveDB(db);
 
@@ -3897,223 +4750,104 @@ io.on("connection", (socket) => {
     }
   });
 
-  // Legacy Base64 media event kept for compatibility with older clients.
-  // New clients should upload through /api/upload then emit send-uploaded-file.
-  socket.on("send-media", ({
-    roomId: roomIdOrCode,
-    msgId,
-    fileData,
-    fileType,
-    userId,
-    time,
-    replyTo
-  } = {}) => {
+  // Large Base64 media over Socket.IO is disabled. Current clients upload files
+  // through /api/upload. We still allow a short HTTPS sticker URL because the
+  // sticker picker uses this event and the URL itself is only lightweight text.
+  socket.on("send-media", ({ roomId: roomIdOrCode, msgId, fileData, fileType, userId, time, replyTo } = {}) => {
     try {
       const actor = socket.userId;
-      if (!roomIdOrCode || !actor || !fileData) return;
-      if (userId && userId !== actor) {
-        socket.emit("message-rejected", { reason: "هوية المرسل غير متطابقة." });
+      const mediaUrl = typeof fileData === "string" ? fileData.trim() : "";
+      const isSafeStickerUrl = fileType === "sticker" && /^https:\/\//i.test(mediaUrl) && mediaUrl.length <= 4096;
+      if (!isSafeStickerUrl) {
+        socket.emit("message-rejected", {
+          reason: "رفع الصور والفيديو والملفات يتم عبر نظام الرفع الآمن. حدّث الصفحة وأعد الإرسال."
+        });
         return;
       }
-
+      if (!roomIdOrCode || !actor) return;
+      if (userId && userId !== actor) return socket.emit("message-rejected", { reason: "هوية المرسل غير متطابقة." });
       const rId = getCanonicalRoomId(roomIdOrCode);
       const roomDoc = db.rooms[rId];
-      if (!roomDoc || !canUserAccessRoom(rId, actor)) {
-        socket.emit("message-rejected", { reason: "لا تملك صلاحية إرسال ملفات في هذه المحادثة." });
-        return;
+      if (!roomDoc || !canUserAccessRoom(rId, actor) || roomDoc.systemRoom) {
+        return socket.emit("message-rejected", { reason: "لا تملك صلاحية الإرسال في هذه المحادثة." });
       }
-      if (roomDoc.systemRoom) {
-        socket.emit("message-rejected", { reason: "حساب TOMI الرسمي مخصص لاستقبال رسائل المنصة فقط." });
-        return;
-      }
-
       if (!roomDoc.isPrivate) {
         const banCheck = checkRoomBan(rId, actor);
-        if (banCheck.banned) {
-          socket.emit("message-rejected", { reason: "أنت محظور من هذه الغرفة", ban: banCheck });
-          return;
-        }
+        if (banCheck.banned) return socket.emit("message-rejected", { reason: "أنت محظور من هذه الغرفة", ban: banCheck });
       }
-
-      // Socket.IO may reconnect while room.html is open. Rejoin the active room
-      // before broadcasting so text/media/voice immediately appears to the sender.
       attachSocketToConversation(socket, rId);
-
       const createdAt = new Date().toISOString();
       const displayTime = time || new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
       const user = db.users[actor] || {};
-
       const messageData = {
-        roomId: rId,
-        type: "media",
+        roomId: rId, type: "media",
         msgId: msgId || ("msg-" + Date.now() + "-" + crypto.randomBytes(4).toString("hex")),
-        fileData,
-        fileType: fileType || "file",
-        userId: actor,
-        username: actor,
-        displayName: user.displayName || actor,
-        time: displayTime,
-        createdAt,
-        replyTo: replyTo || null,
-        reactions: [],
+        fileData: mediaUrl, fileType: "sticker",
+        userId: actor, username: actor, displayName: user.displayName || actor,
+        time: displayTime, createdAt, replyTo: replyTo || null, reactions: [],
         deliveredTo: [{ userId: actor, username: actor, time: displayTime, at: createdAt }],
         readBy: [{ userId: actor, username: actor, time: displayTime, at: createdAt }],
         status: "sent"
       };
-
-      if (!db.roomHistory[rId]) db.roomHistory[rId] = [];
-      db.roomHistory[rId].push(messageData);
+      appendRoomMessage(rId, messageData);
       roomDoc.updatedAt = createdAt;
       saveDB(db);
-
-      if (telegramLoggingEnabled) {
-        enqueueTelegramTask(rId, () =>
-          forwardToTelegram({
-            type: "media",
-            roomId: rId,
-            fileData,
-            fileType: messageData.fileType,
-            userId: actor,
-            username: actor,
-            time: displayTime
-          })
-        );
-        saveMediaToFile(rId, actor, actor, fileData, messageData.fileType);
-      }
-
       io.to(rId).emit("receive-media", messageData);
       for (const participant of getRoomAudience(rId)) {
         if (participant !== actor) {
-          io.to(`user_${participant}`).emit("conversation-updated", {
-            roomId: rId,
-            message: messageData
-          });
+          io.to(`user_${participant}`).emit("receive-media", messageData);
+          io.to(`user_${participant}`).emit("conversation-updated", { roomId: rId, message: messageData });
         }
       }
-      notifyRoomParticipants(rId, actor, {
-        title: user.displayName || actor,
-        body: mediaNotificationBody(messageData.fileType),
-        url: `/room.html?roomId=${encodeURIComponent(rId)}`,
-        tag: `msg-${messageData.msgId}`,
-        type: "media"
-      }).catch(() => {});
     } catch (err) {
-      console.error("خطأ إرسال الميديا:", err.message);
-      socket.emit("message-rejected", { reason: "تعذر إرسال الملف." });
+      console.error("خطأ إرسال الملصق:", err.message);
+      socket.emit("message-rejected", { reason: "تعذر إرسال الملصق." });
     }
   });
 
-  // New large-file path: upload to disk first, then send the lightweight file metadata.
+  // Compatibility path for older clients that upload first and publish over Socket.IO.
+  // New clients publish in the same HTTP /api/upload request, but keeping this
+  // handler makes rolling deploys and already-open browser tabs safe.
   socket.on("send-uploaded-file", ({
     roomId: roomIdOrCode,
     fileId,
     msgId,
     time,
     replyTo
-  } = {}) => {
+  } = {}, ack) => {
     try {
       const actor = socket.userId;
-      if (!actor || !roomIdOrCode || !fileId) return;
-
-      const rId = getCanonicalRoomId(roomIdOrCode);
-      const roomDoc = db.rooms[rId];
-      const file = db.uploads[fileId];
-
-      if (!roomDoc || !canUserAccessRoom(rId, actor)) {
-        socket.emit("message-rejected", { reason: "لا تملك صلاحية إرسال ملف في هذه المحادثة." });
-        return;
-      }
-      if (roomDoc.systemRoom) {
-        socket.emit("message-rejected", { reason: "حساب TOMI الرسمي مخصص لاستقبال رسائل المنصة فقط." });
-        return;
-      }
-      if (!file || file.uploader !== actor || file.roomId !== rId) {
-        socket.emit("message-rejected", { reason: "الملف غير صالح أو لم يتم رفعه لهذه المحادثة." });
-        return;
+      if (roomIdOrCode) {
+        try { attachSocketToConversation(socket, getCanonicalRoomId(roomIdOrCode)); } catch (_) {}
       }
 
-      if (!roomDoc.isPrivate) {
-        const banCheck = checkRoomBan(rId, actor);
-        if (banCheck.banned) {
-          socket.emit("message-rejected", { reason: "أنت محظور من هذه الغرفة", ban: banCheck });
-          return;
-        }
-      }
-
-      // Socket.IO may reconnect while room.html is open. Rejoin the active room
-      // before broadcasting so text/media/voice immediately appears to the sender.
-      attachSocketToConversation(socket, rId);
-
-      const createdAt = new Date().toISOString();
-      const displayTime = time || new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-      const user = db.users[actor] || {};
-
-      const messageData = {
-        roomId: rId,
-        type: "media",
-        msgId: msgId || ("msg-" + Date.now() + "-" + crypto.randomBytes(4).toString("hex")),
+      const result = publishStoredUploadMessage({
+        actor,
+        roomIdOrCode,
         fileId,
-        fileUrl: `/api/files/${encodeURIComponent(fileId)}`,
-        fileName: file.originalName,
-        fileType: file.fileType,
-        mimeType: file.mimeType,
-        fileSize: file.size,
-        userId: actor,
-        username: actor,
-        displayName: user.displayName || actor,
-        time: displayTime,
-        createdAt,
-        replyTo: replyTo || null,
-        reactions: [],
-        deliveredTo: [{ userId: actor, username: actor, time: displayTime, at: createdAt }],
-        readBy: [{ userId: actor, username: actor, time: displayTime, at: createdAt }],
-        status: "sent"
-      };
+        msgId,
+        time,
+        replyTo
+      });
 
-      if (!db.roomHistory[rId]) db.roomHistory[rId] = [];
-      db.roomHistory[rId].push(messageData);
-      roomDoc.updatedAt = createdAt;
-      file.sentAt = createdAt;
-      file.messageId = messageData.msgId;
-      saveDB(db);
-
-      if (telegramLoggingEnabled) {
-        enqueueTelegramTask(rId, () => sendTelegramStoredUpload({
-          roomId: rId,
-          userId: actor,
-          username: actor,
-          time: displayTime,
-          record: file
-        }));
-      }
-      if (!roomDoc.isPrivate) {
-        logMessageToFile(
-          rId,
-          `[ملف - ${file.fileType}] ${user.displayName || actor} (${actor}) أرسل ${file.originalName} (${file.size} bytes)`
-        );
+      if (!result.success) {
+        socket.emit("message-rejected", { reason: result.error || "تعذر إرسال الملف." });
+        if (typeof ack === "function") ack({ success: false, error: result.error || "تعذر إرسال الملف." });
+        return;
       }
 
-      io.to(rId).emit("receive-media", messageData);
-      socket.emit("upload-message-sent", { success: true, fileId, msgId: messageData.msgId });
-
-      for (const participant of getRoomAudience(rId)) {
-        if (participant !== actor) {
-          io.to(`user_${participant}`).emit("conversation-updated", {
-            roomId: rId,
-            message: messageData
-          });
-        }
+      socket.emit("upload-message-sent", {
+        success: true,
+        fileId,
+        msgId: result.messageData?.msgId || msgId
+      });
+      if (typeof ack === "function") {
+        ack({ success: true, fileId, msgId: result.messageData?.msgId || msgId });
       }
-      notifyRoomParticipants(rId, actor, {
-        title: user.displayName || actor,
-        body: mediaNotificationBody(messageData.fileType, messageData.fileName),
-        url: `/room.html?roomId=${encodeURIComponent(rId)}`,
-        tag: `msg-${messageData.msgId}`,
-        type: "media"
-      }).catch(() => {});
     } catch (err) {
       console.error("خطأ إرسال الملف المرفوع:", err.message);
       socket.emit("message-rejected", { reason: "تعذر إرسال الملف." });
+      if (typeof ack === "function") ack({ success: false, error: "تعذر إرسال الملف." });
     }
   });
 
@@ -4251,9 +4985,56 @@ io.on("connection", (socket) => {
       if (changed.length) {
         saveDB(db);
         io.to(rId).emit("room-read-status", { roomId: rId, userId: actor, messageIds: changed, at });
+        io.to(`user_${actor}`).emit("conversation-updated", { roomId: rId, unread: 0 });
       }
     } catch (err) {
       console.error("خطأ تحديد الغرفة كمقروءة:", err.message);
+    }
+  });
+
+  // 📌 Pin/unpin recent messages. Private-chat participants can pin; in public rooms
+  // room staff/platform management can pin. Up to 10 pinned messages per room.
+  socket.on("pin-message", ({ roomId: roomIdOrCode, messageId } = {}, ack = () => {}) => {
+    try {
+      const actor = socket.userId;
+      if (!actor || !roomIdOrCode || !messageId) return ack({ success: false, error: "بيانات ناقصة" });
+      const rId = getCanonicalRoomId(roomIdOrCode);
+      if (!canPinRoomMessage(rId, actor)) return ack({ success: false, error: "لا تملك صلاحية تثبيت الرسائل" });
+      const roomDoc = db.rooms?.[rId];
+      const msg = (db.roomHistory?.[rId] || []).find(m => m?.msgId === messageId && !m.deleted);
+      if (!roomDoc || !msg) return ack({ success: false, error: "الرسالة غير موجودة" });
+      const pins = normalizePinnedMessageIds(roomDoc);
+      if (!pins.includes(messageId)) pins.push(messageId);
+      roomDoc.pinnedMessageIds = pins.slice(-10);
+      roomDoc.updatedAt = new Date().toISOString();
+      saveDB(db);
+      const payload = { roomId: rId, pinnedMessageIds: roomDoc.pinnedMessageIds, changedMessageId: messageId, pinned: true };
+      io.to(rId).emit("pinned-messages-updated", payload);
+      for (const participant of getRoomAudience(rId)) io.to(`user_${participant}`).emit("pinned-messages-updated", payload);
+      ack({ success: true, ...payload });
+    } catch (err) {
+      ack({ success: false, error: "تعذر تثبيت الرسالة" });
+    }
+  });
+
+  socket.on("unpin-message", ({ roomId: roomIdOrCode, messageId } = {}, ack = () => {}) => {
+    try {
+      const actor = socket.userId;
+      if (!actor || !roomIdOrCode || !messageId) return ack({ success: false, error: "بيانات ناقصة" });
+      const rId = getCanonicalRoomId(roomIdOrCode);
+      if (!canPinRoomMessage(rId, actor)) return ack({ success: false, error: "لا تملك صلاحية إلغاء التثبيت" });
+      const roomDoc = db.rooms?.[rId];
+      if (!roomDoc) return ack({ success: false, error: "المحادثة غير موجودة" });
+      const pins = normalizePinnedMessageIds(roomDoc);
+      roomDoc.pinnedMessageIds = pins.filter(id => id !== messageId);
+      roomDoc.updatedAt = new Date().toISOString();
+      saveDB(db);
+      const payload = { roomId: rId, pinnedMessageIds: roomDoc.pinnedMessageIds, changedMessageId: messageId, pinned: false };
+      io.to(rId).emit("pinned-messages-updated", payload);
+      for (const participant of getRoomAudience(rId)) io.to(`user_${participant}`).emit("pinned-messages-updated", payload);
+      ack({ success: true, ...payload });
+    } catch (err) {
+      ack({ success: false, error: "تعذر إلغاء تثبيت الرسالة" });
     }
   });
 
@@ -4599,9 +5380,17 @@ io.on("connection", (socket) => {
       msg.deletedBy = actor;
       msg.msg = "";
       delete msg.fileData;
+      const roomDoc = db.rooms?.[rId];
+      if (roomDoc && Array.isArray(roomDoc.pinnedMessageIds)) {
+        roomDoc.pinnedMessageIds = roomDoc.pinnedMessageIds.filter(id => String(id) !== String(msgId));
+      }
       saveDB(db);
 
       io.to(rId).emit("message-deleted", { roomId: rId, msgId, deletedBy: actor });
+      if (roomDoc) {
+        const pinPayload = { roomId: rId, pinnedMessageIds: normalizePinnedMessageIds(roomDoc), changedMessageId: msgId, pinned: false };
+        io.to(rId).emit("pinned-messages-updated", pinPayload);
+      }
       socket.emit("message-delete-result", { success: true, msgId });
     } catch (err) {
       socket.emit("message-delete-result", { success: false, error: "تعذر حذف الرسالة" });
@@ -4843,7 +5632,7 @@ io.on("connection", (socket) => {
           status: "sent"
         };
 
-        db.roomHistory[inbox.roomId].push(messageData);
+        appendRoomMessage(inbox.roomId, messageData);
         inbox.room.updatedAt = createdAt;
         delivered += 1;
 
@@ -5297,6 +6086,16 @@ io.on("connection", (socket) => {
     });
   });
 
+  socket.on("call-screen-share-state", ({ roomId, targetUser, callId, active, aspectRatio } = {}) => {
+    const valid = validatePrivateCallTarget(roomId, targetUser);
+    if (!valid || !callId) return;
+    emitPrivateCallEvent(valid, "call-screen-share-state", {
+      callId,
+      active: active === true,
+      aspectRatio: Number(aspectRatio || 0) || null
+    });
+  });
+
   socket.on("leave-room-view", () => {
     const previousRoomId = socket.roomId;
     if (previousRoomId) {
@@ -5328,6 +6127,7 @@ io.on("connection", (socket) => {
     }
 
     if (db.roomHistory[rId]) {
+      removeRoomHistoryAndFiles(rId);
       db.roomHistory[rId] = [];
       roomDoc.updatedAt = new Date().toISOString();
       saveDB(db);
@@ -5341,7 +6141,283 @@ io.on("connection", (socket) => {
     socket.emit("clear-history-result", { success: true, roomId: rId });
   });
 
+
+  // ---------------- Voice rooms ----------------
+  socket.on("voice-rooms-get", () => {
+    if (!socket.userId) return;
+    socket.emit("voice-rooms-list", listVoiceRooms());
+  });
+
+  socket.on("voice-room-create", ({ name, code } = {}, ack = () => {}) => {
+    try {
+      const actor = socket.userId;
+      if (!actor) return ack({ success: false, error: "يجب تسجيل الدخول" });
+      const roomId = "voice_" + Date.now().toString(36) + "_" + crypto.randomBytes(3).toString("hex");
+      const cleanName = String(name || "غرفة صوتية").trim().slice(0, 60) || "غرفة صوتية";
+      const cleanCode = String(code || "").trim().slice(0, 40);
+      db.voiceRooms[roomId] = {
+        id: roomId,
+        name: cleanName,
+        owner: actor,
+        moderators: [],
+        codeHash: cleanCode ? hashVoiceRoomCode(cleanCode) : "",
+        imageFileId: null,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      };
+      saveDB(db);
+      emitVoiceRoomsList();
+      ack({ success: true, room: voiceRoomPublic(roomId) });
+    } catch (err) {
+      ack({ success: false, error: "تعذر إنشاء الغرفة الصوتية" });
+    }
+  });
+
+  socket.on("voice-room-join", ({ roomId, code } = {}, ack = () => {}) => {
+    try {
+      const actor = socket.userId;
+      const room = db.voiceRooms?.[roomId];
+      if (!actor || !room) return ack({ success: false, error: "الغرفة غير موجودة" });
+      const ban = getActiveVoiceRoomBan(roomId, actor);
+      if (ban) {
+        let error = "أنت محظور من هذه الغرفة الصوتية";
+        if (ban.expiresAt) {
+          const remainingMs = Math.max(0, Date.parse(ban.expiresAt) - Date.now());
+          const remainingMinutes = Math.max(1, Math.ceil(remainingMs / 60000));
+          error = `تم منعك مؤقتاً من دخول هذه الغرفة. المتبقي تقريباً ${remainingMinutes} دقيقة`;
+        }
+        return ack({ success: false, error, ban: { temporary: Boolean(ban.expiresAt), expiresAt: ban.expiresAt || null } });
+      }
+      if (room.codeHash && actor !== room.owner && actor !== PLATFORM_OWNER_USERNAME) {
+        if (hashVoiceRoomCode(String(code || "")) !== room.codeHash) {
+          return ack({ success: false, error: "رمز الغرفة غير صحيح", codeRequired: true });
+        }
+      }
+
+      if (socket.voiceRoomId && socket.voiceRoomId !== roomId) cleanupVoiceRoomSocket(socket);
+      socket.join(`voice_${roomId}`);
+      socket.voiceRoomId = roomId;
+      const runtime = getVoiceRoomRuntime(roomId);
+      if (!runtime.members.has(actor)) runtime.members.set(actor, new Set());
+      runtime.members.get(actor).add(socket.id);
+
+      const peers = Array.from(runtime.members.keys()).filter(u => u !== actor);
+      ack({ success: true, room: voiceRoomPublic(roomId), peers });
+      io.to(`voice_${roomId}`).emit("voice-room-peer-joined", { roomId, username: actor });
+      emitVoiceRoomState(roomId);
+    } catch (err) {
+      ack({ success: false, error: "تعذر دخول الغرفة الصوتية" });
+    }
+  });
+
+  socket.on("voice-room-leave", ({ roomId } = {}) => {
+    if (roomId && socket.voiceRoomId === roomId) cleanupVoiceRoomSocket(socket);
+  });
+
+  socket.on("voice-room-take-seat", ({ roomId, seat } = {}, ack = () => {}) => {
+    const actor = socket.userId;
+    const room = db.voiceRooms?.[roomId];
+    if (!actor || !room || socket.voiceRoomId !== roomId) return ack({ success: false, error: "ادخل الغرفة أولاً" });
+    const runtime = getVoiceRoomRuntime(roomId);
+    const requested = Number(seat || 0);
+    let seatNo = requested >= 1 && requested <= VOICE_ROOM_SEAT_COUNT ? requested : null;
+    if (!seatNo) {
+      for (let i = 1; i <= VOICE_ROOM_SEAT_COUNT; i++) {
+        if (!runtime.seats.has(i) && !runtime.lockedSeats.has(i)) { seatNo = i; break; }
+      }
+    }
+    if (!seatNo || runtime.lockedSeats.has(seatNo) || runtime.seats.has(seatNo)) {
+      return ack({ success: false, error: "لا يوجد مقعد متاح" });
+    }
+    for (const [n, u] of runtime.seats.entries()) if (u === actor) runtime.seats.delete(n);
+    runtime.seats.set(seatNo, actor);
+    runtime.mutedUsers.delete(actor);
+    emitVoiceRoomState(roomId);
+    io.to(`voice_${roomId}`).emit("voice-room-speaker-changed", { roomId, username: actor, seated: true });
+    ack({ success: true, seat: seatNo });
+  });
+
+  socket.on("voice-room-leave-seat", ({ roomId } = {}, ack = () => {}) => {
+    const actor = socket.userId;
+    const runtime = voiceRoomRuntime.get(roomId);
+    if (!actor || !runtime) return ack({ success: false });
+    for (const [n, u] of runtime.seats.entries()) if (u === actor) runtime.seats.delete(n);
+    runtime.mutedUsers.delete(actor);
+    emitVoiceRoomState(roomId);
+    io.to(`voice_${roomId}`).emit("voice-room-speaker-changed", { roomId, username: actor, seated: false });
+    ack({ success: true });
+  });
+
+  socket.on("voice-room-seat-control", ({ roomId, seat, action } = {}, ack = () => {}) => {
+    const actor = socket.userId;
+    const room = db.voiceRooms?.[roomId];
+    const runtime = voiceRoomRuntime.get(roomId);
+    if (!actor || !room || !runtime || !isVoiceRoomModerator(room, actor)) {
+      return ack({ success: false, error: "ليس لديك صلاحية" });
+    }
+    const seatNo = Number(seat);
+    if (!(seatNo >= 1 && seatNo <= VOICE_ROOM_SEAT_COUNT)) return ack({ success: false, error: "مقعد غير صالح" });
+    const occupant = runtime.seats.get(seatNo);
+
+    if (action === "lock") {
+      if (occupant && !mayActOnVoiceRoomTarget(room, actor, occupant)) return ack({ success: false, error: "لا يمكن تنفيذ هذا الإجراء" });
+      runtime.lockedSeats.add(seatNo);
+      if (occupant) {
+        runtime.seats.delete(seatNo);
+        runtime.mutedUsers.delete(occupant);
+        io.to(`user_${occupant}`).emit("voice-room-seat-removed", { roomId, reason: "تم إغلاق المقعد" });
+      }
+    } else if (action === "unlock") {
+      runtime.lockedSeats.delete(seatNo);
+    } else if (action === "mute") {
+      if (!occupant || !mayActOnVoiceRoomTarget(room, actor, occupant)) return ack({ success: false, error: "لا يمكن كتم هذا المستخدم" });
+      runtime.mutedUsers.add(occupant);
+      io.to(`user_${occupant}`).emit("voice-room-force-mute", { roomId, muted: true });
+    } else if (action === "unmute") {
+      if (!occupant || !mayActOnVoiceRoomTarget(room, actor, occupant)) return ack({ success: false, error: "لا يمكن إلغاء كتم هذا المستخدم" });
+      runtime.mutedUsers.delete(occupant);
+      io.to(`user_${occupant}`).emit("voice-room-force-mute", { roomId, muted: false });
+    } else if (action === "remove") {
+      if (!occupant || !mayActOnVoiceRoomTarget(room, actor, occupant)) return ack({ success: false, error: "لا يمكن إزالة هذا المستخدم" });
+      runtime.seats.delete(seatNo);
+      runtime.mutedUsers.delete(occupant);
+      io.to(`user_${occupant}`).emit("voice-room-seat-removed", { roomId, reason: "تمت إزالتك من المقعد" });
+    }
+    emitVoiceRoomState(roomId);
+    ack({ success: true });
+  });
+
+  socket.on("voice-room-kick", ({ roomId, targetUser, ban = false, tempMinutes = 0 } = {}, ack = () => {}) => {
+    const actor = socket.userId;
+    const room = db.voiceRooms?.[roomId];
+    if (!room || !mayActOnVoiceRoomTarget(room, actor, targetUser)) {
+      return ack({ success: false, error: "لا تملك صلاحية على هذا المستخدم" });
+    }
+
+    const requestedTempMinutes = Math.floor(Number(tempMinutes || 0));
+    const temporaryKick = Number.isFinite(requestedTempMinutes) && requestedTempMinutes > 0;
+
+    // The room owner (or platform owner) chooses temporary exclusion duration.
+    if (temporaryKick && actor !== room.owner && actor !== PLATFORM_OWNER_USERNAME) {
+      return ack({ success: false, error: "فقط مالك الغرفة يستطيع تحديد مدة الطرد المؤقت" });
+    }
+
+    let banRecord = null;
+    if (ban || temporaryKick) {
+      if (!db.voiceRoomBans[roomId]) db.voiceRoomBans[roomId] = {};
+      const now = new Date();
+      const safeMinutes = temporaryKick ? Math.min(10080, Math.max(1, requestedTempMinutes)) : 0;
+      banRecord = {
+        banned: true,
+        by: actor,
+        at: now.toISOString(),
+        temporary: temporaryKick,
+        expiresAt: temporaryKick ? new Date(now.getTime() + safeMinutes * 60000).toISOString() : null,
+        durationMinutes: temporaryKick ? safeMinutes : null
+      };
+      db.voiceRoomBans[roomId][targetUser] = banRecord;
+      saveDB(db);
+    }
+
+    const runtime = voiceRoomRuntime.get(roomId);
+    if (runtime) {
+      runtime.members.delete(targetUser);
+      for (const [n, u] of runtime.seats.entries()) if (u === targetUser) runtime.seats.delete(n);
+      runtime.mutedUsers.delete(targetUser);
+    }
+
+    io.to(`user_${targetUser}`).emit("voice-room-kicked", {
+      roomId,
+      banned: Boolean(ban),
+      temporary: temporaryKick,
+      expiresAt: banRecord?.expiresAt || null,
+      durationMinutes: banRecord?.durationMinutes || null
+    });
+
+    for (const sid of io.sockets.adapter.rooms.get(`user_${targetUser}`) || []) {
+      const s = io.sockets.sockets.get(sid);
+      if (s?.voiceRoomId === roomId) {
+        s.leave(`voice_${roomId}`);
+        s.voiceRoomId = null;
+      }
+    }
+    emitVoiceRoomState(roomId);
+    ack({ success: true, temporary: temporaryKick, expiresAt: banRecord?.expiresAt || null });
+  });
+
+  socket.on("voice-room-role", ({ roomId, targetUser, action } = {}, ack = () => {}) => {
+    const actor = socket.userId;
+    const room = db.voiceRooms?.[roomId];
+    if (!room || !actor) return ack({ success: false, error: "الغرفة غير موجودة" });
+    // Only room owner or platform owner can promote/demote room moderators.
+    if (actor !== room.owner && actor !== PLATFORM_OWNER_USERNAME) {
+      return ack({ success: false, error: "فقط مالك الغرفة يستطيع إدارة المشرفين" });
+    }
+    if (targetUser === room.owner) return ack({ success: false, error: "لا يمكن تغيير رتبة مالك الغرفة" });
+    room.moderators = Array.isArray(room.moderators) ? room.moderators : [];
+    if (action === "promote") {
+      if (!room.moderators.includes(targetUser)) room.moderators.push(targetUser);
+    } else if (action === "demote") {
+      room.moderators = room.moderators.filter(u => u !== targetUser);
+    } else {
+      return ack({ success: false, error: "إجراء غير معروف" });
+    }
+    room.updatedAt = new Date().toISOString();
+    saveDB(db);
+    emitVoiceRoomState(roomId);
+    ack({ success: true });
+  });
+
+  socket.on("voice-room-update", ({ roomId, name, code, clearCode, imageFileId } = {}, ack = () => {}) => {
+    const actor = socket.userId;
+    const room = db.voiceRooms?.[roomId];
+    if (!room || !isVoiceRoomModerator(room, actor)) return ack({ success: false, error: "ليس لديك صلاحية" });
+    if (name != null) room.name = String(name || "").trim().slice(0, 60) || room.name;
+    if (clearCode) room.codeHash = "";
+    else if (code != null && String(code).trim()) room.codeHash = hashVoiceRoomCode(String(code).trim().slice(0, 40));
+    if (imageFileId) {
+      const file = db.uploads?.[imageFileId];
+      if (!file || file.uploader !== actor || file.context !== "voice-room-image") {
+        return ack({ success: false, error: "صورة الغرفة غير صالحة" });
+      }
+      room.imageFileId = imageFileId;
+    }
+    room.updatedAt = new Date().toISOString();
+    saveDB(db);
+    emitVoiceRoomState(roomId);
+    ack({ success: true, room: voiceRoomPublic(roomId) });
+  });
+
+  socket.on("voice-room-delete", ({ roomId } = {}, ack = () => {}) => {
+    const actor = socket.userId;
+    const room = db.voiceRooms?.[roomId];
+    if (!room || (actor !== room.owner && actor !== PLATFORM_OWNER_USERNAME)) {
+      return ack({ success: false, error: "فقط مالك الغرفة يستطيع حذفها" });
+    }
+    delete db.voiceRooms[roomId];
+    delete db.voiceRoomBans[roomId];
+    saveDB(db);
+    io.to(`voice_${roomId}`).emit("voice-room-deleted", { roomId });
+    voiceRoomRuntime.delete(roomId);
+    emitVoiceRoomsList();
+    ack({ success: true });
+  });
+
+  // Voice-room WebRTC signaling (mesh). Signals are limited to members of the same voice room.
+  const forwardVoiceSignal = (eventOut, payload = {}) => {
+    const actor = socket.userId;
+    const roomId = payload.roomId;
+    const targetUser = payload.targetUser;
+    const runtime = voiceRoomRuntime.get(roomId);
+    if (!actor || !targetUser || !runtime?.members.has(actor) || !runtime.members.has(targetUser)) return;
+    io.to(`user_${targetUser}`).emit(eventOut, { ...payload, fromUser: actor });
+  };
+  socket.on("voice-room-webrtc-offer", data => forwardVoiceSignal("voice-room-webrtc-offer", data));
+  socket.on("voice-room-webrtc-answer", data => forwardVoiceSignal("voice-room-webrtc-answer", data));
+  socket.on("voice-room-webrtc-ice", data => forwardVoiceSignal("voice-room-webrtc-ice", data));
+
   socket.on("disconnect", () => {
+    try { cleanupVoiceRoomSocket(socket); } catch (_) {}
     if (socket.username && activeOnlineUsers.has(socket.username)) {
       const userSockets = activeOnlineUsers.get(socket.username);
       userSockets.delete(socket.id);
@@ -5450,12 +6526,196 @@ function broadcastOnlineUsers() {
 // 7. تشغيل الخادم
 // =========================================================
 const PORT = process.env.PORT || 9000;
+// Allow large mobile uploads on slow networks while still bounding hung requests.
+server.requestTimeout = Math.max(5 * 60 * 1000, Number(process.env.HTTP_REQUEST_TIMEOUT_MS || 15 * 60 * 1000) || 15 * 60 * 1000);
+server.headersTimeout = 65_000;
+server.keepAliveTimeout = 60_000;
+
+// Bounded runtime cleanup + memory guard for small Render instances.
+function cleanupExpiredRuntimeState({ aggressive = false } = {}) {
+  const now = Date.now();
+  let changed = false;
+
+  for (const [token, session] of Object.entries(db.sessions || {})) {
+    if (!session || Number(session.expiresAt || 0) <= now) {
+      delete db.sessions[token];
+      changed = true;
+    }
+  }
+
+  for (const [key, value] of cloudflareTurnCredentialCache.entries()) {
+    if (!value || Number(value.expiresAt || 0) <= now) cloudflareTurnCredentialCache.delete(key);
+  }
+  if (cloudflareTurnCredentialCache.size > 800) {
+    for (const key of cloudflareTurnCredentialCache.keys()) {
+      cloudflareTurnCredentialCache.delete(key);
+      if (cloudflareTurnCredentialCache.size <= 500) break;
+    }
+  }
+
+  for (const [username, sockets] of activeOnlineUsers.entries()) {
+    if (!sockets || sockets.size === 0) activeOnlineUsers.delete(username);
+  }
+  for (const [username, count] of activeUploadsByUser.entries()) {
+    if (!Number.isFinite(count) || count <= 0) activeUploadsByUser.delete(username);
+  }
+
+  for (const roomId of voiceRoomRuntime.keys()) {
+    if (!db.voiceRooms?.[roomId]) voiceRoomRuntime.delete(roomId);
+  }
+
+  // Remove expired platform and public-room bans to keep persistent state bounded.
+  for (const [username, ban] of Object.entries(db.platformBans || {})) {
+    if (!ban || ban.isPermanent) continue;
+    const expires = ban.expiresAt ? Date.parse(ban.expiresAt) : NaN;
+    if (Number.isFinite(expires) && expires <= now) {
+      delete db.platformBans[username];
+      changed = true;
+    }
+  }
+  for (const [roomId, bans] of Object.entries(db.roomBans || {})) {
+    if (!bans || typeof bans !== "object") continue;
+    for (const [username, ban] of Object.entries(bans)) {
+      if (!ban || ban.isPermanent) continue;
+      const expires = ban.expiresAt ? Date.parse(ban.expiresAt) : NaN;
+      if (Number.isFinite(expires) && expires <= now) {
+        delete bans[username];
+        changed = true;
+      }
+    }
+    if (Object.keys(bans).length === 0) {
+      delete db.roomBans[roomId];
+      changed = true;
+    }
+  }
+
+  // Remove expired temporary voice-room bans without touching permanent bans.
+  for (const [roomId, bans] of Object.entries(db.voiceRoomBans || {})) {
+    if (!bans || typeof bans !== "object") continue;
+    for (const [username, ban] of Object.entries(bans)) {
+      const expires = ban?.expiresAt ? Date.parse(ban.expiresAt) : NaN;
+      if (Number.isFinite(expires) && expires <= now) {
+        delete bans[username];
+        changed = true;
+      }
+    }
+    if (Object.keys(bans).length === 0) {
+      delete db.voiceRoomBans[roomId];
+      changed = true;
+    }
+  }
+
+  // Expire only the disposable local acceleration copy. The canonical GridFS
+  // object remains untouched and continues to serve the message after cache TTL.
+  for (const record of Object.values(db.uploads || {})) {
+    if (!record?.cacheStoredName) continue;
+    const expires = Date.parse(record.cacheExpiresAt || "");
+    if (Number.isFinite(expires) && expires <= now) {
+      fs.promises.unlink(path.join(UPLOAD_DIR, record.cacheStoredName)).catch(() => {});
+      record.cacheStoredName = null;
+      record.cacheExpiresAt = null;
+      changed = true;
+    }
+  }
+
+  // Uploaded-to-chat files that were never published are temporary. Clean them
+  // after a grace period so abandoned mobile uploads cannot grow state forever.
+  for (const [fileId, record] of Object.entries(db.uploads || {})) {
+    if (!record || record.context !== "chat" || record.messageId) continue;
+    const created = Date.parse(record.createdAt || "");
+    if (Number.isFinite(created) && now - created >= UNSENT_CHAT_UPLOAD_TTL_MS && !isChatUploadReferenced(fileId)) {
+      delete db.uploads[fileId];
+      queuePhysicalUploadDelete(record);
+      changed = true;
+    }
+  }
+
+  // Remove stale temporary local files left by aborted uploads.
+  fs.promises.readdir(UPLOAD_DIR, { withFileTypes: true }).then(async entries => {
+    for (const entry of entries) {
+      if (!entry.isFile()) continue;
+      const full = path.join(UPLOAD_DIR, entry.name);
+      try {
+        const st = await fs.promises.stat(full);
+        if (Date.now() - st.mtimeMs >= UNSENT_CHAT_UPLOAD_TTL_MS) {
+          const known = Object.values(db.uploads || {}).some(r =>
+            r?.storedName === entry.name || r?.cacheStoredName === entry.name
+          );
+          if (!known) await fs.promises.unlink(full).catch(() => {});
+        }
+      } catch (_) {}
+    }
+  }).catch(() => {});
+
+  if (aggressive) trimAllRoomHistories();
+  if (changed) scheduleMongoSave();
+  return changed;
+}
+
+async function requestMemorySafetyRestart(rssMB) {
+  if (memoryRestartRequested) return;
+  memoryRestartRequested = true;
+  memoryGuardStatus = "restart-pending";
+  console.error(`🛟 Memory guard: RSS ${rssMB}MB stayed above critical limit. Requesting a controlled restart before Render OOM-kills the process.`);
+  // Stop accepting new HTTP connections; existing clients will reconnect through
+  // Socket.IO after Render restarts the process. Avoid serializing the whole DB at
+  // this point because doing so under memory pressure can itself cause an OOM.
+  try { server.close(() => process.exit(1)); } catch (_) {}
+  setTimeout(() => process.exit(1), 2500).unref();
+}
+
+const memoryGuardTimer = setInterval(() => {
+  const m = process.memoryUsage();
+  const rssMB = Math.round(m.rss / 1024 / 1024);
+  const heapMB = Math.round(m.heapUsed / 1024 / 1024);
+
+  if (rssMB >= MEMORY_CRITICAL_MB) {
+    memoryGuardStatus = "critical";
+    memoryCriticalStrikes += 1;
+    cleanupExpiredRuntimeState({ aggressive: true });
+    if (global.gc) {
+      try { global.gc(); } catch (_) {}
+    }
+    console.warn(`🔴 Memory critical: RSS ${rssMB}MB, heap ${heapMB}MB (${memoryCriticalStrikes}/${MEMORY_CRITICAL_STRIKES})`);
+    if (memoryCriticalStrikes >= MEMORY_CRITICAL_STRIKES) requestMemorySafetyRestart(rssMB).catch(() => {});
+    return;
+  }
+
+  memoryCriticalStrikes = 0;
+  if (rssMB >= MEMORY_CLEANUP_MB) {
+    memoryGuardStatus = "cleanup";
+    cleanupExpiredRuntimeState({ aggressive: true });
+    if (global.gc) {
+      try { global.gc(); } catch (_) {}
+    }
+    console.warn(`🧹 Memory cleanup: RSS ${rssMB}MB, heap ${heapMB}MB`);
+  } else if (rssMB >= MEMORY_WARN_MB) {
+    memoryGuardStatus = "warning";
+    cleanupExpiredRuntimeState();
+    console.warn(`⚠️ Memory warning: RSS ${rssMB}MB, heap ${heapMB}MB`);
+  } else {
+    memoryGuardStatus = "normal";
+  }
+}, MEMORY_GUARD_INTERVAL_MS);
+memoryGuardTimer.unref?.();
+
+const transientCleanupTimer = setInterval(() => {
+  cleanupExpiredRuntimeState();
+}, 5 * 60 * 1000);
+transientCleanupTimer.unref?.();
 
 async function startServer() {
   await initCloudDatabase();
   db = normalizeDatabaseState(db);
   ensurePlatformOwner();
   consolidatePlatformInboxes();
+  trimAllRoomHistories();
+  cleanupExpiredRuntimeState({ aggressive: true });
+  // Browser push was removed from TOMI. Drop old subscription/preferences data
+  // so stale notification records do not occupy the single in-memory state doc.
+  db.pushSubscriptions = {};
+  db.pushConfig = {};
+  db.notificationPreferences = {};
   // Browser push notifications are intentionally disabled.
   // TOMI now keeps messaging/calls inside the live web app without requesting notification permission.
   webPushReady = false;

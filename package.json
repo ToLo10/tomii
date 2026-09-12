@@ -4,7 +4,7 @@
   "description": "Chatify realtime chat with private chats, public rooms, uploads, moderation, reports, read receipts and WebRTC signaling.",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js",
+    "start": "node --expose-gc --max-old-space-size=320 index.js",
     "check": "node --check index.js",
     "dev": "node --watch index.js"
   },

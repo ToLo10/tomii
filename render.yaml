@@ -31,4 +31,30 @@ services:
       - key: TELEGRAM_CHAT_ID
         sync: false
       - key: TELEGRAM_MAX_COPY_BYTES
-        value: "20971520"
+        value: "4194304"
+      - key: MONGO_SAVE_DEBOUNCE_MS
+        value: "2000"
+      - key: CHAT_HISTORY_LIMIT
+        value: "50"
+      - key: UNSENT_CHAT_UPLOAD_TTL_MS
+        value: "21600000"
+      - key: MEMORY_WARN_MB
+        value: "300"
+      - key: MEMORY_CLEANUP_MB
+        value: "340"
+      - key: MEMORY_CRITICAL_MB
+        value: "440"
+      - key: MEMORY_CRITICAL_STRIKES
+        value: "3"
+      - key: HTTP_REQUEST_TIMEOUT_MS
+        value: "900000"
+      - key: MAX_CONCURRENT_UPLOADS_PER_USER
+        value: "2"
+      - key: MEDIA_LOCAL_CACHE_TTL_MS
+        value: "1200000"
+      - key: MEDIA_LOCAL_CACHE_MAX_FILE_BYTES
+        value: "134217728"
+      - key: LOCAL_ARCHIVE_ENABLED
+        value: "false"
+      - key: NODE_OPTIONS
+        value: "--max-old-space-size=320"

@@ -3826,3 +3826,166 @@ body.image-lightbox-open { overflow: hidden; }
         font-size: .70rem;
     }
 }
+
+/* ===== TOMI 2026-09 voice/call/chat stability additions ===== */
+#chatContainer{overflow-anchor:none;scroll-behavior:auto}
+.message{overflow-anchor:none}
+.voice-recording-bar{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:8px;padding:9px 11px;border:1px solid rgba(139,92,246,.32);background:rgba(24,23,42,.96);border-radius:14px;color:#fff}
+.voice-record-status{display:flex;align-items:center;gap:8px;color:#d8d5e8;font-size:.9rem}.voice-record-dot{width:9px;height:9px;border-radius:50%;background:#ef4444;box-shadow:0 0 0 5px rgba(239,68,68,.12);animation:voicePulse 1s infinite}.voice-record-cancel,.voice-record-send{border:0;border-radius:10px;padding:8px 11px;color:#fff;cursor:pointer}.voice-record-cancel{background:#3a2430;color:#ffb0b0}.voice-record-send{background:linear-gradient(135deg,#6c5ce7,#8b5cf6)}
+@keyframes voicePulse{50%{opacity:.35}}
+.persistent-menu-btn{display:none;width:38px;height:38px;border:1px solid #323047;border-radius:10px;background:#191827;color:#fff;align-items:center;justify-content:center;cursor:pointer;flex:0 0 auto}
+.media-fallback-link{display:block;margin-top:6px;color:#c4b5fd;text-decoration:none;font-size:.82rem}
+#screenShareCallBtn.active-off{background:#6d28d9;color:#fff}
+@media(max-width:768px){.persistent-menu-btn{display:inline-flex}.chat-view-header{position:sticky;top:0;z-index:32}.voice-recording-bar{margin-inline:2px;padding:8px}.voice-record-cancel,.voice-record-send{padding:7px 9px;font-size:.82rem}}
+@media(max-width:430px){.chat-view-header{padding-top:max(8px,env(safe-area-inset-top))}.persistent-menu-btn{width:36px;height:36px}.voice-record-status span:last-child{display:none}}
+
+/* ===== Media delivery / upload reliability polish ===== */
+.upload-item-meta {
+    margin-top: 5px;
+    font-size: .68rem;
+    color: var(--text-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    direction: ltr;
+    text-align: left;
+}
+
+.chat-video-wrap {
+    position: relative;
+    width: min(100%, 560px);
+    border-radius: 14px;
+    overflow: hidden;
+    background: #050508;
+}
+
+.chat-video-wrap video {
+    display: block;
+    width: 100%;
+    max-height: 62vh;
+    background: #050508;
+    object-fit: contain;
+}
+
+.chat-video-state {
+    position: absolute;
+    inset-inline: 12px;
+    bottom: 12px;
+    padding: 7px 10px;
+    border-radius: 999px;
+    background: rgba(0,0,0,.66);
+    color: #fff;
+    font-size: .72rem;
+    text-align: center;
+    backdrop-filter: blur(8px);
+    pointer-events: none;
+    transition: opacity .18s ease;
+}
+
+.chat-video-state.hidden {
+    opacity: 0;
+    visibility: hidden;
+}
+
+.chat-video-wrap .media-fallback-link,
+.message .media-fallback-link {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    margin-top: 8px;
+    padding: 8px 10px;
+    border-radius: 10px;
+    color: var(--accent-light);
+    background: rgba(124,58,237,.12);
+    border: 1px solid rgba(167,139,250,.22);
+    text-decoration: none;
+    font-size: .78rem;
+}
+
+@media (max-width: 768px) {
+    .upload-item-meta { font-size: .64rem; }
+    .chat-video-wrap video { max-height: 56vh; }
+}
+
+
+/* ===== TOMI chat polish: voice notes, unread badges, pins, adaptive screen share ===== */
+.room-unread-count {
+    min-width: 25px; height: 25px; padding: 0 7px; border-radius: 999px;
+    display: inline-flex; align-items: center; justify-content: center;
+    background: #2ea6ff; color: #fff; font-weight: 800; font-size: .76rem;
+    box-shadow: 0 5px 16px rgba(46,166,255,.28); margin-inline: 6px 2px; flex: 0 0 auto;
+}
+
+.pinned-messages-bar {
+    flex: 0 0 auto; align-items: stretch; gap: 6px; padding: 7px 10px;
+    border-bottom: 1px solid rgba(139,92,246,.22); background: rgba(18,17,31,.96);
+    backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); z-index: 24;
+}
+.pinned-message-jump {
+    min-width: 0; flex: 1; border: 0; border-inline-start: 3px solid #8b5cf6;
+    background: transparent; color: #fff; display: flex; align-items: center; gap: 9px;
+    padding: 3px 8px; cursor: pointer; text-align: start;
+}
+.pinned-message-jump > i { color: #a78bfa; transform: rotate(-12deg); }
+.pinned-message-copy { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.pinned-message-copy strong { font-size: .78rem; }
+.pinned-message-copy small { color: #9c99aa; font-size: .69rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pinned-message-next { width: 34px; border: 0; border-radius: 10px; background: rgba(139,92,246,.13); color: #c7b8ff; cursor: pointer; }
+.message.pinned-message { box-shadow: 0 0 0 1px rgba(167,139,250,.30), 0 10px 28px rgba(65,45,120,.12); }
+.message.pinned-message::before { content: '📌'; position: absolute; top: -10px; inset-inline-end: 8px; font-size: 13px; filter: drop-shadow(0 2px 4px rgba(0,0,0,.45)); }
+.message.pinned-message-flash { animation: pinnedFlash 1.35s ease; }
+@keyframes pinnedFlash { 0%,100%{filter:none} 35%{filter:brightness(1.55); transform:scale(1.025)} }
+.message-pin-btn.active { color: #f6c453; opacity: 1; }
+
+.voice-note-message { min-width: min(360px, 78vw); }
+.voice-note-player {
+    display: flex; align-items: center; gap: 10px; min-width: 250px; max-width: min(420px, 74vw);
+    padding: 7px 5px 4px; direction: ltr;
+}
+.voice-note-play {
+    width: 48px; height: 48px; min-width: 48px; border-radius: 50%; border: 0; cursor: pointer;
+    display: inline-flex; align-items: center; justify-content: center; font-size: 1.05rem;
+    background: rgba(255,255,255,.94); color: #6554df; box-shadow: 0 5px 18px rgba(0,0,0,.16);
+}
+.message.received .voice-note-play { background: #806ef0; color: #fff; }
+.voice-note-center { flex: 1; min-width: 0; }
+.voice-note-waveform { height: 42px; display: flex; align-items: center; gap: 2px; cursor: pointer; user-select: none; }
+.voice-wave-bar {
+    flex: 1 1 2px; min-width: 2px; max-width: 4px; height: calc(7px + (31px * var(--voice-level)));
+    border-radius: 99px; background: rgba(255,255,255,.48); transition: background .15s ease, height .15s ease;
+}
+.message.received .voice-wave-bar { background: rgba(170,161,224,.46); }
+.voice-wave-bar.played { background: #ffffff; }
+.message.received .voice-wave-bar.played { background: #8b7ff5; }
+.voice-note-meta { margin-top: -2px; color: rgba(255,255,255,.78); font-size: .68rem; direction: ltr; text-align: left; }
+.message.received .voice-note-meta { color: #aaa7bb; }
+.voice-note-audio { display: none; }
+.voice-note-error::after { content:'تعذر التشغيل'; display:block; color:#ff9c9c; font-size:.68rem; direction:rtl; }
+
+/* Never crop a shared desktop/phone screen. Keep its true aspect ratio and adapt on rotation. */
+.call-videos.screen-share-layout {
+    min-height: min(72vh, 720px) !important; height: min(72vh, 720px) !important;
+    background: #050509;
+}
+.call-videos.screen-share-layout .call-video-wrap.call-primary,
+.call-videos.screen-share-layout .call-video-wrap.screen-share-remote {
+    background: #030306;
+}
+.call-videos.screen-share-layout .call-video-wrap video,
+.call-video-wrap.screen-share-local video,
+.call-video-wrap.screen-share-remote video {
+    object-fit: contain !important; object-position: center center !important; background: #030306 !important;
+}
+#callModal.call-minimized .call-videos.screen-share-layout {
+    min-height: 0 !important; height: auto !important; aspect-ratio: 16/9;
+}
+@media (orientation: portrait) and (max-width: 768px) {
+    .call-videos.screen-share-layout { height: min(62vh, 650px) !important; min-height: min(62vh, 650px) !important; }
+}
+@media (max-width: 600px) {
+    .voice-note-message { min-width: min(290px, 84vw); }
+    .voice-note-player { min-width: 220px; max-width: 80vw; gap: 8px; }
+    .voice-note-play { width: 43px; height: 43px; min-width: 43px; }
+    .voice-note-waveform { height: 38px; gap: 1.5px; }
+    .pinned-messages-bar { padding-inline: 7px; }
+}
