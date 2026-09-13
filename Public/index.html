@@ -7,6 +7,7 @@
     <title>TOMI</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <link rel="stylesheet" href="styles.css?v=20260908-frame-cutout-v3">
+    <script src="/notifications.js"></script>
     <script src="/socket.io/socket.io.js"></script>
     <style>
         :root {
@@ -1382,6 +1383,9 @@
                 <button class="menu-toggle" id="menuToggle">
                     <i class="fa-solid fa-bars"></i>
                 </button>
+                <button id="enableNotificationsBtn" class="btn-action btn-secondary" type="button" title="تفعيل إشعارات الهاتف" aria-label="تفعيل إشعارات الهاتف">
+                    <i class="fa-regular fa-bell"></i>
+                </button>
             </div>
 
             <!-- 1. الرئيسية -->
@@ -2191,6 +2195,8 @@
                 window.location.replace('login.html');
                 return;
             }
+            window.TomiNotifications?.bindButton?.(document.getElementById('enableNotificationsBtn'));
+            window.TomiNotifications?.subscribeIfPossible?.().catch?.(() => {});
             socket.connect();
         }
 

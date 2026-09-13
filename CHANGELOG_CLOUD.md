@@ -1,5 +1,18 @@
 # Chatify Cloud Update
 
+## 2026-09-13 — Render memory guard correction
+- Render logs showed the process exiting with status 1 after RSS stayed around
+  484 MB even though V8 heap stayed around 29 MB. RSS-only controlled restarts
+  are now disabled by default; a restart is considered only when explicitly
+  enabled and Heap/external-buffer pressure also crosses its threshold.
+- `/api/health` now exposes `heapTotalMB`, `externalMB`, `arrayBuffersMB` and
+  the restart thresholds so the next incident can be diagnosed from the live
+  service.
+- Cloud MongoDB mode no longer writes a synchronous full JSON backup unless
+  `WRITE_LOCAL_JSON_BACKUP=true` is explicitly set.
+- Added a total concurrent upload-request limit and a cooldown for failed
+  Telegram forum-topic creation attempts.
+
 ## Implemented in this build
 
 ### Render / always-on server

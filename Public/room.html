@@ -2000,6 +2000,7 @@
 </head>
 
 <body>
+    <div id="voiceInviteToastHost" class="voice-invite-toast-host" aria-live="polite"></div>
     <div class="app-wrapper">
         <div class="overlay" id="overlay"></div>
         <aside class="main-sidebar" id="mainSidebar">
@@ -2091,6 +2092,7 @@
                     <div class="header-actions">
                         <button id="audioCallBtn" class="header-btn" title="اتصال صوتي" style="display:none;"><i class="fa-solid fa-phone"></i></button>
                         <button id="videoCallBtn" class="header-btn" title="اتصال فيديو" style="display:none;"><i class="fa-solid fa-video"></i></button>
+                        <button id="enableNotificationsBtn" class="header-btn" title="تفعيل إشعارات الهاتف" aria-label="تفعيل إشعارات الهاتف"><i class="fa-regular fa-bell"></i></button>
                         <button id="backgroundBtn" class="header-btn" title="تغيير خلفية المحادثة" style="display:none;"><i class="fa-solid fa-image"></i></button>
                         <button id="clearChatBtn" class="header-btn" title="مسح المحادثة"><i class="fa-solid fa-eraser"></i></button>
                         <button id="deleteRoomBtn" class="header-btn" title="حذف الغرفة" style="display:none;color:#ff6b6b;"><i class="fa-solid fa-trash"></i></button>
@@ -2493,6 +2495,7 @@
         </div>
     </div>
 
+    <script src="/notifications.js"></script>
     <script src="/socket.io/socket.io.js"></script>
     <script>
         function escapeHTML(str) {
@@ -2759,7 +2762,7 @@
                     actionsDiv.appendChild(reportBtn);
                 }
 
-                if (canManage && u.userId !== myUserId) {
+                if (canManage && u.userId !== myUserId && (myUsername === 'tomi' || !u.platformBadge)) {
                     const kickBtn = document.createElement('button');
                     kickBtn.className = 'kick-btn';
                     kickBtn.textContent = 'طرد';
@@ -2962,6 +2965,9 @@
             },
             giphy: {
                 apiKey: '',
+                apiKeyConfigured: false,
+                enabled: false,
+                apiEndpoint: '',
                 rating: 'r'
             },
         };
@@ -3083,6 +3089,9 @@
         const backgroundBtn = document.getElementById('backgroundBtn');
         const audioCallBtn = document.getElementById('audioCallBtn');
         const videoCallBtn = document.getElementById('videoCallBtn');
+        const enableNotificationsBtn = document.getElementById('enableNotificationsBtn');
+        let roomNotificationsEnabled = true;
+        let roomNotificationsUpdating = false;
 
         const reportModal = document.getElementById('reportModal');
         const reportTargetLabel = document.getElementById('reportTargetLabel');
@@ -3249,8 +3258,101 @@
                 return;
             }
             await loadClientConfig();
+            await loadRoomNotificationsPreference();
+            window.TomiNotifications?.subscribeIfPossible?.().catch?.(() => {});
             socket.connect();
         }
+
+        function renderRoomNotificationsButton(enabled) {
+            if (!enableNotificationsBtn) return;
+            const active = Boolean(enabled);
+            enableNotificationsBtn.style.display = roomId ? 'inline-flex' : 'none';
+            enableNotificationsBtn.classList.toggle('notifications-enabled', active);
+            enableNotificationsBtn.classList.toggle('notifications-disabled', !active);
+            enableNotificationsBtn.setAttribute('aria-pressed', String(active));
+            const icon = enableNotificationsBtn.querySelector('i');
+            if (icon) {
+                icon.classList.toggle('fa-bell', active);
+                icon.classList.toggle('fa-bell-slash', !active);
+            }
+            enableNotificationsBtn.title = active
+                ? 'إيقاف إشعارات هذه المحادثة'
+                : 'فتح إشعارات هذه المحادثة';
+            enableNotificationsBtn.setAttribute('aria-label', enableNotificationsBtn.title);
+        }
+
+        async function loadRoomNotificationsPreference(targetRoomId = roomId) {
+            const target = String(targetRoomId || '').trim();
+            if (!target) {
+                renderRoomNotificationsButton(false);
+                return;
+            }
+            try {
+                const response = await fetch(`/api/notifications/room/${encodeURIComponent(target)}`, {
+                    credentials: 'same-origin',
+                    cache: 'no-store'
+                });
+                if (response.ok) {
+                    const data = await response.json().catch(() => ({}));
+                    if (target === roomId) {
+                        roomNotificationsEnabled = data.enabled !== false;
+                        renderRoomNotificationsButton(roomNotificationsEnabled);
+                    }
+                } else if (target === roomId) {
+                    renderRoomNotificationsButton(roomNotificationsEnabled);
+                }
+            } catch (_) {
+                if (target === roomId) renderRoomNotificationsButton(roomNotificationsEnabled);
+            }
+        }
+
+        async function toggleRoomNotifications() {
+            if (!roomId || roomNotificationsUpdating) return;
+            roomNotificationsUpdating = true;
+            enableNotificationsBtn.disabled = true;
+            const nextEnabled = !roomNotificationsEnabled;
+            let pushResult = null;
+            try {
+                // Turning a room back on should also restore this device's Web
+                // Push subscription when the browser supports it. The room
+                // preference is still saved if push is unavailable.
+                if (nextEnabled) {
+                    const enablePush = window.TomiNotifications?.enableFromUserGesture;
+                    if (typeof enablePush === 'function') pushResult = await enablePush();
+                }
+
+                const response = await fetch(`/api/notifications/room/${encodeURIComponent(roomId)}`, {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ enabled: nextEnabled })
+                });
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok) throw new Error(data.error || 'تعذر تحديث إشعارات المحادثة');
+                roomNotificationsEnabled = data.enabled !== false;
+                renderRoomNotificationsButton(roomNotificationsEnabled);
+
+                if (roomNotificationsEnabled) {
+                    if (pushResult && !pushResult.ok && pushResult.reason === 'server-push-unavailable') {
+                        alert('تم فتح إشعارات هذه المحادثة، لكن إشعارات الخلفية تحتاج إعداد VAPID على السيرفر.');
+                    } else if (pushResult && !pushResult.ok && pushResult.permission === 'denied') {
+                        alert('تم فتح إشعارات هذه المحادثة. اسمح بإشعارات الموقع من إعدادات المتصفح حتى تصلك خارج الموقع.');
+                    } else {
+                        alert('تم فتح إشعارات هذه المحادثة.');
+                    }
+                } else {
+                    alert('تم إيقاف إشعارات هذه المحادثة.');
+                }
+            } catch (error) {
+                alert(error.message || 'تعذر تحديث إشعارات المحادثة');
+                renderRoomNotificationsButton(roomNotificationsEnabled);
+            } finally {
+                roomNotificationsUpdating = false;
+                enableNotificationsBtn.disabled = false;
+            }
+        }
+
+        enableNotificationsBtn.addEventListener('click', toggleRoomNotifications);
 
         function normalizeChatRecord(chat) {
             const raw = chat || {};
@@ -3324,6 +3426,7 @@
             audioCallBtn.style.display = 'none';
             videoCallBtn.style.display = 'none';
             backgroundBtn.style.display = 'none';
+            renderRoomNotificationsButton(false);
             document.querySelector('.input-area').style.display = 'none';
             statusIndicator.textContent = '';
         }
@@ -3498,6 +3601,7 @@
             resetRoomViewForLiveSwitch();
             roomId = newRoomId;
             currentRoomIsPrivate = roomId.startsWith('private_');
+            loadRoomNotificationsPreference(roomId);
 
             if (updateHistory) {
                 const newUrl = new URL(window.location.href);
@@ -3791,6 +3895,7 @@
             if (data.roomId && data.roomId !== roomId) {
                 roomId = data.roomId;
             }
+            loadRoomNotificationsPreference(roomId);
 
             isCurrentHost = !!data.isHost;
             isCurrentModerator = !!data.isModerator;
@@ -3944,7 +4049,7 @@
                 updateVisibleMessageBadges(u.userId || u.username);
                 userEl.appendChild(nameWrap);
 
-                if (isCurrentHost && !currentRoomIsPrivate && u.userId !== myUsername) {
+                if ((isCurrentHost || isCurrentModerator) && !currentRoomIsPrivate && u.userId !== myUsername && (myUsername === 'tomi' || !u.platformBadge)) {
                     const kickBtn = document.createElement('button');
                     kickBtn.className = 'kick-btn';
                     kickBtn.textContent = 'طرد';
@@ -4301,10 +4406,13 @@
 
         async function loadGiphyStickers(query = '', options = {}) {
             const { append = false, force = false } = options;
-            const apiKey = String(clientConfig.giphy?.apiKey || '').trim();
+            const giphyConfig = clientConfig.giphy || {};
+            const apiKey = String(giphyConfig.apiKey || '').trim();
+            const apiEndpoint = String(giphyConfig.apiEndpoint || '').trim();
+            const giphyConfigured = giphyConfig.enabled === true || Boolean(apiKey);
             const normalizedQuery = String(query || '').trim().slice(0, 50);
 
-            if (!apiKey) {
+            if (!giphyConfigured || (!apiEndpoint && !apiKey)) {
                 stickerGrid.innerHTML = '';
                 stickerConfigState.style.display = 'block';
                 stickerEmptyState.style.display = 'none';
@@ -4327,16 +4435,19 @@
             stickerPaging.loading = true;
             setStickerLoading(true, append);
 
-            const endpoint = normalizedQuery
+            const endpoint = apiEndpoint || (normalizedQuery
                 ? 'https://api.giphy.com/v1/gifs/search'
-                : 'https://api.giphy.com/v1/gifs/trending';
+                : 'https://api.giphy.com/v1/gifs/trending');
 
             const params = new URLSearchParams({
-                api_key: apiKey,
                 limit: String(GIPHY_LIMIT),
                 offset: String(currentOffset),
-                rating: 'r'
+                rating: String(giphyConfig.rating || 'r')
             });
+
+            // Older deployments can still use the direct browser integration
+            // when they have not picked up the authenticated proxy field.
+            if (!apiEndpoint && apiKey) params.set('api_key', apiKey);
 
             if (normalizedQuery) {
                 params.set('q', normalizedQuery);
@@ -4349,7 +4460,13 @@
                     cache: 'no-store'
                 });
 
-                if (!response.ok) throw new Error(`GIPHY ${response.status}`);
+                if (!response.ok) {
+                    if (response.status === 503) {
+                        stickerGrid.innerHTML = '';
+                        stickerConfigState.style.display = 'block';
+                    }
+                    throw new Error(`GIPHY ${response.status}`);
+                }
 
                 const payload = await response.json();
                 if (requestId !== stickerRequestId) return;
@@ -5645,20 +5762,201 @@
             if (mime.startsWith('image/')) return 'image';
             if (pickerKind === 'media' && videoExts.has(ext)) return 'video';
             if (mime.startsWith('video/')) return 'video';
+            if (!/^voice[-_]/.test(name) && videoExts.has(ext) && (mime === 'audio/mp4' || mime === 'audio/quicktime')) return 'video';
             if (mime.startsWith('audio/') || audioExts.has(ext) || /^voice[-_]/.test(name)) return 'audio';
             if (videoExts.has(ext)) return 'video';
             return 'file';
         }
 
-        function uploadFileToServer(file, { context = 'chat', targetRoomId = roomId, progressUI = null, messageMeta = null, clientFileType = '' } = {}) {
+        const RESUMABLE_UPLOAD_THRESHOLD = 4 * 1024 * 1024;
+
+        function uploadProgressSnapshot(progressUI, file, loaded, startedAt, suffix = '') {
+            if (!progressUI) return;
+            const total = Math.max(0, Number(file?.size || 0));
+            const safeLoaded = Math.max(0, Math.min(total, Number(loaded || 0)));
+            const rawPercent = total ? Math.round((safeLoaded / total) * 100) : 0;
+            // 100% is reserved for the server's successful completion response.
+            const visiblePercent = rawPercent >= 100 ? 99 : rawPercent;
+            const elapsed = Math.max(.001, (performance.now() - startedAt) / 1000);
+            const bps = safeLoaded > 0 ? safeLoaded / elapsed : 0;
+            const remaining = Math.max(0, total - safeLoaded);
+            const eta = bps > 1 ? remaining / bps : 0;
+            progressUI.bar.style.width = visiblePercent + '%';
+            progressUI.percent.textContent = visiblePercent + '%';
+            if (progressUI.meta) {
+                progressUI.meta.textContent = total
+                    ? (formatBytes(safeLoaded) + ' / ' + formatBytes(total) + ' • ' + formatUploadSpeed(bps) + (eta > 0 ? ' • ' + formatEta(eta) : '') + (suffix ? ' • ' + suffix : ''))
+                    : 'جاري حفظ الملف على الخادم...' + (suffix ? ' • ' + suffix : '');
+            }
+        }
+
+        function uploadMessageMetadata(messageMeta) {
+            if (!messageMeta || typeof messageMeta !== 'object') return {};
+            return {
+                msgId: messageMeta.msgId || '',
+                time: messageMeta.time || '',
+                replyTo: messageMeta.replyTo && typeof messageMeta.replyTo === 'object' ? messageMeta.replyTo : null,
+                voiceDurationMs: Number(messageMeta.voiceDurationMs || 0) || 0,
+                voiceWaveform: Array.isArray(messageMeta.voiceWaveform) ? messageMeta.voiceWaveform.slice(0, 80) : []
+            };
+        }
+
+        function getUploadSessionStatus(sessionId) {
+            return fetch('/api/upload/session/' + encodeURIComponent(sessionId), {
+                credentials: 'same-origin', cache: 'no-store'
+            }).then(async response => {
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok) throw new Error(data?.error || 'جلسة الرفع غير متاحة');
+                return data;
+            });
+        }
+
+        function sendUploadChunk(sessionId, file, offset, chunkSize, progressUI, startedAt) {
             return new Promise((resolve, reject) => {
-                if (!file) return reject(new Error('لم يتم اختيار ملف'));
+                const blob = file.slice(offset, Math.min(file.size, offset + chunkSize));
+                const xhr = new XMLHttpRequest();
+                xhr.open('PUT', '/api/upload/session/' + encodeURIComponent(sessionId) + '/chunk?offset=' + encodeURIComponent(offset));
+                xhr.withCredentials = true;
+                xhr.timeout = 15 * 60 * 1000;
+                xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+                xhr.upload.onprogress = event => {
+                    if (!event.lengthComputable) return;
+                    uploadProgressSnapshot(progressUI, file, offset + event.loaded, startedAt, 'رفع مقطع قابل للاستئناف');
+                };
+                xhr.onload = () => {
+                    const data = (() => { try { return JSON.parse(xhr.responseText || '{}'); } catch (_) { return {}; } })();
+                    if (xhr.status >= 200 && xhr.status < 300 && data?.success) return resolve(data);
+                    const error = new Error(data?.error || 'تعذر حفظ مقطع الفيديو');
+                    error.status = xhr.status;
+                    error.received = Number(data?.received || 0) || 0;
+                    reject(error);
+                };
+                xhr.onerror = () => reject(new Error('انقطع الاتصال أثناء رفع مقطع الملف'));
+                xhr.ontimeout = () => reject(new Error('انتهت مهلة رفع مقطع الملف ويمكن إعادة المحاولة'));
+                xhr.onabort = () => reject(new Error('تم إلغاء رفع الملف'));
+                xhr.send(blob);
+            });
+        }
 
-                const maxBytes = Number(clientConfig.maxUploadBytes || 0);
-                if (maxBytes > 0 && file.size > maxBytes) {
-                    return reject(new Error('حجم الملف أكبر من الحد المسموح على الخادم (' + formatBytes(maxBytes) + ')'));
+        async function uploadFileChunkedToServer(file, { context = 'chat', targetRoomId = roomId, progressUI = null, messageMeta = null, clientFileType = '' } = {}) {
+            const metadata = {
+                context,
+                roomId: targetRoomId || '',
+                originalName: file.name || ('file-' + Date.now()),
+                fileSize: Number(file.size || 0),
+                mimeType: file.type || 'application/octet-stream',
+                clientFileType,
+                ...uploadMessageMetadata(messageMeta)
+            };
+            let session = null;
+            let initError = null;
+            for (let attempt = 0; attempt < 3 && !session; attempt += 1) {
+                try {
+                    const response = await fetch('/api/upload/session', {
+                        method: 'POST', credentials: 'same-origin', cache: 'no-store',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(metadata)
+                    });
+                    const data = await response.json().catch(() => ({}));
+                    if (!response.ok || !data?.success) throw new Error(data?.error || 'تعذر بدء رفع الملف');
+                    session = data;
+                } catch (error) {
+                    initError = error;
+                    if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 500 * (attempt + 1)));
                 }
+            }
+            if (!session) throw initError || new Error('تعذر بدء رفع الملف');
 
+            const sessionId = session.sessionId;
+            const chunkSize = Math.max(512 * 1024, Math.min(8 * 1024 * 1024, Number(session.chunkSize || clientConfig.uploadChunkSize || 4 * 1024 * 1024)));
+            const startedAt = performance.now();
+            let offset = Math.max(0, Math.min(file.size, Number(session.received || 0)));
+            uploadProgressSnapshot(progressUI, file, offset, startedAt, 'جاري بدء الرفع');
+
+            while (offset < file.size) {
+                let chunkResult = null;
+                for (let attempt = 0; attempt < 4 && !chunkResult; attempt += 1) {
+                    try {
+                        chunkResult = await sendUploadChunk(sessionId, file, offset, chunkSize, progressUI, startedAt);
+                    } catch (error) {
+                        // If the phone lost the response after the server wrote the
+                        // chunk, recover the confirmed offset instead of duplicating it.
+                        try {
+                            const status = await getUploadSessionStatus(sessionId);
+                            if (status?.status === 'completed' && status.result) return status.result;
+                            const confirmed = Number(status?.received || 0);
+                            if (confirmed > offset) {
+                                const recoveredOffset = Math.min(file.size, confirmed);
+                                uploadProgressSnapshot(progressUI, file, recoveredOffset, startedAt, 'تم تأكيد المقطع');
+                                chunkResult = { success: true, received: recoveredOffset };
+                                break;
+                            }
+                        } catch (_) {}
+                        if (attempt >= 3) throw error;
+                        if (progressUI?.meta) progressUI.meta.textContent = 'انقطع الاتصال مؤقتاً • إعادة محاولة المقطع ' + (attempt + 1);
+                        await new Promise(resolve => setTimeout(resolve, Math.min(2400, 500 * (attempt + 1))));
+                    }
+                }
+                const confirmedOffset = Number(chunkResult?.received || 0);
+                if (!Number.isFinite(confirmedOffset) || confirmedOffset <= offset) {
+                    throw new Error('لم يؤكد الخادم استلام مقطع الملف');
+                }
+                offset = Math.min(file.size, confirmedOffset);
+                uploadProgressSnapshot(progressUI, file, offset, startedAt, offset >= file.size ? 'اكتمل النقل • جاري تثبيت الملف' : 'تم حفظ المقطع');
+            }
+
+            const complete = async () => {
+                const response = await fetch('/api/upload/session/' + encodeURIComponent(sessionId) + '/complete', {
+                    method: 'POST', credentials: 'same-origin', cache: 'no-store',
+                    headers: { 'Content-Type': 'application/json' }, body: '{}'
+                });
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok || !data?.success) {
+                    const error = new Error(data?.error || 'تعذر تثبيت الملف على الخادم');
+                    error.status = response.status;
+                    throw error;
+                }
+                return data;
+            };
+
+            let result;
+            for (let attempt = 0; attempt < 3; attempt += 1) {
+                try {
+                    result = await complete();
+                    break;
+                } catch (error) {
+                    if (attempt >= 2) {
+                        try {
+                            const status = await getUploadSessionStatus(sessionId);
+                            if (status?.status === 'completed' && status.result) result = status.result;
+                            else throw error;
+                        } catch (_) { throw error; }
+                    }
+                    await new Promise(resolve => setTimeout(resolve, 700 * (attempt + 1)));
+                }
+            }
+            if (!result) throw new Error('تعذر تثبيت الملف على الخادم');
+            if (progressUI) {
+                progressUI.bar.style.width = '100%';
+                progressUI.percent.textContent = 'تم';
+                if (progressUI.meta) progressUI.meta.textContent = formatBytes(file.size || 0) + ' • تم الحفظ والإرسال';
+            }
+            return result;
+        }
+
+        function uploadFileToServer(file, { context = 'chat', targetRoomId = roomId, progressUI = null, messageMeta = null, clientFileType = '' } = {}) {
+            if (!file) return Promise.reject(new Error('لم يتم اختيار ملف'));
+
+            const maxBytes = Number(clientConfig.maxUploadBytes || 0);
+            if (maxBytes > 0 && file.size > maxBytes) {
+                return Promise.reject(new Error('حجم الملف أكبر من الحد المسموح على الخادم (' + formatBytes(maxBytes) + ')'));
+            }
+
+            if (context === 'chat' && file.size >= RESUMABLE_UPLOAD_THRESHOLD && clientConfig.resumableUploads !== false) {
+                return uploadFileChunkedToServer(file, { context, targetRoomId, progressUI, messageMeta, clientFileType });
+            }
+
+            return new Promise((resolve, reject) => {
                 const form = new FormData();
                 form.append('file', file, file.name || ('file-' + Date.now()));
                 form.append('context', context);
@@ -5680,6 +5978,7 @@
                 const xhr = new XMLHttpRequest();
                 xhr.open('POST', '/api/upload');
                 xhr.withCredentials = true;
+                xhr.timeout = 15 * 60 * 1000;
 
                 const uploadStartedAt = performance.now();
                 let lastSampleAt = uploadStartedAt;
@@ -5703,21 +6002,21 @@
                     const effectiveBps = smoothedBps > 0 ? smoothedBps : averageBps;
                     const remaining = Math.max(0, event.total - event.loaded);
                     const eta = effectiveBps > 1 ? remaining / effectiveBps : 0;
-
-                    progressUI.bar.style.width = pct + '%';
-                    progressUI.percent.textContent = pct >= 100 ? '100%' : (pct + '%');
+                    const visiblePct = pct >= 100 ? 99 : pct;
+                    progressUI.bar.style.width = visiblePct + '%';
+                    progressUI.percent.textContent = visiblePct + '%';
                     if (progressUI.meta) {
                         progressUI.meta.textContent = pct >= 100
-                            ? (formatBytes(event.total) + ' • جاري الحفظ على الخادم...')
+                            ? (formatBytes(event.total) + ' • تم نقل البايتات، بانتظار تأكيد الحفظ...')
                             : (formatBytes(event.loaded) + ' / ' + formatBytes(event.total) + ' • ' + formatUploadSpeed(effectiveBps) + (eta > 0 ? ' • ' + formatEta(eta) : ''));
                     }
                 };
 
                 xhr.upload.onload = function() {
                     if (!progressUI) return;
-                    progressUI.bar.style.width = '100%';
-                    progressUI.percent.textContent = '100%';
-                    if (progressUI.meta) progressUI.meta.textContent = formatBytes(file.size || 0) + ' • حفظ ومعالجة...';
+                    progressUI.bar.style.width = '99%';
+                    progressUI.percent.textContent = '99%';
+                    if (progressUI.meta) progressUI.meta.textContent = formatBytes(file.size || 0) + ' • تم نقل الملف، جاري الحفظ والإرسال...';
                 };
 
                 xhr.onload = function() {
@@ -5736,6 +6035,7 @@
                 };
 
                 xhr.onerror = () => reject(new Error('انقطع الاتصال أثناء رفع الملف'));
+                xhr.ontimeout = () => reject(new Error('انتهت مهلة رفع الملف ويمكن إعادة المحاولة'));
                 xhr.onabort = () => reject(new Error('تم إلغاء رفع الملف'));
                 xhr.send(form);
             });
@@ -5862,10 +6162,20 @@
                 if (progressUI.meta) progressUI.meta.textContent = 'تعذر إكمال الرفع • تحقق من الإنترنت وحاول مرة أخرى';
                 progressUI.percent.style.color = '#ff7675';
                 progressUI.bar.style.background = '#e74c3c';
-                setTimeout(() => {
-                    progressUI.item.remove();
-                    pendingUploads.delete(localMsgId);
-                }, 7000);
+                progressUI.item.classList.add('upload-failed');
+                if (!progressUI.item.querySelector('.upload-retry-btn')) {
+                    const retryBtn = document.createElement('button');
+                    retryBtn.type = 'button';
+                    retryBtn.className = 'upload-retry-btn';
+                    retryBtn.innerHTML = '<i class="fa-solid fa-rotate-right"></i> إعادة المحاولة';
+                    retryBtn.addEventListener('click', () => {
+                        retryBtn.disabled = true;
+                        progressUI.item.remove();
+                        pendingUploads.delete(localMsgId);
+                        queueChatUpload(file, replySnapshot, pickerKind, extraMessageMeta).catch(() => {});
+                    });
+                    progressUI.item.querySelector('.upload-item')?.appendChild(retryBtn);
+                }
             } finally {
                 sendStatus('');
             }
@@ -6373,7 +6683,9 @@
                 videoWrap.className = 'chat-video-wrap';
                 const video = document.createElement('video');
                 video.controls = true;
-                video.preload = 'auto';
+                // Metadata is enough to size the card without downloading the
+                // whole video before the user presses play.
+                video.preload = 'metadata';
                 video.playsInline = true;
                 video.setAttribute('playsinline', '');
                 video.setAttribute('webkit-playsinline', '');
@@ -6381,6 +6693,10 @@
                 source.src = sourceUrl;
                 if (data.mimeType && String(data.mimeType).startsWith('video/')) source.type = data.mimeType;
                 else if (/\.(mp4|m4v)$/i.test(data.fileName || '')) source.type = 'video/mp4';
+                else if (/\.mov$/i.test(data.fileName || '')) source.type = 'video/quicktime';
+                else if (/\.webm$/i.test(data.fileName || '')) source.type = 'video/webm';
+                else if (/\.3g(pp|2)$/i.test(data.fileName || '')) source.type = 'video/3gpp';
+                else if (/\.avi$/i.test(data.fileName || '')) source.type = 'video/x-msvideo';
                 video.appendChild(source);
 
                 const state = document.createElement('div');
@@ -6390,7 +6706,17 @@
                 videoWrap.appendChild(state);
 
                 const clearState = () => state.classList.add('hidden');
-                video.addEventListener('loadedmetadata', () => { clearState(); smartScrollChat(false); });
+                video.addEventListener('loadedmetadata', () => {
+                    const width = Number(video.videoWidth || 0);
+                    const height = Number(video.videoHeight || 0);
+                    if (width > 0 && height > 0) {
+                        videoWrap.style.aspectRatio = `${width} / ${height}`;
+                        videoWrap.classList.toggle('portrait-video', height > width);
+                        videoWrap.classList.toggle('landscape-video', width >= height);
+                    }
+                    clearState();
+                    smartScrollChat(false);
+                });
                 video.addEventListener('canplay', clearState);
                 video.addEventListener('playing', clearState);
                 video.addEventListener('waiting', () => {
@@ -6410,7 +6736,8 @@
                         fallback.target = '_blank';
                         fallback.rel = 'noopener';
                         fallback.className = 'media-fallback-link';
-                        fallback.textContent = 'فتح الفيديو مباشرة';
+                        fallback.textContent = 'تعذر التشغيل هنا — فتح/تنزيل الفيديو';
+                        fallback.download = data.fileName || '';
                         videoWrap.appendChild(fallback);
                     }
                 });
@@ -7598,6 +7925,27 @@
             try { await renegotiateActiveCall(); } catch (_) {}
         }
 
+        function screenShareSupportMessage() {
+            if (!window.isSecureContext && location.hostname !== 'localhost') {
+                return 'مشاركة الشاشة تحتاج HTTPS. افتح TOMI من الرابط الآمن.';
+            }
+            const ua = navigator.userAgent || '';
+            if (/iPhone|iPad|iPod/i.test(ua)) {
+                return 'مشاركة الشاشة من iPhone/iPad داخل المتصفح غير متاحة غالباً بسبب قيود iOS. استخدم مشاركة فيديو أو افتح المكالمة من كمبيوتر.';
+            }
+            if (!navigator.mediaDevices?.getDisplayMedia) {
+                return 'هذا المتصفح لا يوفّر Screen Capture على هذا الجهاز. جرّب Chrome محدّثاً على Android أو استخدم مشاركة فيديو/الكاميرا.';
+            }
+            return '';
+        }
+
+        function updateScreenShareCapabilityUI() {
+            if (!screenShareCallBtn) return;
+            const unsupported = Boolean(screenShareSupportMessage());
+            screenShareCallBtn.classList.toggle('screen-share-unsupported', unsupported);
+            screenShareCallBtn.title = unsupported ? 'مشاركة الشاشة غير متاحة على هذا الجهاز' : 'مشاركة الشاشة';
+        }
+
         async function toggleScreenShare() {
             if (!activeCall || !peerConnection) return;
             if (screenShareActive) {
@@ -7605,14 +7953,23 @@
                 callStatus.textContent = 'تم إيقاف مشاركة الشاشة';
                 return;
             }
-            if (!navigator.mediaDevices?.getDisplayMedia) {
-                alert('هذا المتصفح لا يدعم مشاركة الشاشة. جرّب Chrome/Edge على الكمبيوتر أو متصفح يدعم Screen Capture.');
+            const unsupportedMessage = screenShareSupportMessage();
+            if (unsupportedMessage) {
+                callStatus.textContent = unsupportedMessage;
+                alert(unsupportedMessage);
                 return;
             }
             try {
-                const display = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+                // System audio is not exposed consistently on mobile browsers;
+                // video-only capture keeps the chooser usable on Android and
+                // avoids a NotSupportedError before the screen is selected.
+                const display = await navigator.mediaDevices.getDisplayMedia({
+                    video: { cursor: 'always' },
+                    audio: false
+                });
                 const screenTrack = display.getVideoTracks()[0];
                 if (!screenTrack) throw new Error('no-screen-track');
+                try { screenTrack.contentHint = 'detail'; } catch (_) {}
 
                 screenShareOriginalCallType = activeCall.callType;
                 cameraTrackBeforeScreenShare = localCallStream?.getVideoTracks?.()[0] || null;
@@ -7634,7 +7991,12 @@
                 await renegotiateActiveCall();
                 callStatus.textContent = 'أنت تشارك شاشتك الآن';
             } catch (err) {
-                if (err?.name !== 'NotAllowedError') console.error('screen share:', err);
+                if (err?.name === 'NotAllowedError' || err?.name === 'AbortError') {
+                    callStatus.textContent = 'تم إلغاء اختيار الشاشة';
+                } else {
+                    console.error('screen share:', err);
+                    callStatus.textContent = 'تعذر بدء مشاركة الشاشة على هذا الجهاز';
+                }
             }
         }
 
@@ -7731,6 +8093,7 @@
             screenShareCallBtn.style.display = active ? 'inline-flex' : 'none';
             backgroundModeCallBtn.style.display = active ? 'inline-flex' : 'none';
             screenShareCallBtn.classList.toggle('active-off', screenShareActive);
+            updateScreenShareCapabilityUI();
             updateCallMinimizeUI();
             updateCallMediaSession();
 
@@ -8558,6 +8921,27 @@
         socket.on('conversation-updated', function() {
             refreshChats();
         });
+
+        const seenVoiceInviteIds = new Set();
+        function showVoiceRoomInvitation(data) {
+            if (!data?.inviteId || !data?.roomId || seenVoiceInviteIds.has(data.inviteId)) return;
+            seenVoiceInviteIds.add(data.inviteId);
+            const host = document.getElementById('voiceInviteToastHost');
+            if (!host) return;
+            const card = document.createElement('div');
+            card.className = 'voice-invite-toast';
+            const inviter = data.inviter?.displayName || data.invitedBy || 'صديق';
+            card.innerHTML = `<i class="fa-solid fa-headphones-simple" style="font-size:1.35rem;color:#a78bfa;"></i><div class="voice-invite-toast-copy"><strong>${escapeHTML(inviter)} دعاك إلى غرفة صوتية</strong><small>${escapeHTML(data.roomName || 'غرفة صوتية')}</small></div><div class="voice-invite-toast-actions"><button type="button" class="voice-invite-toast-join">انضمام</button><button type="button" class="voice-invite-toast-dismiss">لاحقاً</button></div>`;
+            card.querySelector('.voice-invite-toast-dismiss')?.addEventListener('click', () => card.remove());
+            card.querySelector('.voice-invite-toast-join')?.addEventListener('click', () => {
+                card.remove();
+                const target = data.url || ('/voice-rooms.html?room=' + encodeURIComponent(data.roomId));
+                const opened = window.open(target, '_blank', 'noopener');
+                if (!opened) window.location.href = target;
+            });
+            host.appendChild(card);
+        }
+        socket.on('voice-room-invitation', showVoiceRoomInvitation);
 
         socket.on('message-rejected', function(data) {
             if (data?.reason) alert('❌ ' + data.reason);

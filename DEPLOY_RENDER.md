@@ -7,7 +7,9 @@
 - Persists login sessions in the same cloud state so normal Render restarts do not automatically sign everybody out.
 - Adds `/api/health` for Render health checks.
 - Adds account Settings for display name, password and avatar.
-- Adds owner-only avatar-frame library, timed/permanent assignment and removal.
+- Adds an owner-managed avatar-frame library, with delegated `manage_frames`
+  permission for assigning/removing frames from user accounts.
+- Uses `GIPHY_API_KEY` through the authenticated sticker-search proxy.
 - TURN credentials are passed to the WebRTC client; `FORCE_TURN_RELAY=true` forces calls to use TURN relay.
 - Telegram moderation archive is disabled by default. If enabled, Chatify shows a visible notice and attempts to separate rooms with Telegram Topics.
 
@@ -18,6 +20,10 @@
 4. Start command: `npm start`
 5. Add the environment variables from `.env.example` in Render > Environment.
 6. Do not upload `.env` to Git.
+
+For animated stickers, set `GIPHY_API_KEY` to the API key from GIPHY in the
+Render Environment settings. The key is read server-side; do not paste it into
+`room.html` or a public JavaScript file.
 
 ## MongoDB Atlas
 Set `MONGODB_URI` to your Atlas connection string. On the first successful cloud start, if the Chatify state document does not exist, the server seeds MongoDB from `chat_database.json`. Future saves go to MongoDB automatically.
@@ -61,3 +67,17 @@ After redeploy, `/api/health` should show `"turn":"cloudflare"`.
 
 The app generates short-lived ICE credentials server-side through:
 `https://rtc.live.cloudflare.com/v1/turn/keys/<KEY_ID>/credentials/generate-ice-servers`.
+
+## Memory and upload stability
+The memory guard reports RSS, V8 heap, external memory and ArrayBuffer memory.
+RSS alone is not treated as a fatal condition because native allocator pages can
+remain resident after a streamed upload finishes. Keep
+`MEMORY_GUARD_RESTART=false` on the small Render instance; enable it only when
+the Render logs show sustained Heap/external-buffer pressure and the thresholds
+have been adjusted for the selected plan. The service also limits concurrent
+upload requests with `MAX_CONCURRENT_UPLOAD_REQUESTS` (default `6`).
+
+When MongoDB is configured, the local JSON backup is disabled by default to
+avoid synchronous full-state serialization on every message. Set
+`WRITE_LOCAL_JSON_BACKUP=true` only when that local backup is deliberately
+required.

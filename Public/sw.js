@@ -17,7 +17,8 @@ self.addEventListener('push', event => {
         const activelyViewingRoom = windows.some(client => {
             try {
                 const url = new URL(client.url);
-                return client.visibilityState === 'visible' && roomId && url.searchParams.get('roomId') === roomId;
+                const activeRoomId = url.searchParams.get('roomId') || url.searchParams.get('room');
+                return client.visibilityState === 'visible' && roomId && activeRoomId === roomId;
             } catch (_) {
                 return false;
             }

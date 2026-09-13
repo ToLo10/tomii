@@ -3,9 +3,25 @@
 
     let registrationPromise = null;
     let configPromise = null;
+    const DISABLED_STORAGE_KEY = 'tomi_notifications_disabled_v1';
 
     function supported() {
         return 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+    }
+
+    function userDisabledNotifications() {
+        try {
+            return localStorage.getItem(DISABLED_STORAGE_KEY) === '1';
+        } catch (_) {
+            return false;
+        }
+    }
+
+    function setUserDisabledNotifications(disabled) {
+        try {
+            if (disabled) localStorage.setItem(DISABLED_STORAGE_KEY, '1');
+            else localStorage.removeItem(DISABLED_STORAGE_KEY);
+        } catch (_) {}
     }
 
     function urlBase64ToUint8Array(base64String) {
@@ -23,7 +39,12 @@
                     return response.json();
                 })
                 .then(data => data?.notifications || {})
-                .catch(() => ({}));
+                .catch(() => {
+                    // The script can load before the authenticated session is
+                    // ready. Do not cache that initial 401 forever.
+                    configPromise = null;
+                    return {};
+                });
         }
         return configPromise;
     }
@@ -48,7 +69,21 @@
         return response.json().catch(() => ({ success: true }));
     }
 
+    async function removeSubscriptionFromServer(endpoint) {
+        const response = await fetch('/api/push/unsubscribe', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ endpoint: String(endpoint || '') })
+        });
+        if (!response.ok) throw new Error('push-unsubscribe-failed');
+        return response.json().catch(() => ({ success: true }));
+    }
+
     async function subscribeIfPossible() {
+        if (userDisabledNotifications()) {
+            return { ok: false, permission: supported() ? Notification.permission : 'unsupported', reason: 'user-disabled' };
+        }
         if (!supported() || Notification.permission !== 'granted') {
             return { ok: false, permission: supported() ? Notification.permission : 'unsupported' };
         }
@@ -71,6 +106,44 @@
         return { ok: true, permission: Notification.permission, subscription };
     }
 
+    async function disableFromUserGesture() {
+        if (!supported()) {
+            return { ok: false, permission: 'unsupported', reason: 'unsupported' };
+        }
+
+        // Notification.permission cannot be changed by JavaScript. Disabling
+        // the TOMI subscription is the reversible, per-device equivalent.
+        setUserDisabledNotifications(true);
+        let subscription = null;
+        let serverError = null;
+        try {
+            const registration = await getRegistration();
+            subscription = await registration.pushManager.getSubscription();
+            if (subscription?.endpoint) {
+                try {
+                    await removeSubscriptionFromServer(subscription.endpoint);
+                } catch (error) {
+                    serverError = error;
+                }
+                try {
+                    await subscription.unsubscribe();
+                } catch (error) {
+                    serverError = serverError || error;
+                }
+            }
+        } catch (error) {
+            serverError = error;
+        }
+
+        return {
+            ok: true,
+            disabled: true,
+            permission: Notification.permission,
+            hadSubscription: Boolean(subscription),
+            serverError: serverError ? (serverError.message || 'unsubscribe-failed') : ''
+        };
+    }
+
     async function enableFromUserGesture() {
         if (!supported()) {
             return { ok: false, permission: 'unsupported', reason: 'unsupported' };
@@ -83,6 +156,7 @@
             return { ok: false, permission, reason: 'permission-denied' };
         }
         try {
+            setUserDisabledNotifications(false);
             return await subscribeIfPossible();
         } catch (error) {
             console.warn('Push subscription failed:', error);
@@ -90,11 +164,82 @@
         }
     }
 
+    function syncButton(button, active = null) {
+        if (!button) return;
+        if (!supported()) {
+            button.style.display = 'none';
+            return;
+        }
+        button.style.display = 'inline-flex';
+        const permission = Notification.permission;
+        const isActive = active === null
+            ? button.dataset.notificationsActive === '1'
+            : Boolean(active);
+        button.dataset.notificationsActive = isActive ? '1' : '0';
+        button.classList.toggle('notifications-enabled', isActive);
+        button.classList.toggle('notifications-disabled', !isActive);
+        button.setAttribute('aria-pressed', String(isActive));
+        const icon = button.querySelector('i');
+        if (icon) {
+            icon.classList.toggle('fa-bell', isActive);
+            icon.classList.toggle('fa-bell-slash', !isActive);
+        }
+        button.title = isActive
+            ? 'إيقاف إشعارات TOMI على هذا الجهاز'
+            : permission === 'denied'
+                ? 'الإشعارات محظورة من إعدادات المتصفح'
+                : 'تفعيل إشعارات TOMI على هذا الجهاز';
+        button.setAttribute('aria-label', button.title);
+    }
+
+    async function refreshButton(button) {
+        if (!button || !supported()) return false;
+        let active = false;
+        if (Notification.permission === 'granted' && !userDisabledNotifications()) {
+            try {
+                const registration = await getRegistration();
+                active = Boolean(await registration.pushManager.getSubscription());
+            } catch (_) {}
+        }
+        syncButton(button, active);
+        return active;
+    }
+
+    function bindButton(button) {
+        if (!button || button.dataset.notificationsBound === '1') return;
+        button.dataset.notificationsBound = '1';
+        syncButton(button, false);
+        button.disabled = true;
+        refreshButton(button).finally(() => { button.disabled = false; });
+        button.addEventListener('click', async () => {
+            button.disabled = true;
+            try {
+                const result = button.dataset.notificationsActive === '1'
+                    ? await disableFromUserGesture()
+                    : await enableFromUserGesture();
+                if (result.ok && result.disabled) {
+                    window.alert('تم إيقاف إشعارات TOMI على هذا الجهاز. يمكنك إعادتها من نفس الزر.');
+                } else if (result.ok) {
+                    window.alert('تم تفعيل إشعارات TOMI على هذا الجهاز.');
+                } else if (result.permission === 'denied') {
+                    window.alert('المتصفح مانع الإشعارات. افتح إعدادات الموقع من رمز القفل/الإعدادات واسمح بإشعارات TOMI، ثم حاول مرة ثانية.');
+                } else if (result.reason === 'server-push-unavailable') {
+                    window.alert('خدمة الإشعارات تحتاج إعداد VAPID على السيرفر. ستبقى إشعارات الموقع الداخلية تعمل.');
+                } else {
+                    window.alert('هذا الجهاز أو المتصفح لا يدعم إشعارات الخلفية. ستبقى الإشعارات داخل الموقع متاحة.');
+                }
+            } finally {
+                button.disabled = false;
+                await refreshButton(button);
+            }
+        });
+    }
+
     async function init() {
         if (!supported()) return;
         try {
             await getRegistration();
-            if (Notification.permission === 'granted') {
+            if (Notification.permission === 'granted' && !userDisabledNotifications()) {
                 await subscribeIfPossible();
             }
         } catch (error) {
@@ -106,8 +251,12 @@
         supported,
         init,
         enableFromUserGesture,
+        disableFromUserGesture,
         subscribeIfPossible,
-        getPermission: () => supported() ? Notification.permission : 'unsupported'
+        bindButton,
+        refreshButton,
+        getPermission: () => supported() ? Notification.permission : 'unsupported',
+        isDisabled: userDisabledNotifications
     };
 
     if (document.readyState === 'loading') {

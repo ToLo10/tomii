@@ -1,6 +1,28 @@
 # TOMI — New features setup
 
-No new Render secrets are required beyond the Web Push settings already supported by this build.
+The Web Push settings remain supported by this build. Animated stickers also
+require `GIPHY_API_KEY` in Render Environment.
+
+## GIPHY stickers
+
+Set `GIPHY_API_KEY` to the GIPHY API key in Render > Environment, then redeploy.
+The sticker picker uses `/api/giphy/search`, an authenticated and rate-limited
+server proxy, while keeping the previous client configuration compatible.
+
+## Notification toggle
+
+The bell on the home page, chat, voice rooms, and settings is reversible:
+pressing it subscribes or unsubscribes this browser/device from TOMI Web Push.
+The browser's own `Notification.permission` cannot be changed by page code; if
+the browser says notifications are blocked, allow them from the site settings
+first and then press the bell again.
+
+## Delegated avatar-frame management
+
+The platform owner can grant the dedicated `manage_frames` permission to an
+approved Admin/Moderator from the platform permissions editor. That moderator
+can then open Settings and grant or remove existing frames from user accounts;
+uploading and deleting frame files stays owner-only.
 
 ## Per-room notifications
 Users can enable/mute each room from the bell button. Preferences are stored server-side. If Web Push is enabled, supported browsers can notify users in the background.
@@ -32,7 +54,7 @@ Each recipient receives the announcement in a read-only conversation named `TOMI
 
 
 ## Latest call/chat UX update
-- Removed the per-room browser notification button and disabled Web Push initialization.
+- The device notification button can be switched on or off at any time.
 - Active audio/video calls can be minimized inside TOMI and continue while switching between chats without reloading the page.
 - Chat images open in a full-screen lightbox with a close button.
 
@@ -69,8 +91,8 @@ The room owner/platform owner can choose **طرد مؤقت بمدة** from a mem
 - TOMI now keeps the newest 50 messages per conversation by default (`CHAT_HISTORY_LIMIT=50`).
 - Old chat attachments that are no longer referenced are deleted from GridFS/local storage automatically.
 - Abandoned chat uploads are cleaned after 6 hours.
-- A memory guard runs every 30 seconds: warning at 300 MB RSS, cleanup at 340 MB, and controlled restart only after sustained critical usage at 440 MB.
-- `/api/health` reports RSS/heap/external memory plus memory-guard status.
+- A memory guard runs every 30 seconds: warning at 300 MB RSS and cleanup at 340 MB. Controlled restart is disabled by default and requires both explicit opt-in and sustained Heap/external-buffer pressure.
+- `/api/health` reports RSS/heap/heap-total/external/ArrayBuffer memory plus memory-guard status and restart thresholds.
 - Node starts with `--expose-gc --max-old-space-size=320` to leave native-memory headroom inside a 512 MB Render instance.
 - Large media remains HTTP/GridFS streamed; Socket.IO is for messaging/signaling, not raw large files.
 

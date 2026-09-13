@@ -22,3 +22,95 @@ button{touch-action:manipulation}.app-shell{min-height:100vh}.sidebar{position:f
 @media(max-width:620px){.voice-room-top{grid-template-columns:auto minmax(90px,1fr) auto auto}.voice-brand{font-size:20px}.voice-room-top .live-pill{position:absolute;top:70px;right:14px}.room-status-line{padding-top:49px}.room-name-pill{min-width:0}.room-name-pill i{display:none}.top-action{width:42px;height:42px}.seat-grid{grid-template-columns:repeat(3,1fr);gap:19px 4px;padding-top:10px}.seat{min-height:142px}.seat-visual{width:92px;height:92px}.seat img,.seat .avatar-fallback,.seat-plus{width:72px;height:72px;font-size:21px}.seat.owner-seat .seat-visual{width:138px;height:138px}.seat.owner-seat img,.seat.owner-seat .avatar-fallback{width:112px;height:112px}.waveform{width:126px}.seat.owner-seat .waveform{width:170px}.mic-badge{width:30px;height:30px;right:3px;bottom:3px;font-size:12px}.seat>strong{font-size:12px;max-width:100px}.seat-role{font-size:10px}.seat-manage{left:1px}.room-info-grid{margin-top:16px}.glass-card{padding:15px;border-radius:20px}.rule-row{padding:8px}.invite-big{padding:15px}.voice-toolbar{width:calc(100% - 12px);bottom:max(6px,env(safe-area-inset-bottom));min-height:92px;border-radius:22px;padding:9px 7px}.tool-icon{width:48px;height:48px}.toolbar-item small{font-size:10px}.rooms-home .topbar{align-items:flex-start}.topbar .primary{padding:10px 12px}.rooms-intro{padding:16px}.room-card{padding:12px}.modal{padding:12px}.bottom-sheet-modal{padding:0}.duration-presets{grid-template-columns:repeat(2,1fr)}}
 @media(max-width:390px){.seat-grid{grid-template-columns:repeat(2,1fr)}.seat.owner-seat{grid-column:1/-1}.voice-brand{font-size:18px}.room-name-pill{padding:0 9px}.room-name-pill span{max-width:90px}.voice-toolbar{grid-template-columns:repeat(5,1fr)}.tool-icon{width:43px;height:43px}.toolbar-item small{font-size:9px}}
 @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+
+/* ===== Mobile/tablet and invitation stability ===== */
+html, body { min-height: 100dvh; }
+body.modal-open { overflow: hidden; }
+.room-stage { min-height: 100dvh; }
+.voice-experience { min-height: calc(100dvh - 118px); padding-bottom: max(34px, env(safe-area-inset-bottom)); }
+.voice-toolbar { padding-bottom: max(11px, env(safe-area-inset-bottom)); }
+.modal { z-index: 1000; pointer-events: auto; }
+.modal.hidden { display: none !important; pointer-events: none; }
+.modal:not(.hidden) { display: grid !important; }
+.modal-box { pointer-events: auto; max-height: min(760px, calc(100dvh - 24px)); }
+.bottom-sheet-modal:not(.hidden) { display: flex !important; align-items: flex-end; }
+.invite-friends-list { display:flex; flex-direction:column; gap:8px; max-height:min(52dvh,420px); overflow:auto; margin:12px 0 14px; }
+.invite-friend-row { display:flex; align-items:center; gap:10px; padding:10px; border-radius:13px; background:#11101d; border:1px solid #302c46; }
+.invite-friend-avatar, .invite-friend-avatar img, .invite-friend-avatar .avatar-fallback { width:42px; height:42px; border-radius:50%; object-fit:cover; display:grid; place-items:center; background:#5a397d; color:#fff; flex:0 0 auto; }
+.invite-friend-copy { flex:1; min-width:0; }
+.invite-friend-copy strong, .invite-friend-copy small { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.invite-friend-copy small { color:var(--muted); margin-top:3px; font-size:11px; }
+.invite-friend-btn { border:0; border-radius:10px; padding:8px 10px; background:#e91e63; color:#fff; cursor:pointer; white-space:nowrap; }
+.invite-friend-btn:disabled { opacity:.55; cursor:default; }
+.voice-invite-toast-host { position:fixed; top:max(12px,env(safe-area-inset-top)); inset-inline:10px; z-index:2147483000; display:flex; flex-direction:column; align-items:flex-end; gap:8px; pointer-events:none; }
+.voice-invite-toast { width:min(390px,100%); pointer-events:auto; display:flex; align-items:center; gap:10px; padding:12px; border:1px solid rgba(255,205,126,.42); border-radius:15px; background:rgba(35,9,25,.97); color:#fff; box-shadow:0 18px 46px rgba(0,0,0,.45); backdrop-filter:blur(14px); }
+.voice-invite-toast-copy { flex:1; min-width:0; }
+.voice-invite-toast-copy strong, .voice-invite-toast-copy small { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.voice-invite-toast-copy small { color:#f0cbd7; margin-top:3px; font-size:11px; }
+.voice-invite-toast-actions { display:flex; gap:5px; flex:0 0 auto; }
+.voice-invite-toast-actions button { border:0; border-radius:9px; padding:8px 9px; color:#fff; cursor:pointer; font-size:11px; }
+.voice-invite-toast-join { background:#d92362; }
+.voice-invite-toast-dismiss { background:#4a2035; }
+
+@media (max-width: 900px) {
+  .voice-experience { min-height:100dvh; overflow-y:auto; padding-top:max(12px,env(safe-area-inset-top)); }
+  .seat-grid { padding-bottom:10px; }
+  .room-info-grid { padding-bottom:16px; }
+}
+@media (max-width: 620px) {
+  .voice-room-top { padding-top:2px; }
+  .voice-toolbar { bottom:0; width:calc(100% - 10px); padding-bottom:max(9px,env(safe-area-inset-bottom)); }
+  .modal { padding:8px; }
+  .modal-box { border-radius:18px; max-height:calc(100dvh - 16px); }
+  .bottom-sheet-modal { padding:0; }
+  .bottom-sheet-modal .modal-box { max-height:80dvh; }
+}
+
+/* Keep the room actions in a stable header row on phones and tablets. The
+   settings/back buttons used to become implicit grid items and could fall
+   below the visible header on narrow screens. */
+@media (min-width: 621px) and (max-width: 900px) {
+  .voice-room-top {
+    position:relative;
+    grid-template-columns:auto auto minmax(0,1fr) auto auto;
+  }
+  .voice-room-top #roomSettingsBtn,
+  .voice-room-top #backRoomsBtn {
+    position:absolute;
+    top:58px;
+    z-index:4;
+  }
+  .voice-room-top #roomSettingsBtn { left:10px; }
+  .voice-room-top #backRoomsBtn { left:64px; }
+  .room-status-line { padding-top:56px; }
+}
+
+@media (max-width: 620px) {
+  .voice-room-top {
+    position:relative;
+    grid-template-columns:minmax(72px,auto) minmax(0,1fr) 42px 42px;
+    gap:7px;
+    min-height:48px;
+    padding-inline:4px;
+  }
+  .voice-room-top .voice-brand,
+  .voice-room-top .room-name-pill {
+    min-width:0;
+  }
+  .voice-room-top .room-name-pill { width:100%; }
+  .voice-room-top #roomSettingsBtn,
+  .voice-room-top #backRoomsBtn {
+    position:absolute;
+    top:54px;
+    z-index:4;
+  }
+  .voice-room-top #roomSettingsBtn { left:8px; }
+  .voice-room-top #backRoomsBtn { left:58px; }
+  .room-status-line { padding-top:54px; }
+}
+
+.top-action.notifications-enabled {
+  color:#baffcf;
+  border-color:rgba(186,255,207,.45);
+}
+.top-action.notifications-disabled { color:#f4c3d3; }

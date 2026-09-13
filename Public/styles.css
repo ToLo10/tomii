@@ -1747,3 +1747,9 @@ body {
     user-select:none!important;
     -webkit-user-drag:none!important;
 }
+
+.btn-action.notifications-enabled {
+    color:#8ee6af;
+    border-color:rgba(34,197,94,.42);
+}
+.btn-action.notifications-disabled { color:#aaa6bd; }

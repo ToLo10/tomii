@@ -16,6 +16,9 @@
         <h1>الإعدادات</h1>
         <p>إدارة الحساب والصورة وكلمة المرور</p>
       </div>
+      <button id="enableNotificationsBtn" class="notification-toggle" type="button" title="تفعيل إشعارات TOMI على هذا الجهاز" aria-label="تفعيل إشعارات TOMI على هذا الجهاز">
+        <i class="fa-regular fa-bell-slash"></i>
+      </button>
       <span id="roleBadge" class="role-badge"></span>
     </header>
 
@@ -71,11 +74,11 @@
     <section id="ownerFramesPanel" class="panel owner-panel" style="display:none;">
       <div class="panel-heading owner-heading">
         <div><i class="fa-solid fa-crown"></i></div>
-        <div><h2>مكتبة الإطارات</h2><p>للمالك فقط: رفع الإطارات ومنحها لأي حساب لمدة محددة أو بشكل دائم</p></div>
+        <div><h2>مكتبة الإطارات</h2><p>المالك يرفع الإطارات، والمشرف المفوض يستطيع منحها أو سحبها من الحسابات</p></div>
       </div>
 
       <div class="owner-grid">
-        <form id="frameUploadForm" class="owner-box form-stack">
+        <form id="frameUploadForm" class="owner-box form-stack" style="display:none;">
           <h3>رفع إطار جديد</h3>
           <label for="frameName">اسم الإطار</label>
           <input id="frameName" type="text" maxlength="60" placeholder="مثال: Royal Purple" required>
@@ -85,7 +88,7 @@
           <button class="primary-btn" type="submit"><i class="fa-solid fa-plus"></i> إضافة للمكتبة</button>
         </form>
 
-        <form id="frameAssignForm" class="owner-box form-stack">
+        <form id="frameAssignForm" class="owner-box form-stack" style="display:none;">
           <h3>منح إطار لمستخدم</h3>
           <label for="targetUsername">اسم المستخدم</label>
           <input id="targetUsername" type="text" placeholder="username" required>
@@ -108,11 +111,14 @@
     </section>
   </main>
 
+<script src="/notifications.js"></script>
 <script>
 (() => {
   const $ = id => document.getElementById(id);
   let me = null;
   let frames = [];
+  let isPlatformOwner = false;
+  let canManageFrames = false;
 
   function fallbackAvatar(name) {
     return `https://ui-avatars.com/api/?name=${encodeURIComponent(name || 'User')}&background=6c5ce7&color=fff`;
@@ -314,15 +320,19 @@
       renderFrameElement($('profileFrame'), '');
     }
     const role = me.role || 'user';
+    isPlatformOwner = role === 'owner' || me.username === 'tomi';
+    canManageFrames = isPlatformOwner || (Array.isArray(me.permissions) && me.permissions.includes('manage_frames'));
     $('roleBadge').textContent = role === 'owner' ? '👑 مالك' : role === 'admin' ? '🛡 إدارة' : role === 'moderator' ? '🛡 مشرف' : '@' + (me.username || 'user');
-    $('ownerFramesPanel').style.display = role === 'owner' || me.username === 'tomi' ? 'block' : 'none';
+    $('ownerFramesPanel').style.display = canManageFrames ? 'block' : 'none';
+    $('frameUploadForm').style.display = isPlatformOwner ? 'flex' : 'none';
+    $('frameAssignForm').style.display = canManageFrames ? 'flex' : 'none';
   }
 
   async function loadMe() {
     try {
       const data = await request('/api/settings/me');
       renderMe(data);
-      if (data.role === 'owner' || data.username === 'tomi') await loadFrames();
+      if (canManageFrames) await loadFrames();
     } catch (err) {
       if (/تسجيل الدخول|401/.test(err.message)) location.href = 'login.html';
       else toast(err.message, true);
@@ -349,7 +359,7 @@
             <img class="frame-demo-overlay" alt="${escapeHtml(frame.name)}">
           </div>
           <strong>${escapeHtml(frame.name)}</strong>
-          <button type="button" class="delete-frame" data-id="${frame.frameId}"><i class="fa-solid fa-trash"></i></button>`;
+          ${isPlatformOwner ? `<button type="button" class="delete-frame" data-id="${frame.frameId}"><i class="fa-solid fa-trash"></i></button>` : ''}`;
         library.appendChild(card);
         renderFrameElement(card.querySelector('.frame-demo-overlay'), frame.url, !!frame.animated);
       });
@@ -411,6 +421,7 @@
 
   $('frameUploadForm').addEventListener('submit', async e => {
     e.preventDefault();
+    if (!isPlatformOwner) return toast('رفع الإطارات متاح لمالك المنصة فقط', true);
     const file = $('frameFile').files?.[0];
     if (!file) return toast('اختر ملف الإطار', true);
     const form = new FormData();
@@ -436,6 +447,7 @@
 
   $('frameAssignForm').addEventListener('submit', async e => {
     e.preventDefault();
+    if (!canManageFrames) return toast('لا تملك صلاحية منح الإطارات', true);
     try {
       await request('/api/admin/frames/assign', {
         method:'POST', headers:{'Content-Type':'application/json'},
@@ -451,6 +463,7 @@
   });
 
   $('removeFrameBtn').addEventListener('click', async () => {
+    if (!canManageFrames) return toast('لا تملك صلاحية سحب الإطارات', true);
     const username = $('targetUsername').value.trim();
     if (!username) return toast('اكتب اسم المستخدم أولاً', true);
     try {
@@ -464,6 +477,7 @@
   $('framesLibrary').addEventListener('click', async e => {
     const btn = e.target.closest('.delete-frame');
     if (!btn) return;
+    if (!isPlatformOwner) return toast('حذف الإطارات متاح لمالك المنصة فقط', true);
     if (!confirm('حذف هذا الإطار من المكتبة وسحبه من جميع المستخدمين؟')) return;
     try {
       await request('/api/admin/frames/' + encodeURIComponent(btn.dataset.id), { method:'DELETE' });
@@ -472,6 +486,7 @@
     } catch (err) { toast(err.message, true); }
   });
 
+  window.TomiNotifications?.bindButton?.($('enableNotificationsBtn'));
   loadMe();
 })();
 </script>

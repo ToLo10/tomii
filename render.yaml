@@ -50,6 +50,8 @@ services:
         value: "900000"
       - key: MAX_CONCURRENT_UPLOADS_PER_USER
         value: "2"
+      - key: MAX_CONCURRENT_UPLOAD_REQUESTS
+        value: "6"
       - key: MEDIA_LOCAL_CACHE_TTL_MS
         value: "1200000"
       - key: MEDIA_LOCAL_CACHE_MAX_FILE_BYTES
@@ -58,3 +60,11 @@ services:
         value: "false"
       - key: NODE_OPTIONS
         value: "--max-old-space-size=320"
+      - key: MEMORY_GUARD_RESTART
+        value: "false"
+      - key: MEMORY_RESTART_HEAP_MB
+        value: "240"
+      - key: MEMORY_RESTART_EXTERNAL_MB
+        value: "192"
+      - key: TELEGRAM_TOPIC_RETRY_COOLDOWN_MS
+        value: "21600000"
