@@ -1,5 +1,11 @@
 # Chatify Cloud Update
 
+## 2026-09-13 — Mobile room actions and upload finalization
+- رتّبت رأس المحادثة على الهاتف بدون تمرير أفقي، وأضافت زر خيارات موحّدًا يضم المتواجدين، الإشعارات، الخلفية، مسح السجل، وحذف الغرفة عند توفر الصلاحية.
+- أضيفت قائمة خيارات إلى كل بطاقة في سجل المحادثات، مع رسائل تحديث صحيحة عند مسح/حذف غرفة غير مفتوحة حالياً.
+- رفعت دفعات GridFS إلى 4MB افتراضياً، ومنعت طلبات الإنهاء المتكررة من نسخ الفيديو مرتين أثناء مرحلة 99%.
+- أضيفت حالة مرئية توضّح أن الملف في مرحلة الحفظ الآمن حتى يصل تأكيد الخادم.
+
 ## 2026-09-13 — Render memory guard correction
 - Render logs showed the process exiting with status 1 after RSS stayed around
   484 MB even though V8 heap stayed around 29 MB. RSS-only controlled restarts

@@ -1996,6 +1996,112 @@
   .call-upgrade-prompt { margin-inline:4px; }
 }
 
+/* ===== Mobile conversation actions ===== */
+.room-actions-trigger {
+    display: none;
+    width: 36px;
+    height: 36px;
+    min-width: 36px;
+    padding: 0;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid #34304d;
+    border-radius: 11px;
+    background: #1b192b;
+    color: #f4f1ff;
+    cursor: pointer;
+    flex: 0 0 auto;
+    transition: background .18s ease, border-color .18s ease, transform .18s ease;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+}
+.room-actions-trigger:hover,
+.room-actions-trigger:focus-visible { background: #292442; border-color: #7565df; outline: none; }
+.room-actions-trigger:active { transform: scale(.94); }
+
+.room-actions-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 4600;
+    display: none;
+    align-items: flex-end;
+    justify-content: center;
+    padding: 12px 10px calc(10px + env(safe-area-inset-bottom));
+    background: rgba(4, 4, 12, .68);
+    opacity: 0;
+    transition: opacity .18s ease;
+    overscroll-behavior: contain;
+}
+.room-actions-overlay.open { opacity: 1; }
+.room-actions-sheet {
+    width: min(100%, 520px);
+    max-height: min(78dvh, 620px);
+    overflow: auto;
+    padding: 9px 10px 10px;
+    border: 1px solid rgba(146, 125, 245, .34);
+    border-radius: 22px 22px 15px 15px;
+    background: rgba(24, 23, 42, .985);
+    box-shadow: 0 -12px 45px rgba(0, 0, 0, .42), 0 16px 50px rgba(0, 0, 0, .3);
+    transform: translateY(20px);
+    transition: transform .2s ease;
+    -webkit-overflow-scrolling: touch;
+}
+.room-actions-overlay.open .room-actions-sheet { transform: translateY(0); }
+.room-actions-handle { width: 42px; height: 4px; margin: 0 auto 10px; border-radius: 999px; background: #5f5a79; }
+.room-actions-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 0 3px 10px; border-bottom: 1px solid rgba(145, 130, 200, .16); }
+.room-actions-kicker { display: block; color: #9d96b7; font-size: .68rem; margin-bottom: 2px; }
+.room-actions-header h3 { color: #fff; font-size: .98rem; font-weight: 700; }
+.room-actions-close { width: 34px; height: 34px; border: 0; border-radius: 10px; background: #2a2740; color: #e6e1ff; cursor: pointer; font-size: .95rem; }
+.room-actions-close:hover, .room-actions-close:focus-visible { background: #3a3458; outline: 1px solid #7868e3; }
+.room-actions-list { display: grid; gap: 6px; padding-top: 10px; }
+.room-action-item { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 46px; padding: 9px 11px; border: 1px solid rgba(137, 124, 194, .16); border-radius: 13px; background: #1b1a2b; color: #f5f2ff; cursor: pointer; text-align: right; font: inherit; transition: background .16s ease, border-color .16s ease, transform .16s ease; touch-action: manipulation; }
+.room-action-item > i:first-child { width: 22px; color: #a99bff; text-align: center; font-size: .96rem; }
+.room-action-item span { flex: 1; min-width: 0; font-size: .84rem; }
+.room-action-item:hover, .room-action-item:focus-visible { background: #292542; border-color: rgba(145, 125, 245, .56); outline: none; }
+.room-action-item:active { transform: scale(.985); }
+.room-action-item .room-action-chevron { color: #77728e; font-size: .68rem; }
+.room-action-item.danger { color: #ffb2b2; border-color: rgba(238, 93, 107, .22); background: rgba(91, 29, 46, .28); }
+.room-action-item.danger > i:first-child { color: #ff858c; }
+.room-action-item.danger:hover, .room-action-item.danger:focus-visible { background: rgba(125, 37, 52, .46); border-color: rgba(255, 116, 125, .52); }
+.room-actions-empty { padding: 18px 8px; color: #aaa5bd; text-align: center; font-size: .82rem; }
+
+/* The real upload percentage remains 99 until the server confirms the durable save. */
+.message.upload-completing .upload-progress-bar {
+    background: linear-gradient(90deg, #6c5ce7, #c084fc, #6c5ce7);
+    background-size: 220% 100%;
+    animation: uploadFinalizing 1.15s linear infinite;
+}
+.message.upload-completing .upload-percent { color: #d7cfff; }
+@keyframes uploadFinalizing { from { background-position: 0 0; } to { background-position: 220% 0; } }
+
+.room-menu-dots:focus-visible { outline: 2px solid #8b7cf6; outline-offset: 2px; }
+
+@media (max-width: 768px) {
+    .chat-view-header { gap: 6px; padding-inline: 8px; }
+    .room-title-area { min-width: 0; flex: 1 1 auto; }
+    .room-title-area h3 { max-width: 100%; }
+    .header-actions { min-width: 0; max-width: none; flex: 0 0 auto; gap: 4px; overflow: visible; }
+    #backgroundBtn, #clearChatBtn, #deleteRoomBtn, #roomUsersBtn { display: none !important; }
+    .room-actions-trigger { display: inline-flex; }
+    .header-btn, .room-actions-trigger, .back-btn { width: 34px; height: 34px; min-width: 34px; }
+    .room-item { gap: 5px; padding: 11px 9px; }
+    .room-menu-dots { width: 34px; height: 34px; min-width: 34px; margin-inline: 0; }
+    .room-actions-overlay { padding-inline: 8px; }
+    .chat-video-wrap { max-width: 100%; }
+}
+@media (max-width: 430px) {
+    .chat-view-header { padding-inline: 6px; gap: 4px; }
+    .room-title-area h3 { font-size: .84rem; }
+    .room-title-area p { font-size: .65rem; }
+    .header-actions { gap: 3px; }
+    .header-btn, .room-actions-trigger, .back-btn { width: 32px; height: 32px; min-width: 32px; }
+    .room-actions-sheet { border-radius: 19px 19px 13px 13px; }
+}
+@media (prefers-reduced-motion: reduce) {
+    .room-actions-overlay, .room-actions-sheet, .room-action-item, .room-actions-trigger { transition: none; }
+    .message.upload-completing .upload-progress-bar { animation: none; }
+}
+
     </style>
 </head>
 
@@ -2097,6 +2203,9 @@
                         <button id="clearChatBtn" class="header-btn" title="مسح المحادثة"><i class="fa-solid fa-eraser"></i></button>
                         <button id="deleteRoomBtn" class="header-btn" title="حذف الغرفة" style="display:none;color:#ff6b6b;"><i class="fa-solid fa-trash"></i></button>
                         <button class="room-menu-header-btn" id="roomUsersBtn" title="المتواجدون"><i class="fa-solid fa-ellipsis-vertical"></i></button>
+                        <button class="room-actions-trigger" id="roomActionsBtn" type="button" title="خيارات المحادثة" aria-label="خيارات المحادثة" aria-expanded="false">
+                            <i class="fa-solid fa-ellipsis-vertical"></i>
+                        </button>
                     </div>
                 </div>
                 <div class="host-controls-bar" id="hostControls">
@@ -2289,6 +2398,21 @@
             <div class="users-popup-list" id="popupUsersList">
                 <div style="text-align:center;color:#888;padding:30px;">جاري التحميل...</div>
             </div>
+        </div>
+    </div>
+
+    <!-- Mobile-friendly room actions. Destructive actions are inserted only when the server-side permission allows them. -->
+    <div class="room-actions-overlay" id="roomActionsOverlay" aria-hidden="true">
+        <div class="room-actions-sheet" role="dialog" aria-modal="true" aria-labelledby="roomActionsTitle">
+            <div class="room-actions-handle" aria-hidden="true"></div>
+            <div class="room-actions-header">
+                <div>
+                    <span class="room-actions-kicker">إجراءات المحادثة</span>
+                    <h3 id="roomActionsTitle">خيارات المحادثة</h3>
+                </div>
+                <button id="closeRoomActionsBtn" class="room-actions-close" type="button" title="إغلاق" aria-label="إغلاق">✕</button>
+            </div>
+            <div id="roomActionsList" class="room-actions-list"></div>
         </div>
     </div>
 
@@ -3055,6 +3179,12 @@
         const stickerCategoryRow = document.getElementById('stickerCategoryRow');
         const clearChatBtn = document.getElementById('clearChatBtn');
         const deleteRoomBtn = document.getElementById('deleteRoomBtn');
+        const roomActionsBtn = document.getElementById('roomActionsBtn');
+        const roomActionsOverlay = document.getElementById('roomActionsOverlay');
+        const roomActionsList = document.getElementById('roomActionsList');
+        const roomActionsTitle = document.getElementById('roomActionsTitle');
+        const closeRoomActionsBtn = document.getElementById('closeRoomActionsBtn');
+        let roomActionTarget = null;
 
         const hostControls = document.getElementById('hostControls');
         const modControls = document.getElementById('modControls');
@@ -3354,6 +3484,192 @@
 
         enableNotificationsBtn.addEventListener('click', toggleRoomNotifications);
 
+        // The mobile header has very little horizontal space. Keep the most-used
+        // call/notification buttons visible and move the remaining room actions
+        // into one accessible bottom sheet instead of making the header scroll.
+        function roomActionButtonIsAvailable(button) {
+            return Boolean(button && button.style.display !== 'none');
+        }
+
+        function roomMetaIsPrivate(meta) {
+            return Boolean(meta?.isPrivate || String(meta?.id || '').startsWith('private_'));
+        }
+
+        function roomMetaIsSystem(meta) {
+            return Boolean(meta?.systemRoom || meta?.type === 'system');
+        }
+
+        function canManageRoomMeta(meta) {
+            return Boolean(
+                meta?.isHost ||
+                myUsername === 'tomi' ||
+                hasPermission('manage_rooms')
+            );
+        }
+
+        function getRoomMetaLabel(meta) {
+            if (!meta) return 'المحادثة';
+            if (roomMetaIsPrivate(meta)) return meta.partner ? 'محادثة مع ' + meta.partner : (meta.name || 'المحادثة الخاصة');
+            return meta.name || 'الغرفة العامة';
+        }
+
+        function closeRoomActions() {
+            if (!roomActionsOverlay) return;
+            roomActionsOverlay.classList.remove('open');
+            roomActionsOverlay.setAttribute('aria-hidden', 'true');
+            if (roomActionsBtn) roomActionsBtn.setAttribute('aria-expanded', 'false');
+            roomActionTarget = null;
+            setTimeout(() => {
+                if (!roomActionsOverlay.classList.contains('open')) roomActionsOverlay.style.display = 'none';
+            }, 180);
+        }
+
+        function addRoomAction({ key, icon, label, danger = false }) {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'room-action-item' + (danger ? ' danger' : '');
+            button.dataset.action = key;
+            button.innerHTML = `<i class="fa-solid ${icon}" aria-hidden="true"></i><span>${label}</span><i class="fa-solid fa-chevron-left room-action-chevron" aria-hidden="true"></i>`;
+            button.addEventListener('click', () => handleRoomAction(key, roomActionTarget));
+            roomActionsList.appendChild(button);
+        }
+
+        function openRoomActionsForMeta(meta = null, options = {}) {
+            const currentMeta = typeof getCurrentRoomMeta === 'function' ? getCurrentRoomMeta() : null;
+            const target = meta || currentMeta || (roomId ? {
+                id: roomId,
+                name: currentRoomName,
+                partner: null,
+                isPrivate: currentRoomIsPrivate,
+                systemRoom: currentRoomIsSystem,
+                isHost: isCurrentHost,
+                shareCode: currentShareCode
+            } : null);
+            if (!target?.id || !roomActionsOverlay || !roomActionsList) return;
+
+            roomActionTarget = target;
+            const targetId = String(target.id);
+            const isCurrent = targetId === String(roomId || '');
+            const isPrivate = isCurrent ? currentRoomIsPrivate : roomMetaIsPrivate(target);
+            const isSystem = isCurrent ? currentRoomIsSystem : roomMetaIsSystem(target);
+            const targetLabel = getRoomMetaLabel(target);
+            roomActionsTitle.textContent = options.fromList ? 'خيارات ' + targetLabel : 'خيارات المحادثة';
+            roomActionsList.innerHTML = '';
+
+            if (options.fromList && !isCurrent) {
+                addRoomAction({ key: 'open', icon: 'fa-arrow-up-right-from-square', label: 'فتح المحادثة' });
+            }
+
+            if (!isSystem) {
+                addRoomAction({ key: 'users', icon: 'fa-users', label: 'المتواجدون الآن' });
+            }
+
+            if (isCurrent && roomActionButtonIsAvailable(audioCallBtn)) {
+                addRoomAction({ key: 'audio', icon: 'fa-phone', label: 'اتصال صوتي' });
+            }
+            if (isCurrent && roomActionButtonIsAvailable(videoCallBtn)) {
+                addRoomAction({ key: 'video', icon: 'fa-video', label: 'اتصال فيديو' });
+            }
+            if (isCurrent && roomActionButtonIsAvailable(enableNotificationsBtn)) {
+                addRoomAction({
+                    key: 'notifications',
+                    icon: roomNotificationsEnabled ? 'fa-bell-slash' : 'fa-bell',
+                    label: roomNotificationsEnabled ? 'إيقاف إشعارات المحادثة' : 'فتح إشعارات المحادثة'
+                });
+            }
+            if (isCurrent && roomActionButtonIsAvailable(backgroundBtn)) {
+                addRoomAction({ key: 'background', icon: 'fa-image', label: 'تغيير الخلفية' });
+            }
+
+            const canClear = !isSystem && (isPrivate || canManageRoomMeta(target));
+            if (canClear) {
+                addRoomAction({ key: 'clear', icon: 'fa-eraser', label: 'مسح سجل المحادثة' });
+            }
+
+            const canDelete = !isPrivate && !isSystem && canManageRoomMeta(target);
+            if (canDelete) {
+                addRoomAction({ key: 'delete', icon: 'fa-trash', label: 'حذف الغرفة نهائياً', danger: true });
+            }
+
+            if (!isPrivate && !isSystem) {
+                addRoomAction({ key: 'copy', icon: 'fa-copy', label: 'نسخ رمز المشاركة' });
+            }
+
+            if (!roomActionsList.children.length) {
+                const empty = document.createElement('p');
+                empty.className = 'room-actions-empty';
+                empty.textContent = 'لا توجد إجراءات متاحة لهذه المحادثة.';
+                roomActionsList.appendChild(empty);
+            }
+
+            roomActionsOverlay.style.display = 'flex';
+            roomActionsOverlay.setAttribute('aria-hidden', 'false');
+            if (roomActionsBtn) roomActionsBtn.setAttribute('aria-expanded', 'true');
+            requestAnimationFrame(() => roomActionsOverlay.classList.add('open'));
+            roomActionsList.querySelector('button')?.focus({ preventScroll: true });
+        }
+
+        async function copyRoomShareCode(meta) {
+            const code = String((meta?.id === roomId ? currentShareCode : meta?.shareCode) || meta?.id || '').trim();
+            if (!code) return;
+            try {
+                await navigator.clipboard.writeText(code);
+                alert('تم نسخ رمز المشاركة.');
+            } catch (_) {
+                alert('رمز الغرفة: ' + code);
+            }
+        }
+
+        function requestClearRoomHistory(targetRoomId = roomId) {
+            if (!targetRoomId) return;
+            if (confirm('هل أنت متأكد من مسح جميع الرسائل في هذه المحادثة؟')) {
+                socket.emit('clear-room-history', targetRoomId);
+            }
+        }
+
+        function requestDeleteRoom(targetRoomId = roomId) {
+            if (!targetRoomId) return;
+            if (confirm('هل أنت متأكد من حذف هذه الغرفة نهائياً لجميع المستخدمين؟')) {
+                socket.emit('delete-room', { roomId: targetRoomId });
+            }
+        }
+
+        function handleRoomAction(action, meta) {
+            const target = meta || getCurrentRoomMeta();
+            const targetId = target?.id || roomId;
+            closeRoomActions();
+            if (!targetId) return;
+
+            if (action === 'open') {
+                switchRoom(targetId);
+            } else if (action === 'users') {
+                openUsersPopup(targetId);
+            } else if (action === 'notifications' && targetId === roomId) {
+                toggleRoomNotifications();
+            } else if (action === 'audio' && targetId === roomId) {
+                audioCallBtn.click();
+            } else if (action === 'video' && targetId === roomId) {
+                videoCallBtn.click();
+            } else if (action === 'background' && targetId === roomId) {
+                backgroundBtn.click();
+            } else if (action === 'clear') {
+                requestClearRoomHistory(targetId);
+            } else if (action === 'delete') {
+                requestDeleteRoom(targetId);
+            } else if (action === 'copy') {
+                copyRoomShareCode(target);
+            }
+        }
+
+        roomActionsBtn?.addEventListener('click', () => openRoomActionsForMeta());
+        closeRoomActionsBtn?.addEventListener('click', closeRoomActions);
+        roomActionsOverlay?.addEventListener('click', event => {
+            if (event.target === roomActionsOverlay) closeRoomActions();
+        });
+        document.addEventListener('keydown', event => {
+            if (event.key === 'Escape' && roomActionsOverlay?.classList.contains('open')) closeRoomActions();
+        });
+
         function normalizeChatRecord(chat) {
             const raw = chat || {};
             const id = raw.roomId || raw.id || '';
@@ -3422,6 +3738,7 @@
             modControls.style.display = 'none';
             deleteRoomBtn.style.display = 'none';
             document.getElementById('roomUsersBtn').style.display = 'none';
+            roomActionsBtn.style.display = 'none';
             clearChatBtn.style.display = 'none';
             audioCallBtn.style.display = 'none';
             videoCallBtn.style.display = 'none';
@@ -3433,6 +3750,7 @@
 
         function showChatControls() {
             document.getElementById('roomUsersBtn').style.display = currentRoomIsSystem ? 'none' : 'inline-flex';
+            roomActionsBtn.style.display = currentRoomIsSystem ? 'none' : '';
             clearChatBtn.style.display = currentRoomIsSystem ? 'none' : 'inline-flex';
             document.querySelector('.input-area').style.display = currentRoomIsSystem ? 'none' : 'flex';
         }
@@ -3564,6 +3882,19 @@
                 badge.className = room.isPrivate ? 'room-item-private-badge' : 'room-item-public-badge';
                 badge.textContent = room.isPrivate ? '🔒' : 'عامة';
                 item.appendChild(badge);
+
+                const roomMenuBtn = document.createElement('button');
+                roomMenuBtn.type = 'button';
+                roomMenuBtn.className = 'room-menu-dots';
+                roomMenuBtn.title = 'خيارات المحادثة';
+                roomMenuBtn.setAttribute('aria-label', 'خيارات ' + (room.name || 'المحادثة'));
+                roomMenuBtn.innerHTML = '<i class="fa-solid fa-ellipsis-vertical" aria-hidden="true"></i>';
+                roomMenuBtn.addEventListener('click', function(event) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    openRoomActionsForMeta(room, { fromList: true });
+                });
+                item.appendChild(roomMenuBtn);
 
                 item.onclick = function() {
                     switchRoom(room.id);
@@ -4082,15 +4413,15 @@
         });
 
         socket.on('room-deleted', function(data) {
+            const deletedRoomId = String(data?.roomId || roomId || '');
             alert(data.message || 'تم حذف الغرفة.');
-            savedRooms = savedRooms.filter(r => r.id !== roomId);
-            goToConversationsHome();
+            savedRooms = savedRooms.filter(r => r.id !== deletedRoomId);
+            if (deletedRoomId === String(roomId || '')) goToConversationsHome();
+            else renderSidebarRooms();
         });
 
         deleteRoomBtn.addEventListener('click', function() {
-            if (confirm("هل أنت تأكد من حذف هذه الغرفة نهائياً لجميع المستخدمين؟")) {
-                socket.emit('delete-room', { roomId });
-            }
+            requestDeleteRoom(roomId);
         });
 
         socket.on('room-full', function(data) {
@@ -4185,12 +4516,22 @@
         });
 
         clearChatBtn.addEventListener('click', function() {
-            if (confirm("هل أنت متأكد من مسح جميع الرسائل في هذه الغرفة؟")) {
-                socket.emit('clear-room-history', roomId);
-            }
+            requestClearRoomHistory(roomId);
         });
 
-        socket.on('chat-cleared', function() {
+        socket.on('clear-history-result', function(data) {
+            if (!data?.success) {
+                alert(data?.error || 'تعذر مسح سجل المحادثة');
+                return;
+            }
+            if (data.roomId && data.roomId !== roomId) refreshChats();
+        });
+
+        socket.on('chat-cleared', function(data) {
+            if (data?.roomId && data.roomId !== roomId) {
+                refreshChats();
+                return;
+            }
             chatContainer.innerHTML = '';
             messagesStore = {};
             refreshChats();
@@ -5783,6 +6124,7 @@
             const eta = bps > 1 ? remaining / bps : 0;
             progressUI.bar.style.width = visiblePercent + '%';
             progressUI.percent.textContent = visiblePercent + '%';
+            progressUI.item?.classList.toggle('upload-completing', rawPercent >= 100 || /تثبيت|حفظ/i.test(suffix));
             if (progressUI.meta) {
                 progressUI.meta.textContent = total
                     ? (formatBytes(safeLoaded) + ' / ' + formatBytes(total) + ' • ' + formatUploadSpeed(bps) + (eta > 0 ? ' • ' + formatEta(eta) : '') + (suffix ? ' • ' + suffix : ''))
@@ -5905,6 +6247,12 @@
                 uploadProgressSnapshot(progressUI, file, offset, startedAt, offset >= file.size ? 'اكتمل النقل • جاري تثبيت الملف' : 'تم حفظ المقطع');
             }
 
+            if (progressUI) {
+                progressUI.item.classList.add('upload-completing');
+                progressUI.percent.textContent = '99%';
+                if (progressUI.meta) progressUI.meta.textContent = formatBytes(file.size || 0) + ' • اكتمل النقل، جاري الحفظ الآمن...';
+            }
+
             const complete = async () => {
                 const response = await fetch('/api/upload/session/' + encodeURIComponent(sessionId) + '/complete', {
                     method: 'POST', credentials: 'same-origin', cache: 'no-store',
@@ -5939,6 +6287,7 @@
             if (progressUI) {
                 progressUI.bar.style.width = '100%';
                 progressUI.percent.textContent = 'تم';
+                progressUI.item.classList.remove('upload-completing');
                 if (progressUI.meta) progressUI.meta.textContent = formatBytes(file.size || 0) + ' • تم الحفظ والإرسال';
             }
             return result;
@@ -6014,6 +6363,7 @@
 
                 xhr.upload.onload = function() {
                     if (!progressUI) return;
+                    progressUI.item.classList.add('upload-completing');
                     progressUI.bar.style.width = '99%';
                     progressUI.percent.textContent = '99%';
                     if (progressUI.meta) progressUI.meta.textContent = formatBytes(file.size || 0) + ' • تم نقل الملف، جاري الحفظ والإرسال...';
@@ -6026,6 +6376,7 @@
                         if (progressUI) {
                             progressUI.bar.style.width = '100%';
                             progressUI.percent.textContent = 'تم';
+                            progressUI.item.classList.remove('upload-completing');
                             if (progressUI.meta) progressUI.meta.textContent = formatBytes(file.size || 0) + ' • تم الحفظ والإرسال';
                         }
                         resolve(data);
@@ -6162,6 +6513,7 @@
                 if (progressUI.meta) progressUI.meta.textContent = 'تعذر إكمال الرفع • تحقق من الإنترنت وحاول مرة أخرى';
                 progressUI.percent.style.color = '#ff7675';
                 progressUI.bar.style.background = '#e74c3c';
+                progressUI.item.classList.remove('upload-completing');
                 progressUI.item.classList.add('upload-failed');
                 if (!progressUI.item.querySelector('.upload-retry-btn')) {
                     const retryBtn = document.createElement('button');

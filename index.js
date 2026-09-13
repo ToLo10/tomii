@@ -1511,6 +1511,13 @@ const UPLOAD_CHUNK_SIZE = Math.max(
   512 * 1024,
   Math.min(8 * 1024 * 1024, Number(process.env.UPLOAD_CHUNK_SIZE || 4 * 1024 * 1024) || 4 * 1024 * 1024)
 );
+// Keep the remote GridFS write batches aligned with the resumable upload
+// chunks. The previous driver default (about 255 KB) caused large videos to
+// spend a long time in the final "99%" persistence phase.
+const GRIDFS_CHUNK_SIZE = Math.max(
+  255 * 1024,
+  Math.min(8 * 1024 * 1024, Number(process.env.GRIDFS_CHUNK_SIZE || UPLOAD_CHUNK_SIZE) || UPLOAD_CHUNK_SIZE)
+);
 const UPLOAD_SESSION_TTL_MS = Math.max(
   30 * 60 * 1000,
   Number(process.env.UPLOAD_SESSION_TTL_MS || 12 * 60 * 60 * 1000) || 12 * 60 * 60 * 1000
@@ -1617,6 +1624,7 @@ async function persistUploadedFileToCloud(reqFile, fileId, { keepLocalCache = fa
   }
 
   const uploadStream = gridFsBucket.openUploadStream(reqFile.originalname || reqFile.filename, {
+    chunkSizeBytes: GRIDFS_CHUNK_SIZE,
     metadata: {
       fileId,
       mimeType: reqFile.mimetype || "application/octet-stream",
@@ -1625,7 +1633,7 @@ async function persistUploadedFileToCloud(reqFile, fileId, { keepLocalCache = fa
   });
 
   await new Promise((resolve, reject) => {
-    const input = fs.createReadStream(reqFile.path);
+    const input = fs.createReadStream(reqFile.path, { highWaterMark: GRIDFS_CHUNK_SIZE });
     input.on("error", reject);
     uploadStream.on("error", reject);
     uploadStream.on("finish", resolve);
@@ -2919,7 +2927,8 @@ app.post("/api/upload/session", uploadLimiter, requireHttpAuth, limitConcurrentU
       expiresAt: Date.now() + UPLOAD_SESSION_TTL_MS,
       writing: false,
       fileId: null,
-      result: null
+      result: null,
+      completionPromise: null
     });
 
     res.status(201).json({
@@ -3003,6 +3012,20 @@ app.post("/api/upload/session/:sessionId/complete", uploadLimiter, requireHttpAu
   const session = uploadSessions.get(String(req.params.sessionId || ""));
   if (!session || session.uploader !== req.authUser) return res.status(404).json({ error: "جلسة الرفع غير موجودة" });
   if (session.status === "completed" && session.result) return res.json(session.result);
+  if (session.status === "completing") {
+    // Mobile browsers may retry after losing the response while the server is
+    // copying the temporary file to GridFS. Join the same operation instead of
+    // starting a second remote copy of the video.
+    if (session.completionPromise) {
+      try {
+        const result = await session.completionPromise;
+        return res.json(result);
+      } catch (_) {
+        return res.status(500).json({ error: "تعذر تثبيت الملف على الخادم، ويمكن إعادة المحاولة" });
+      }
+    }
+    return res.status(409).json({ error: "الملف قيد التثبيت، أعد المحاولة بعد لحظة", status: "completing" });
+  }
   if (session.expiresAt <= Date.now()) {
     safeUnlink(session.tempPath);
     uploadSessions.delete(session.id);
@@ -3013,7 +3036,7 @@ app.post("/api/upload/session/:sessionId/complete", uploadLimiter, requireHttpAu
   }
   if (session.writing) return res.status(409).json({ error: "انتظر اكتمال آخر مقطع" });
 
-  try {
+  const completionPromise = (async () => {
     session.status = "completing";
     const fileId = session.fileId || ("upl_" + crypto.randomBytes(16).toString("hex"));
     let record = db.uploads?.[fileId] || null;
@@ -3021,8 +3044,9 @@ app.post("/api/upload/session/:sessionId/complete", uploadLimiter, requireHttpAu
     if (!record) {
       const fileType = classifyFileType(session.mimeType, session.originalName, session.clientFileType);
       if (["background", "avatar", "frame", "voice-room-image"].includes(session.context) && !["image", "gif"].includes(fileType)) {
-        session.status = "uploading";
-        return res.status(400).json({ error: "خلفية المحادثة يجب أن تكون صورة" });
+        const error = new Error("خلفية المحادثة يجب أن تكون صورة");
+        error.statusCode = 400;
+        throw error;
       }
 
       const reqFile = {
@@ -3083,18 +3107,29 @@ app.post("/api/upload/session/:sessionId/complete", uploadLimiter, requireHttpAu
           uploaded: true,
           publishError: publishResult.error || "تم رفع الملف لكن تعذر إرساله للمحادثة"
         });
-        return res.json(session.result);
+        return session.result;
       }
       publishedMessage = publishResult.messageData;
     }
 
     session.status = "completed";
     session.result = uploadSessionPublicResult(session, record, publishedMessage);
-    res.json(session.result);
+    return session.result;
+  })();
+
+  session.completionPromise = completionPromise;
+  try {
+    const result = await completionPromise;
+    return res.json(result);
   } catch (err) {
     session.status = "uploading";
     console.error("Resumable upload completion failed:", err?.stack || err?.message || err);
-    res.status(500).json({ error: "تعذر حفظ أو إرسال الملف، ويمكن إعادة المحاولة" });
+    const statusCode = Number(err?.statusCode) >= 400 && Number(err?.statusCode) < 500 ? Number(err.statusCode) : 500;
+    return res.status(statusCode).json({
+      error: statusCode === 400 ? err.message : "تعذر حفظ أو إرسال الملف، ويمكن إعادة المحاولة"
+    });
+  } finally {
+    if (session.completionPromise === completionPromise) session.completionPromise = null;
   }
 });
 
@@ -5047,7 +5082,12 @@ io.on("connection", (socket) => {
       socket.userId === PLATFORM_OWNER_USERNAME ||
       hasPermission(socket.userId, "manage_rooms")
     )) {
-      io.to(rId).emit("room-deleted", { message: "تم حذف هذه الغرفة بواسطة المالك." });
+      const event = { roomId: rId, message: "تم حذف هذه الغرفة بواسطة المالك." };
+      io.to(rId).emit("room-deleted", event);
+      // A room can be removed from the conversation list before the user has
+      // joined it. Notify that requester directly as well, without duplicating
+      // the event when they are already inside the room.
+      if (socket.roomId !== rId) socket.emit("room-deleted", event);
       delete db.rooms[rId];
       if (db.publicRooms[rId]) delete db.publicRooms[rId];
       if (db.roomBans[rId]) delete db.roomBans[rId];
@@ -6680,7 +6720,7 @@ io.on("connection", (socket) => {
       logMessageToFile(rId, `=== قام أحد المستخدمين بمسح الشاشة ===`);
     }
 
-    io.to(rId).emit("chat-cleared");
+    io.to(rId).emit("chat-cleared", { roomId: rId });
     socket.emit("clear-history-result", { success: true, roomId: rId });
   });
 
