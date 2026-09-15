@@ -7,6 +7,7 @@
     <title>TOMI - Room Chat</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <link rel="stylesheet" href="room.css">
+    <script src="/analytics-client.js" defer></script>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #0a0a12; color: #fff; overflow: hidden; height: 100vh; width: 100vw; }
@@ -6225,7 +6226,7 @@
                         // chunk, recover the confirmed offset instead of duplicating it.
                         try {
                             const status = await getUploadSessionStatus(sessionId);
-                            if (status?.status === 'completed' && status.result) return status.result;
+                            if (['completed', 'uploaded'].includes(status?.status) && status.result) return status.result;
                             const confirmed = Number(status?.received || 0);
                             if (confirmed > offset) {
                                 const recoveredOffset = Math.min(file.size, confirmed);
@@ -6276,7 +6277,7 @@
                     if (attempt >= 2) {
                         try {
                             const status = await getUploadSessionStatus(sessionId);
-                            if (status?.status === 'completed' && status.result) result = status.result;
+                            if (['completed', 'uploaded'].includes(status?.status) && status.result) result = status.result;
                             else throw error;
                         } catch (_) { throw error; }
                     }
@@ -6301,7 +6302,9 @@
                 return Promise.reject(new Error('حجم الملف أكبر من الحد المسموح على الخادم (' + formatBytes(maxBytes) + ')'));
             }
 
-            if (context === 'chat' && file.size >= RESUMABLE_UPLOAD_THRESHOLD && clientConfig.resumableUploads !== false) {
+            const uploadType = String(clientFileType || inferClientUploadType(file, 'file')).toLowerCase();
+            if (context === 'chat' && clientConfig.resumableUploads !== false
+                && (file.size >= RESUMABLE_UPLOAD_THRESHOLD || uploadType === 'video')) {
                 return uploadFileChunkedToServer(file, { context, targetRoomId, progressUI, messageMeta, clientFileType });
             }
 

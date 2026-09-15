@@ -7,6 +7,7 @@
   <title>TOMI - الإعدادات</title>
   <link rel="stylesheet" href="settings.css?v=20260908-frame-cutout-v3">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
+  <script src="/analytics-client.js" defer></script>
 </head>
 <body>
   <main class="settings-shell">
@@ -19,6 +20,7 @@
       <button id="enableNotificationsBtn" class="notification-toggle" type="button" title="تفعيل إشعارات TOMI على هذا الجهاز" aria-label="تفعيل إشعارات TOMI على هذا الجهاز">
         <i class="fa-regular fa-bell-slash"></i>
       </button>
+      <a id="analyticsLink" class="analytics-link" href="analytics.html" style="display:none;"><i class="fa-solid fa-chart-line"></i> التحليلات</a>
       <span id="roleBadge" class="role-badge"></span>
     </header>
 
@@ -71,6 +73,23 @@
       </article>
     </section>
 
+    <section class="panel referral-panel">
+      <div class="panel-heading">
+        <div><i class="fa-solid fa-link"></i></div>
+        <div><h2>رمز الإحالة الخاص بك</h2><p>شارك الرابط واعرف عدد الأشخاص الذين سجلوا عن طريقك</p></div>
+      </div>
+      <div class="referral-card-row">
+        <div class="referral-code-box"><small>الرمز</small><strong id="referralCodeValue">جاري التحميل...</strong></div>
+        <div class="referral-link-box"><small>الرابط</small><span id="referralLinkValue">—</span></div>
+        <button id="copyReferralBtn" class="primary-btn" type="button"><i class="fa-regular fa-copy"></i> نسخ الرابط</button>
+      </div>
+      <div class="referral-mini-stats">
+        <span><strong id="referralClicksValue">0</strong><small>الزيارات</small></span>
+        <span><strong id="referralRegistrationsValue">0</strong><small>التسجيلات</small></span>
+        <span><strong id="referralConversionValue">0%</strong><small>التحويل</small></span>
+      </div>
+    </section>
+
     <section id="ownerFramesPanel" class="panel owner-panel" style="display:none;">
       <div class="panel-heading owner-heading">
         <div><i class="fa-solid fa-crown"></i></div>
@@ -119,6 +138,7 @@
   let frames = [];
   let isPlatformOwner = false;
   let canManageFrames = false;
+  let referralLink = '';
 
   function fallbackAvatar(name) {
     return `https://ui-avatars.com/api/?name=${encodeURIComponent(name || 'User')}&background=6c5ce7&color=fff`;
@@ -326,6 +346,24 @@
     $('ownerFramesPanel').style.display = canManageFrames ? 'block' : 'none';
     $('frameUploadForm').style.display = isPlatformOwner ? 'flex' : 'none';
     $('frameAssignForm').style.display = canManageFrames ? 'flex' : 'none';
+    const canViewAnalytics = isPlatformOwner || (Array.isArray(me.permissions) && me.permissions.includes('view_analytics'));
+    $('analyticsLink').style.display = canViewAnalytics ? 'inline-flex' : 'none';
+  }
+
+  async function loadReferral() {
+    try {
+      const data = await request('/api/me/referral');
+      const referral = data.referral || {};
+      referralLink = new URL(referral.link || '', window.location.origin).href;
+      $('referralCodeValue').textContent = referral.code || '—';
+      $('referralLinkValue').textContent = referralLink || '—';
+      $('referralClicksValue').textContent = Number(referral.uniqueClicks || referral.clicks || 0).toLocaleString('ar-IQ');
+      $('referralRegistrationsValue').textContent = Number(referral.registrations || 0).toLocaleString('ar-IQ');
+      $('referralConversionValue').textContent = `${Number(referral.conversionRate || 0).toFixed(1)}%`;
+    } catch (err) {
+      $('referralCodeValue').textContent = 'غير متاح';
+      $('referralLinkValue').textContent = '—';
+    }
   }
 
   async function loadMe() {
@@ -486,8 +524,18 @@
     } catch (err) { toast(err.message, true); }
   });
 
+  $('copyReferralBtn').addEventListener('click', async () => {
+    if (!referralLink) return toast('لم يجهز رابط الإحالة بعد', true);
+    try {
+      await navigator.clipboard.writeText(referralLink);
+      toast('تم نسخ رابط الإحالة');
+    } catch (_) {
+      toast('تعذر نسخ الرابط تلقائياً', true);
+    }
+  });
+
   window.TomiNotifications?.bindButton?.($('enableNotificationsBtn'));
-  loadMe();
+  loadMe().then(loadReferral);
 })();
 </script>
 </body>

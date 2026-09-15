@@ -70,3 +70,11 @@ services:
         value: "192"
       - key: TELEGRAM_TOPIC_RETRY_COOLDOWN_MS
         value: "21600000"
+      - key: ANALYTICS_EVENT_TTL_DAYS
+        value: "90"
+      - key: ANALYTICS_FLUSH_INTERVAL_MS
+        value: "10000"
+      - key: ANALYTICS_ACTIVE_WINDOW_MS
+        value: "150000"
+      - key: ANALYTICS_LOCAL_BACKUP
+        value: "false"

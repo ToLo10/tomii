@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#0d0d16">
+  <title>TOMI - تحليلات المنصة</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
+  <link rel="stylesheet" href="analytics.css?v=20260915">
+  <script src="/analytics-client.js" defer></script>
+</head>
+<body>
+  <main class="analytics-shell">
+    <header class="analytics-header">
+      <a class="back-link" href="settings.html"><i class="fa-solid fa-arrow-right"></i></a>
+      <div class="title-block">
+        <span class="eyebrow"><i class="fa-solid fa-chart-line"></i> TOMI INSIGHTS</span>
+        <h1>تحليلات المنصة</h1>
+        <p>مؤشرات المستخدمين، الحمل، الإحالات، والرفع في لوحة واحدة</p>
+      </div>
+      <div class="header-actions">
+        <span id="connectionState" class="status-pill"><i class="fa-solid fa-circle-notch fa-spin"></i> جاري التحقق</span>
+        <button id="refreshBtn" class="icon-btn" type="button" title="تحديث"><i class="fa-solid fa-rotate"></i></button>
+      </div>
+    </header>
+
+    <section class="toolbar panel">
+      <div class="period-buttons" role="group" aria-label="الفترة الزمنية">
+        <button class="period-btn active" data-period="24h" type="button">24 ساعة</button>
+        <button class="period-btn" data-period="7d" type="button">7 أيام</button>
+        <button class="period-btn" data-period="30d" type="button">30 يوماً</button>
+      </div>
+      <div class="toolbar-note"><i class="fa-regular fa-clock"></i> آخر تحديث: <strong id="lastUpdated">—</strong></div>
+    </section>
+
+    <div id="pageError" class="page-error" hidden></div>
+
+    <section class="stats-grid" aria-label="الملخص">
+      <article class="metric-card"><span><i class="fa-solid fa-users"></i> الزوار الفريدون</span><strong id="visitorsMetric">—</strong><small id="visitorsGrowth">—</small></article>
+      <article class="metric-card"><span><i class="fa-solid fa-user-plus"></i> المستخدمون الجدد</span><strong id="newUsersMetric">—</strong><small id="newUsersGrowth">—</small></article>
+      <article class="metric-card highlight"><span><i class="fa-solid fa-bolt"></i> النشطون الآن</span><strong id="activeMetric">—</strong><small id="socketMetric">—</small></article>
+      <article class="metric-card"><span><i class="fa-solid fa-chart-area"></i> أعلى اتصال</span><strong id="peakMetric">—</strong><small>ضمن الفترة المحددة</small></article>
+      <article class="metric-card"><span><i class="fa-solid fa-gauge-high"></i> p95 الاستجابة</span><strong id="latencyMetric">—</strong><small id="avgLatencyMetric">—</small></article>
+      <article class="metric-card"><span><i class="fa-solid fa-triangle-exclamation"></i> نسبة الأخطاء</span><strong id="errorsMetric">—</strong><small id="errorsCountMetric">—</small></article>
+      <article class="metric-card"><span><i class="fa-solid fa-cloud-arrow-up"></i> نجاح الرفع</span><strong id="uploadsMetric">—</strong><small id="uploadsCountMetric">—</small></article>
+      <article class="metric-card"><span><i class="fa-solid fa-link"></i> زيارات الإحالة</span><strong id="referralsMetric">—</strong><small id="referralsRegistrationsMetric">—</small></article>
+    </section>
+
+    <section class="charts-grid">
+      <article class="panel chart-panel">
+        <div class="panel-heading"><div><i class="fa-solid fa-wave-square"></i></div><div><h2>النشاط خلال الوقت</h2><p>الحضور والزيارات في كل ساعة</p></div></div>
+        <div id="activityChart" class="bar-chart empty-chart"><span>لا توجد بيانات بعد</span></div>
+      </article>
+      <article class="panel chart-panel">
+        <div class="panel-heading"><div><i class="fa-solid fa-server"></i></div><div><h2>حالة السيرفر</h2><p>RSS والـ event loop والاتصالات</p></div></div>
+        <div id="systemChart" class="bar-chart empty-chart"><span>لا توجد بيانات بعد</span></div>
+      </article>
+    </section>
+
+    <section class="panel ai-panel">
+      <div class="panel-heading"><div class="ai-icon"><i class="fa-solid fa-wand-magic-sparkles"></i></div><div><h2>التحليل الذكي</h2><p>قراءة آلية للمؤشرات المجمعة بدون كشف محتوى المحادثات</p></div></div>
+      <div id="aiSummary" class="ai-summary"><i class="fa-solid fa-spinner fa-spin"></i> جاري تحليل البيانات...</div>
+      <div id="aiAlerts" class="ai-alerts"></div>
+    </section>
+
+    <section class="panel table-panel">
+      <div class="panel-heading"><div><i class="fa-solid fa-link"></i></div><div><h2>نظام الإحالة</h2><p>الضغطات، التسجيلات، ونسبة التحويل لكل مستخدم</p></div></div>
+      <div class="table-scroll"><table><thead><tr><th>المستخدم</th><th>الرمز</th><th>الزيارات</th><th>الفريدة</th><th>التسجيلات</th><th>التحويل</th></tr></thead><tbody id="referralsTable"><tr><td colspan="6" class="table-empty">جاري التحميل...</td></tr></tbody></table></div>
+    </section>
+
+    <section class="panel table-panel">
+      <div class="panel-heading"><div><i class="fa-solid fa-user-group"></i></div><div><h2>إحصائيات المستخدمين</h2><p>نشاط الحسابات والأجهزة والرفع — بدون كلمات مرور أو نصوص خاصة</p></div></div>
+      <div class="table-tools"><input id="userSearch" type="search" placeholder="ابحث باسم المستخدم..." autocomplete="off"><button id="userSearchBtn" class="secondary-btn" type="button"><i class="fa-solid fa-search"></i> بحث</button></div>
+      <div class="table-scroll"><table><thead><tr><th>المستخدم</th><th>الحالة</th><th>التسجيل</th><th>آخر نشاط</th><th>الجلسات</th><th>الرسائل</th><th>الرفع</th></tr></thead><tbody id="usersTable"><tr><td colspan="7" class="table-empty">جاري التحميل...</td></tr></tbody></table></div>
+    </section>
+
+    <footer class="analytics-footer">تُحفظ مؤشرات التحليلات في Collections منفصلة مع مدة احتفاظ محدودة لتقليل الحمل على السيرفر.</footer>
+  </main>
+  <script src="/analytics-dashboard.js" defer></script>
+</body>
+</html>

@@ -5,7 +5,7 @@ const server = createServer(app);
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
-const { Readable, Transform } = require("node:stream");
+const { Readable, Transform, Writable } = require("node:stream");
 const { pipeline } = require("node:stream/promises");
 const { Server } = require("socket.io");
 const crypto = require("crypto");
@@ -18,6 +18,7 @@ const helmet = require("helmet");
 const rateLimitModule = require("express-rate-limit");
 const rateLimit = rateLimitModule.rateLimit || rateLimitModule;
 const mongoose = require("mongoose");
+const { createAnalyticsService } = require("./analytics");
 let webpush = null; // Loaded lazily so a missing optional push dependency never blocks chat.
 
 const io = new Server(server, {
@@ -66,6 +67,7 @@ let mongoSaveRunning = false;
 let mongoSaveDirty = false;
 let ChatifyState = null;
 let gridFsBucket = null;
+let analyticsService = null;
 const MONGO_SAVE_DEBOUNCE_MS = Math.max(750, Number(process.env.MONGO_SAVE_DEBOUNCE_MS || 1500) || 1500);
 
 function emptyDatabase() {
@@ -1054,7 +1056,11 @@ const ALL_PERMISSIONS = Object.freeze([
   "manage_backgrounds",
   "manage_frames",
   "create_special_staff_accounts",
-  "send_platform_broadcast"
+  "send_platform_broadcast",
+  "view_analytics",
+  "view_system_metrics",
+  "view_user_analytics",
+  "manage_referrals"
 ]);
 
 function normalizePermissions(list) {
@@ -1472,18 +1478,24 @@ function getRequestSession(req) {
   return session ? { ...session, token } : null;
 }
 
+function appendSetCookie(res, cookie) {
+  const current = res.getHeader?.("Set-Cookie");
+  const values = Array.isArray(current) ? current : current ? [current] : [];
+  res.setHeader("Set-Cookie", [...values, cookie]);
+}
+
 function setSessionCookie(res, token) {
   const maxAgeSeconds = Math.max(60, Math.floor(SESSION_TTL_MS / 1000));
   const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
-  res.setHeader(
-    "Set-Cookie",
+  appendSetCookie(
+    res,
     `chat_session=${encodeURIComponent(token)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${maxAgeSeconds}${secure}`
   );
 }
 
 function clearSessionCookie(res) {
   const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
-  res.setHeader("Set-Cookie", `chat_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0${secure}`);
+  appendSetCookie(res, `chat_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0${secure}`);
 }
 
 function requireHttpAuth(req, res, next) {
@@ -1650,6 +1662,169 @@ async function persistUploadedFileToCloud(reqFile, fileId, { keepLocalCache = fa
     gridFsId: String(uploadStream.id),
     size: reqFile.size
   };
+}
+
+// Resumable video uploads used to write the complete file to the temporary
+// disk first and then upload the same complete file to GridFS during the
+// finalisation request. That second pass is what made the progress card sit at
+// 99% for a long time. Stream video bytes to GridFS while the browser is still
+// sending the resumable chunks; the temporary file remains as a local cache and
+// as a safe fallback if the cloud stream has a transient error.
+function startResumableVideoCloudStream(session) {
+  if (!session || session.context !== "chat" || session.fileType !== "video" || !mongoReady || !gridFsBucket) return false;
+  if (session.gridFsUploadStream || session.gridFsUploadFailed) return Boolean(session.gridFsUploadStream);
+
+  try {
+    const stream = gridFsBucket.openUploadStream(session.originalName || session.tempName, {
+      chunkSizeBytes: GRIDFS_CHUNK_SIZE,
+      metadata: {
+        fileId: session.fileId,
+        mimeType: session.mimeType || "application/octet-stream",
+        uploadedAt: new Date(),
+        resumableUpload: true
+      }
+    });
+    session.gridFsUploadStream = stream;
+    session.gridFsId = String(stream.id);
+    session.gridFsUploadFailed = false;
+    session.gridFsError = null;
+    stream.on("error", err => {
+      session.gridFsError = err;
+      session.gridFsUploadFailed = true;
+    });
+    return true;
+  } catch (err) {
+    session.gridFsUploadFailed = true;
+    session.gridFsError = err;
+    console.warn("Resumable video cloud stream unavailable; using finalization fallback:", err?.message || err);
+    return false;
+  }
+}
+
+function createUploadTee(session, localOutput, requestBytesRef) {
+  const cloudStream = session?.gridFsUploadStream;
+  return new Writable({
+    // Backpressure is acknowledged only after both the local cache and the
+    // cloud stream accept the bytes. This keeps memory bounded on Render and
+    // preserves the exact same byte offset in both copies.
+    write(chunk, encoding, callback) {
+      requestBytesRef.value += chunk.length;
+      if (session.gridFsUploadFailed || !cloudStream || cloudStream.destroyed) {
+        return callback(session.gridFsError || new Error("تعذر حفظ مقطع الفيديو في التخزين السحابي"));
+      }
+
+      let pending = 2;
+      let settled = false;
+      const localError = err => finish(err);
+      const cloudError = err => finish(err);
+      const cleanupListeners = () => {
+        localOutput.off("error", localError);
+        cloudStream.off("error", cloudError);
+      };
+      const finish = err => {
+        if (settled) return;
+        if (err) {
+          settled = true;
+          cleanupListeners();
+          session.gridFsUploadFailed = true;
+          session.gridFsError = err;
+          return callback(err);
+        }
+        pending -= 1;
+        if (pending === 0) {
+          settled = true;
+          cleanupListeners();
+          callback();
+        }
+      };
+
+      try {
+        localOutput.once("error", localError);
+        cloudStream.once("error", cloudError);
+        localOutput.write(chunk, encoding, finish);
+        cloudStream.write(chunk, encoding, finish);
+      } catch (err) {
+        finish(err);
+      }
+    }
+  });
+}
+
+async function finishResumableVideoCloudStream(session) {
+  if (!session?.gridFsUploadStream || session.gridFsUploadFailed) return false;
+  if (session.gridFsUploadFinished) return true;
+
+  const stream = session.gridFsUploadStream;
+  await new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = err => {
+      if (settled) return;
+      settled = true;
+      if (err) {
+        session.gridFsUploadFailed = true;
+        session.gridFsError = err;
+        reject(err);
+      } else {
+        resolve();
+      }
+    };
+    stream.once("finish", () => finish());
+    stream.once("error", finish);
+    try { stream.end(); } catch (err) { finish(err); }
+  });
+  session.gridFsUploadFinished = true;
+  session.gridFsUploadStream = null;
+  return true;
+}
+
+function queuePartialResumableGridFsDelete(session) {
+  if (!session?.gridFsId || session.gridFsDeleteQueued) return;
+  if (session.gridFsUploadFinished && db.uploads?.[session.fileId]) return;
+  session.gridFsDeleteQueued = true;
+  session.gridFsUploadFailed = true;
+  session.gridFsError = session.gridFsError || new Error("تم إلغاء نسخة الفيديو السحابية الجزئية");
+  try { session.gridFsUploadStream?.destroy(); } catch (_) {}
+  if (!gridFsBucket) return;
+  const gridFsId = String(session.gridFsId);
+  uploadDeletionChain = uploadDeletionChain
+    .catch(() => {})
+    .then(() => gridFsBucket.delete(new mongoose.Types.ObjectId(gridFsId)).catch(() => {}));
+}
+
+async function persistResumableUploadToCloud(session, fileId, { keepLocalCache = false } = {}) {
+  if (session?.gridFsUploadStream && !session.gridFsUploadFailed) {
+    try {
+      await finishResumableVideoCloudStream(session);
+    } catch (err) {
+      console.warn("Resumable video cloud finalization failed; replaying local file:", err?.message || err);
+      queuePartialResumableGridFsDelete(session);
+    }
+  }
+
+  if (session?.gridFsUploadFinished && session.gridFsId) {
+    const cacheStoredName = keepLocalCache ? session.tempName : null;
+    if (!keepLocalCache) safeUnlink(session.tempPath);
+    return {
+      storage: "gridfs",
+      storedName: null,
+      cacheStoredName,
+      cacheExpiresAt: cacheStoredName ? new Date(Date.now() + MEDIA_LOCAL_CACHE_TTL_MS).toISOString() : null,
+      gridFsId: session.gridFsId,
+      size: session.fileSize
+    };
+  }
+
+  // If GridFS was unavailable or the live stream failed, the complete local
+  // file is still intact. Replaying it once is slower but keeps the upload
+  // reliable instead of losing the message.
+  queuePartialResumableGridFsDelete(session);
+  return persistUploadedFileToCloud({
+    path: session.tempPath,
+    filename: session.tempName,
+    originalname: session.originalName,
+    mimetype: session.mimeType,
+    size: session.fileSize
+  }, fileId, { keepLocalCache });
 }
 
 function parseHttpByteRange(rangeHeader, totalSize) {
@@ -2116,7 +2291,42 @@ app.use(helmet({
 }));
 app.use(express.json({ limit: "2mb" }));
 app.use(express.urlencoded({ extended: true, limit: "2mb" }));
+analyticsService = createAnalyticsService({
+  mongoose,
+  localPath: path.join(__dirname, "analytics_database.json"),
+  cloudEnabled: CLOUD_DATABASE_ENABLED,
+  // Keep the analytics snapshot small and follow the same local-backup policy
+  // as the main database. MongoDB remains the source of truth in production.
+  localBackupEnabled: String(
+    process.env.ANALYTICS_LOCAL_BACKUP == null
+      ? (WRITE_LOCAL_JSON_BACKUP ? "true" : "false")
+      : process.env.ANALYTICS_LOCAL_BACKUP
+  ).toLowerCase() !== "false",
+  ownerUsername: PLATFORM_OWNER_USERNAME,
+  getUsers: () => db.users || {},
+  getUser: username => db.users?.[username],
+  saveState: () => saveDB(db),
+  resolveUser: req => req?.authUser || getRequestSession(req)?.username || ""
+});
+analyticsService.setRuntimeProvider(() => ({
+  activeUploadRequests,
+  activeUploadUsers: activeUploadsByUser.size,
+  database: mongoReady ? "mongodb" : "local-json",
+  fileStorage: gridFsBucket ? "gridfs" : "local-disk"
+}));
+app.use(analyticsService.httpMiddleware);
 app.use(express.static(path.resolve("./Public")));
+
+// Referral links use a short route so the code is captured before the visitor
+// reaches the login/register page. Attribution is completed at registration.
+app.get("/r/:refCode", (req, res) => {
+  const cleanCode = String(req.params.refCode || "").slice(0, 40);
+  const captured = analyticsService.captureReferral(req, res, cleanCode);
+  const target = captured
+    ? `/login.html?ref=${encodeURIComponent(cleanCode)}`
+    : "/login.html";
+  res.redirect(302, target);
+});
 
 app.get("/api/health", (_req, res) => {
   const staticTurnConfigured = Boolean(
@@ -2131,6 +2341,11 @@ app.get("/api/health", (_req, res) => {
     fileStorage: gridFsBucket ? "mongodb-gridfs" : "local-disk",
     turn: CLOUDFLARE_TURN_CONFIGURED ? "cloudflare" : (staticTurnConfigured ? "static" : "stun-only"),
     notifications: webPushReady ? "enabled" : "unavailable",
+    analytics: {
+      enabled: Boolean(analyticsService),
+      activeUsers: analyticsService?.getActiveUsers?.() || 0,
+      activeSockets: analyticsService?.getActiveSockets?.() || 0
+    },
     historyLimitPerChat: CHAT_HISTORY_LIMIT,
     memory: (() => {
       const m = process.memoryUsage();
@@ -2221,10 +2436,118 @@ const giphyLimiter = rateLimit({
   legacyHeaders: false
 });
 
+const analyticsLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 900,
+  standardHeaders: "draft-8",
+  legacyHeaders: false
+});
+
+function requireAnalyticsAdmin(req, res, next) {
+  requireHttpAuth(req, res, () => {
+    if (!analyticsService || !hasPermission(req.authUser, "view_analytics")) {
+      return res.status(403).json({ error: "لا تملك صلاحية عرض تحليلات المنصة" });
+    }
+    next();
+  });
+}
+
+function analyticsRange(req) {
+  return {
+    from: req.query?.from || undefined,
+    to: req.query?.to || undefined
+  };
+}
+
+// Anonymous-safe telemetry endpoints. They only accept a small allowlist of
+// browser performance events; authentication-derived user ids are never
+// accepted from the request body.
+app.post("/api/analytics/heartbeat", analyticsLimiter, (req, res) => {
+  try {
+    const session = getRequestSession(req);
+    const result = analyticsService.heartbeat({
+      page: String(req.body?.page || "").slice(0, 120),
+      roomId: String(req.body?.roomId || "").slice(0, 120),
+      visible: Boolean(req.body?.visible),
+      activity: String(req.body?.activity || "").slice(0, 40),
+      userId: session?.username || ""
+    }, req);
+    res.json({ success: true, ...result });
+  } catch (error) {
+    res.status(400).json({ error: "تعذر تسجيل الحضور" });
+  }
+});
+
+app.post("/api/analytics/event", analyticsLimiter, (req, res) => {
+  try {
+    const eventType = String(req.body?.type || "");
+    if (!["page_performance", "feature_use"].includes(eventType)) {
+      return res.status(400).json({ error: "نوع الإحصائية غير مسموح" });
+    }
+    const session = getRequestSession(req);
+    const payload = {
+      userId: session?.username || "",
+      visitorId: req.analytics?.visitorId,
+      sessionId: req.analytics?.sessionId,
+      page: String(req.body?.page || req.path || "").slice(0, 120),
+      loadMs: Math.max(0, Math.min(120000, Number(req.body?.loadMs || 0) || 0)),
+      feature: String(req.body?.feature || "").slice(0, 60),
+      metadata: req.body?.metadata || {}
+    };
+    analyticsService.track(eventType, payload);
+    res.json({ success: true });
+  } catch (error) {
+    res.status(400).json({ error: "تعذر تسجيل الإحصائية" });
+  }
+});
+
+app.get("/api/me/referral", requireHttpAuth, (req, res) => {
+  const referral = analyticsService.referralForUser(req.authUser);
+  if (!referral) return res.status(404).json({ error: "تعذر إنشاء رمز الإحالة" });
+  res.json({ success: true, referral });
+});
+
+app.get("/api/admin/analytics/overview", requireAnalyticsAdmin, async (req, res) => {
+  try { res.json({ success: true, ...(await analyticsService.getOverview(analyticsRange(req))) }); }
+  catch (error) { res.status(500).json({ error: "تعذر تحميل ملخص الإحصائيات" }); }
+});
+
+app.get("/api/admin/analytics/timeseries", requireAnalyticsAdmin, async (req, res) => {
+  try { res.json({ success: true, points: await analyticsService.getTimeseries(analyticsRange(req)) }); }
+  catch (error) { res.status(500).json({ error: "تعذر تحميل المخطط الزمني" }); }
+});
+
+app.get("/api/admin/analytics/system", requireAnalyticsAdmin, async (req, res) => {
+  try {
+    if (!hasPermission(req.authUser, "view_system_metrics")) return res.status(403).json({ error: "لا تملك صلاحية عرض مؤشرات السيرفر" });
+    res.json({ success: true, points: await analyticsService.getSystemSeries(analyticsRange(req)) });
+  } catch (error) { res.status(500).json({ error: "تعذر تحميل مؤشرات السيرفر" }); }
+});
+
+app.get("/api/admin/analytics/users", requireAnalyticsAdmin, async (req, res) => {
+  try {
+    if (!hasPermission(req.authUser, "view_user_analytics")) return res.status(403).json({ error: "لا تملك صلاحية عرض إحصائيات المستخدمين" });
+    res.json({ success: true, ...(await analyticsService.getUsersStats({ query: req.query?.q, limit: req.query?.limit })) });
+  } catch (error) { res.status(500).json({ error: "تعذر تحميل إحصائيات المستخدمين" }); }
+});
+
+app.get("/api/admin/analytics/referrals", requireAnalyticsAdmin, async (req, res) => {
+  try {
+    if (!hasPermission(req.authUser, "manage_referrals")) return res.status(403).json({ error: "لا تملك صلاحية عرض الإحالات" });
+    res.json({ success: true, ...(await analyticsService.getReferrals({ query: req.query?.q })) });
+  } catch (error) { res.status(500).json({ error: "تعذر تحميل إحصائيات الإحالة" }); }
+});
+
+app.get("/api/admin/analytics/ai-summary", requireAnalyticsAdmin, async (req, res) => {
+  try { res.json({ success: true, ...(await analyticsService.buildAiSummary(analyticsRange(req))) }); }
+  catch (error) { res.status(500).json({ error: "تعذر إنشاء التحليل الذكي" }); }
+});
+
 // 📝 API: Register
 app.post("/api/register", authLimiter, (req, res) => {
   try {
     const { username, password, displayName } = req.body;
+    const referralCode = String(req.body?.refCode || parseCookies(req.headers.cookie || "").tomi_ref || "").slice(0, 40);
     const uVal = validateUsername(username);
     if (!uVal.valid) return res.status(400).json({ error: uVal.error });
 
@@ -2246,10 +2569,21 @@ app.post("/api/register", authLimiter, (req, res) => {
       status: "online",
       lastSeen: new Date().toISOString()
     };
+    analyticsService?.track("register", {
+      userId: uVal.username,
+      refCode: referralCode,
+      page: "/login.html",
+      visitorId: req.analytics?.visitorId,
+      sessionId: req.analytics?.sessionId,
+      deviceType: req.analytics?.device?.deviceType,
+      browser: req.analytics?.device?.browser,
+      os: req.analytics?.device?.os
+    });
     saveDB(db);
 
     const sessionToken = issueSession(uVal.username);
     setSessionCookie(res, sessionToken);
+    analyticsService?.clearReferralCookie(res);
 
     res.json({
       success: true,
@@ -2260,6 +2594,7 @@ app.post("/api/register", authLimiter, (req, res) => {
       permissions: [],
       avatar: db.users[uVal.username].avatar || "",
       frame: getActiveFrame(uVal.username),
+      referralCode: db.users[uVal.username].referralCode || "",
       sessionToken,
       message: "تم إنشاء الحساب بنجاح"
     });
@@ -2290,6 +2625,15 @@ app.post("/api/login", authLimiter, (req, res) => {
     upgradePasswordHashIfNeeded(user, password);
     user.lastSeen = new Date().toISOString();
     user.status = "online";
+    analyticsService?.track("login", {
+      userId: cleanUsername,
+      page: "/login.html",
+      visitorId: req.analytics?.visitorId,
+      sessionId: req.analytics?.sessionId,
+      deviceType: req.analytics?.device?.deviceType,
+      browser: req.analytics?.device?.browser,
+      os: req.analytics?.device?.os
+    });
     saveDB(db);
 
     const sessionToken = issueSession(cleanUsername);
@@ -2304,6 +2648,7 @@ app.post("/api/login", authLimiter, (req, res) => {
       permissions: getUserPermissions(user.username),
       avatar: user.avatar || "",
       frame: getActiveFrame(user.username),
+      referralCode: user.referralCode || "",
       sessionToken
     });
   } catch (err) {
@@ -2322,7 +2667,8 @@ app.get("/api/session", requireHttpAuth, (req, res) => {
     badge: getPlatformBadge(user.username),
     permissions: getUserPermissions(user.username),
     avatar: user.avatar || "",
-    frame: getActiveFrame(user.username)
+    frame: getActiveFrame(user.username),
+    referralCode: user.referralCode || ""
   });
 });
 
@@ -2898,13 +3244,15 @@ app.post("/api/upload/session", uploadLimiter, requireHttpAuth, limitConcurrentU
     const originalName = String(body.originalName || "file").trim().slice(0, 180) || "file";
     const mimeType = String(body.mimeType || "application/octet-stream").trim().slice(0, 160) || "application/octet-stream";
     const clientFileType = String(body.clientFileType || "").trim().toLowerCase().slice(0, 24);
+    const fileType = classifyFileType(mimeType, originalName, clientFileType);
     const sessionId = "ups_" + crypto.randomBytes(18).toString("hex");
+    const fileId = "upl_" + crypto.randomBytes(16).toString("hex");
     const tempName = `${sessionId}.part`;
     const tempPath = path.join(UPLOAD_DIR, tempName);
     const now = new Date().toISOString();
 
     await fs.promises.writeFile(tempPath, Buffer.alloc(0));
-    uploadSessions.set(sessionId, {
+    const session = {
       id: sessionId,
       uploader,
       roomId: scope.roomId,
@@ -2912,7 +3260,7 @@ app.post("/api/upload/session", uploadLimiter, requireHttpAuth, limitConcurrentU
       originalName,
       mimeType,
       clientFileType,
-      fileType: classifyFileType(mimeType, originalName, clientFileType),
+      fileType,
       fileSize,
       received: 0,
       tempName,
@@ -2926,9 +3274,23 @@ app.post("/api/upload/session", uploadLimiter, requireHttpAuth, limitConcurrentU
       createdAt: now,
       expiresAt: Date.now() + UPLOAD_SESSION_TTL_MS,
       writing: false,
-      fileId: null,
+      fileId,
       result: null,
-      completionPromise: null
+      completionPromise: null,
+      gridFsUploadStream: null,
+      gridFsId: null,
+      gridFsUploadFailed: false,
+      gridFsUploadFinished: false,
+      gridFsDeleteQueued: false,
+      gridFsError: null
+    };
+    uploadSessions.set(sessionId, session);
+    if (fileType === "video") startResumableVideoCloudStream(session);
+    analyticsService?.track("upload_started", {
+      userId: uploader,
+      bytes: fileSize,
+      page: "/api/upload/session",
+      feature: context
     });
 
     res.status(201).json({
@@ -2949,6 +3311,7 @@ app.get("/api/upload/session/:sessionId", requireHttpAuth, (req, res) => {
   const session = uploadSessions.get(String(req.params.sessionId || ""));
   if (!session || session.uploader !== req.authUser) return res.status(404).json({ error: "جلسة الرفع غير موجودة" });
   if (session.status !== "completed" && session.expiresAt <= Date.now()) {
+    if (session.status !== "uploaded") queuePartialResumableGridFsDelete(session);
     safeUnlink(session.tempPath);
     uploadSessions.delete(session.id);
     return res.status(410).json({ error: "انتهت صلاحية جلسة الرفع" });
@@ -2959,7 +3322,7 @@ app.get("/api/upload/session/:sessionId", requireHttpAuth, (req, res) => {
     status: session.status,
     received: session.received,
     fileSize: session.fileSize,
-    result: session.status === "completed" ? session.result : null
+    result: ["completed", "uploaded"].includes(session.status) ? session.result : null
   });
 });
 
@@ -2967,6 +3330,7 @@ app.put("/api/upload/session/:sessionId/chunk", uploadLimiter, requireHttpAuth, 
   const session = uploadSessions.get(String(req.params.sessionId || ""));
   if (!session || session.uploader !== req.authUser) return res.status(404).json({ error: "جلسة الرفع غير موجودة" });
   if (session.expiresAt <= Date.now()) {
+    if (session.status !== "uploaded") queuePartialResumableGridFsDelete(session);
     safeUnlink(session.tempPath);
     uploadSessions.delete(session.id);
     return res.status(410).json({ error: "انتهت صلاحية جلسة الرفع" });
@@ -2985,22 +3349,73 @@ app.put("/api/upload/session/:sessionId/chunk", uploadLimiter, requireHttpAuth, 
   let requestBytes = 0;
   try {
     const output = fs.createWriteStream(session.tempPath, { flags: "r+", start: session.received });
-    const counter = new Transform({
-      transform(chunk, _encoding, callback) {
-        requestBytes += chunk.length;
-        callback(null, chunk);
+    let outputError = null;
+    // Keep one listener for the lifetime of this chunk so an asynchronous disk
+    // error cannot become an unhandled process error on a mobile upload.
+    output.on("error", err => { outputError = err; });
+    const directCloud = session.fileType === "video"
+      && session.gridFsUploadStream
+      && !session.gridFsUploadFailed;
+
+    if (directCloud) {
+      const requestBytesRef = { value: 0 };
+      const tee = createUploadTee(session, output, requestBytesRef);
+      try {
+        await pipeline(req, tee);
+        await new Promise((resolve, reject) => {
+          let settled = false;
+          const finish = err => {
+            if (settled) return;
+            settled = true;
+            err ? reject(err) : resolve();
+          };
+          output.once("error", finish);
+          output.end(() => finish(outputError));
+        });
+      } catch (err) {
+        try { output.destroy(); } catch (_) {}
+        throw err;
       }
-    });
-    await pipeline(req, counter, output);
+      requestBytes = requestBytesRef.value;
+    } else {
+      const counter = new Transform({
+        transform(chunk, _encoding, callback) {
+          requestBytes += chunk.length;
+          callback(null, chunk);
+        }
+      });
+      await pipeline(req, counter, output);
+    }
     if (requestBytes !== expected) {
+      if (directCloud) {
+        session.gridFsUploadFailed = true;
+        session.gridFsError = new Error("المقطع لم يصل بالحجم المتوقع");
+        queuePartialResumableGridFsDelete(session);
+      }
       await fs.promises.truncate(session.tempPath, session.received).catch(() => {});
       return res.status(400).json({ error: "المقطع لم يصل كاملاً", received: session.received, expected });
     }
     session.received += requestBytes;
     session.expiresAt = Date.now() + UPLOAD_SESSION_TTL_MS;
+    if (session.received >= session.fileSize && session.gridFsUploadStream && !session.gridFsUploadFailed) {
+      // Finish the already-streamed GridFS object before acknowledging the
+      // final chunk. The subsequent /complete request only creates metadata
+      // and publishes the message, so the old full-file 99% wait disappears.
+      try {
+        await finishResumableVideoCloudStream(session);
+      } catch (err) {
+        // The complete local file is still available. Let completion replay it
+        // once as a reliable fallback instead of failing the user's upload.
+        console.warn("Resumable video cloud finalization delayed; using fallback:", err?.message || err);
+        queuePartialResumableGridFsDelete(session);
+      }
+    }
     res.json({ success: true, received: session.received, done: session.received >= session.fileSize });
   } catch (err) {
     await fs.promises.truncate(session.tempPath, session.received).catch(() => {});
+    if (session.fileType === "video" && session.gridFsId && !db.uploads?.[session.fileId]) {
+      queuePartialResumableGridFsDelete(session);
+    }
     console.warn("Upload chunk failed:", err?.message || err);
     res.status(502).json({ error: "انقطع رفع المقطع ويمكن إعادة المحاولة", received: session.received });
   } finally {
@@ -3011,7 +3426,7 @@ app.put("/api/upload/session/:sessionId/chunk", uploadLimiter, requireHttpAuth, 
 app.post("/api/upload/session/:sessionId/complete", uploadLimiter, requireHttpAuth, limitConcurrentUploads, async (req, res) => {
   const session = uploadSessions.get(String(req.params.sessionId || ""));
   if (!session || session.uploader !== req.authUser) return res.status(404).json({ error: "جلسة الرفع غير موجودة" });
-  if (session.status === "completed" && session.result) return res.json(session.result);
+  if (["completed", "uploaded"].includes(session.status) && session.result) return res.json(session.result);
   if (session.status === "completing") {
     // Mobile browsers may retry after losing the response while the server is
     // copying the temporary file to GridFS. Join the same operation instead of
@@ -3027,6 +3442,7 @@ app.post("/api/upload/session/:sessionId/complete", uploadLimiter, requireHttpAu
     return res.status(409).json({ error: "الملف قيد التثبيت، أعد المحاولة بعد لحظة", status: "completing" });
   }
   if (session.expiresAt <= Date.now()) {
+    if (session.status !== "uploaded") queuePartialResumableGridFsDelete(session);
     safeUnlink(session.tempPath);
     uploadSessions.delete(session.id);
     return res.status(410).json({ error: "انتهت صلاحية جلسة الرفع" });
@@ -3057,7 +3473,9 @@ app.post("/api/upload/session/:sessionId/complete", uploadLimiter, requireHttpAu
         size: session.fileSize
       };
       const keepLocalCache = ["image", "gif", "video", "audio"].includes(fileType) && session.fileSize <= MEDIA_LOCAL_CACHE_MAX_FILE_BYTES;
-      const cloudFile = await persistUploadedFileToCloud(reqFile, fileId, { keepLocalCache });
+      const cloudFile = fileType === "video"
+        ? await persistResumableUploadToCloud(session, fileId, { keepLocalCache })
+        : await persistUploadedFileToCloud(reqFile, fileId, { keepLocalCache });
       record = {
         fileId,
         storedName: cloudFile.storedName,
@@ -3107,6 +3525,12 @@ app.post("/api/upload/session/:sessionId/complete", uploadLimiter, requireHttpAu
           uploaded: true,
           publishError: publishResult.error || "تم رفع الملف لكن تعذر إرساله للمحادثة"
         });
+        analyticsService?.track("upload_complete", {
+          userId: session.uploader,
+          bytes: session.fileSize,
+          page: "/api/upload/session/complete",
+          feature: session.context
+        });
         return session.result;
       }
       publishedMessage = publishResult.messageData;
@@ -3114,6 +3538,12 @@ app.post("/api/upload/session/:sessionId/complete", uploadLimiter, requireHttpAu
 
     session.status = "completed";
     session.result = uploadSessionPublicResult(session, record, publishedMessage);
+    analyticsService?.track("upload_complete", {
+      userId: session.uploader,
+      bytes: session.fileSize,
+      page: "/api/upload/session/complete",
+      feature: session.context
+    });
     return session.result;
   })();
 
@@ -3123,6 +3553,13 @@ app.post("/api/upload/session/:sessionId/complete", uploadLimiter, requireHttpAu
     return res.json(result);
   } catch (err) {
     session.status = "uploading";
+    analyticsService?.track("upload_failed", {
+      userId: session.uploader,
+      bytes: session.fileSize,
+      page: "/api/upload/session/complete",
+      feature: session.context,
+      metadata: { statusCode: Number(err?.statusCode) || 500 }
+    });
     console.error("Resumable upload completion failed:", err?.stack || err?.message || err);
     const statusCode = Number(err?.statusCode) >= 400 && Number(err?.statusCode) < 500 ? Number(err.statusCode) : 500;
     return res.status(statusCode).json({
@@ -3136,6 +3573,7 @@ app.post("/api/upload/session/:sessionId/complete", uploadLimiter, requireHttpAu
 app.delete("/api/upload/session/:sessionId", requireHttpAuth, (req, res) => {
   const session = uploadSessions.get(String(req.params.sessionId || ""));
   if (!session || session.uploader !== req.authUser) return res.status(404).json({ error: "جلسة الرفع غير موجودة" });
+  if (session.status !== "completed" && session.status !== "uploaded") queuePartialResumableGridFsDelete(session);
   safeUnlink(session.tempPath);
   uploadSessions.delete(session.id);
   res.json({ success: true });
@@ -3182,6 +3620,12 @@ app.post("/api/upload", uploadLimiter, requireHttpAuth, limitConcurrentUploads, 
     const fileId = req.generatedUploadId || path.parse(req.file.filename).name;
     const keepLocalCache = ["image", "gif", "video", "audio"].includes(fileType)
       && Number(req.file.size || 0) <= MEDIA_LOCAL_CACHE_MAX_FILE_BYTES;
+    analyticsService?.track("upload_started", {
+      userId: uploader,
+      bytes: Number(req.file.size || 0),
+      page: "/api/upload",
+      feature: context
+    });
     const cloudFile = await persistUploadedFileToCloud(req.file, fileId, { keepLocalCache });
     db.uploads[fileId] = {
       fileId,
@@ -3206,6 +3650,12 @@ app.post("/api/upload", uploadLimiter, requireHttpAuth, limitConcurrentUploads, 
     }
 
     saveDB(db);
+    analyticsService?.track("upload_complete", {
+      userId: uploader,
+      bytes: Number(req.file.size || 0),
+      page: "/api/upload",
+      feature: context
+    });
 
     let publishedMessage = null;
     const publishToChat = context === "chat" && roomId && String(req.body.publishToChat || "") === "1";
@@ -3749,6 +4199,7 @@ function bindSocketUser(socket, username) {
 
   user.lastSeen = new Date().toISOString();
   user.status = "online";
+  analyticsService?.socketConnected(socket.id, username);
   saveDB(db);
   // Invitations are persisted, so a phone that was offline can still receive
   // its room invitation as soon as the Socket.IO session is restored.
@@ -4051,13 +4502,28 @@ app.get("/api/voice-rooms", requireHttpAuth, (_req, res) => {
 });
 
 io.on("connection", (socket) => {
+  // Lightweight server-side activity counters. Payload contents are ignored;
+  // only the event category and room id are sent to the analytics service.
+  socket.onAny((eventName, payload = {}) => {
+    const actor = socket.userId || socket.sessionUser || "";
+    if (!actor || !analyticsService) return;
+    const roomId = typeof payload === "object" ? String(payload.roomId || "").slice(0, 120) : "";
+    if (eventName === "user-message" || eventName === "send-uploaded-file") {
+      analyticsService.track("message_sent", { userId: actor, roomId, feature: eventName });
+    } else if (["join-room", "join-room-by-code", "voice-room-join"].includes(eventName)) {
+      analyticsService.track("room_join", { userId: actor, roomId, feature: eventName });
+    } else if (eventName === "call-offer") {
+      analyticsService.track("call_start", { userId: actor, roomId, feature: "call" });
+    }
+  });
+
   if (socket.sessionUser) {
     bindSocketUser(socket, socket.sessionUser);
     broadcastOnlineUsers();
   }
 
   // 📝 Register via Socket
-  socket.on("register", ({ username, password, displayName }) => {
+  socket.on("register", ({ username, password, displayName, refCode } = {}) => {
     try {
       const uVal = validateUsername(username);
       if (!uVal.valid) {
@@ -4087,6 +4553,11 @@ io.on("connection", (socket) => {
         status: "online",
         lastSeen: new Date().toISOString()
       };
+      analyticsService?.track("register", {
+        userId: uVal.username,
+        refCode: String(refCode || "").slice(0, 40),
+        page: "/index.html"
+      });
       saveDB(db);
 
       const sessionToken = issueSession(uVal.username);
@@ -4101,6 +4572,7 @@ io.on("connection", (socket) => {
         permissions: [],
         avatar: db.users[uVal.username].avatar || "",
         frame: getActiveFrame(uVal.username),
+        referralCode: db.users[uVal.username].referralCode || "",
         sessionToken,
         message: "تم إنشاء الحساب بنجاح"
       });
@@ -4154,6 +4626,7 @@ io.on("connection", (socket) => {
       }
 
       bindSocketUser(socket, cleanUsername);
+      analyticsService?.track("login", { userId: cleanUsername, page: "/index.html" });
 
       const stats = getUserStats(cleanUsername);
       socket.emit("login_result", {
@@ -4165,6 +4638,7 @@ io.on("connection", (socket) => {
         permissions: getUserPermissions(user.username),
         avatar: user.avatar || "",
         frame: getActiveFrame(user.username),
+        referralCode: user.referralCode || "",
         sessionToken: socket.sessionToken || null,
         stats
       });
@@ -6165,7 +6639,11 @@ io.on("connection", (socket) => {
         { id: "manage_backgrounds", label: "إدارة الخلفيات" },
         { id: "manage_frames", label: "منح وسحب إطارات الحسابات" },
         { id: "create_special_staff_accounts", label: "إنشاء حسابات مشرفين مميزة" },
-        { id: "send_platform_broadcast", label: "إرسال رسالة لجميع مستخدمي المنصة" }
+        { id: "send_platform_broadcast", label: "إرسال رسالة لجميع مستخدمي المنصة" },
+        { id: "view_analytics", label: "عرض تحليلات المنصة" },
+        { id: "view_system_metrics", label: "عرض مؤشرات السيرفر والذاكرة" },
+        { id: "view_user_analytics", label: "عرض إحصائيات المستخدمين" },
+        { id: "manage_referrals", label: "عرض وإدارة إحصائيات الإحالة" }
       ]
     });
   });
@@ -7065,6 +7543,7 @@ io.on("connection", (socket) => {
 
   socket.on("disconnect", () => {
     try { cleanupVoiceRoomSocket(socket); } catch (_) {}
+    analyticsService?.socketDisconnected(socket.id);
     if (socket.username && activeOnlineUsers.has(socket.username)) {
       const userSockets = activeOnlineUsers.get(socket.username);
       userSockets.delete(socket.id);
@@ -7227,6 +7706,7 @@ function cleanupExpiredRuntimeState({ aggressive = false } = {}) {
 
   for (const [sessionId, session] of uploadSessions.entries()) {
     if (!session || (session.status !== "completed" && Number(session.expiresAt || 0) <= now)) {
+      if (session && session.status !== "uploaded") queuePartialResumableGridFsDelete(session);
       safeUnlink(session?.tempPath);
       uploadSessions.delete(sessionId);
     } else if (session.status === "completed" && Number(session.expiresAt || 0) <= now) {
@@ -7427,6 +7907,9 @@ async function startServer() {
   await initCloudDatabase();
   db = normalizeDatabaseState(db);
   ensurePlatformOwner();
+  analyticsService?.ensureAllReferralCodes();
+  await analyticsService?.configureMongo?.();
+  analyticsService?.start?.();
   consolidatePlatformInboxes();
   trimAllRoomHistories();
   cleanupExpiredRuntimeState({ aggressive: true });
@@ -7445,6 +7928,7 @@ async function startServer() {
 
 async function shutdown(signal) {
   console.log(`\n${signal}: saving Chatify state...`);
+  try { await analyticsService?.stop?.(); } catch (err) { console.error(err.message); }
   try { await flushCloudDatabase(); } catch (err) { console.error(err.message); }
   try { await mongoose.disconnect(); } catch (_) {}
   server.close(() => process.exit(0));

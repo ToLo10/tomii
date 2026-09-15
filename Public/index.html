@@ -9,6 +9,7 @@
     <link rel="stylesheet" href="styles.css?v=20260908-frame-cutout-v3">
     <script src="/notifications.js"></script>
     <script src="/socket.io/socket.io.js"></script>
+    <script src="/analytics-client.js" defer></script>
     <style>
         :root {
             --bg-primary: #0f0f1a;
@@ -1362,6 +1363,10 @@
                     <i class="fa-solid fa-shield-halved"></i>
                     <span>لوحة الإدارة</span>
                 </a>
+                <a href="analytics.html" id="navAnalytics" class="nav-item" style="display:none;">
+                    <i class="fa-solid fa-chart-line"></i>
+                    <span>تحليلات المنصة</span>
+                </a>
                 <a href="settings.html" class="nav-item" id="navSettings">
                     <i class="fa-solid fa-gear"></i>
                     <span>الإعدادات</span>
@@ -2069,6 +2074,7 @@
         const navFriends = document.getElementById('navFriends');
         const navChatMenu = document.getElementById('navChatMenu');
         const navAdmin = document.getElementById('navAdmin');
+        const navAnalytics = document.getElementById('navAnalytics');
 
         const sectionHome = document.getElementById('sectionHome');
         const sectionSearch = document.getElementById('sectionSearch');
@@ -2103,6 +2109,7 @@
         function updateAdminVisibility() {
             if (!navAdmin) return;
             navAdmin.style.display = canOpenAdmin() ? 'flex' : 'none';
+            if (navAnalytics) navAnalytics.style.display = hasPermission('view_analytics') ? 'flex' : 'none';
 
             const ownerBox = document.getElementById('adminOwnerCreateBox');
             if (ownerBox) ownerBox.style.display = (savedUsername === 'tomi' || myRole === 'owner') ? 'block' : 'none';
