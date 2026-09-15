@@ -419,11 +419,17 @@ function repairLegacyMediaMetadata() {
     const name = String(record.originalName || "").toLowerCase();
     const ext = path.extname(name);
     const isVoice = /^voice[-_]/i.test(path.basename(name));
-    if (!isVoice && [".mp4", ".m4v"].includes(ext) && record.fileType === "audio") {
+    const looksLikeVideoLabel = /^(?:mp4|video|vid)[._-]/i.test(path.basename(name));
+    const looksLikeVideoMime = ["", "application/octet-stream", "audio/mp4", "audio/quicktime"]
+      .includes(String(record.mimeType || "").toLowerCase());
+    if (!isVoice && record.fileType === "audio"
+      && ([".mp4", ".m4v"].includes(ext)
+        || (looksLikeVideoLabel && looksLikeVideoMime
+          && ![".m4a", ".mp3", ".aac", ".wav", ".ogg", ".opus", ".flac", ".weba"].includes(ext)))) {
       record.fileType = "video";
       record.mimeType = "video/mp4";
       repaired += 1;
-    } else if (!isVoice && ext === ".mov" && record.fileType === "audio") {
+    } else if (!isVoice && record.fileType === "audio" && ext === ".mov") {
       record.fileType = "video";
       record.mimeType = "video/quicktime";
       repaired += 1;
@@ -1560,15 +1566,26 @@ function classifyFileType(mimeType, originalName = "", clientHint = "") {
   const audioExts = new Set([".m4a", ".mp3", ".aac", ".wav", ".ogg", ".opus", ".flac", ".weba"]);
   const imageExts = new Set([".jpg", ".jpeg", ".png", ".webp", ".bmp", ".heic", ".heif", ".avif"]);
   const looksLikeVoiceRecording = /^voice[-_]/i.test(path.basename(name));
+  const looksLikeVideoLabel = /^(?:mp4|video|vid)[._-]/i.test(path.basename(name));
   const looksLikeMisreportedVideo = !looksLikeVoiceRecording && videoExts.has(ext)
     && ["audio/mp4", "audio/quicktime"].includes(mt);
+  const looksLikeMisreportedVideoWithoutExtension = !looksLikeVoiceRecording
+    && looksLikeVideoLabel
+    && !audioExts.has(ext)
+    && (!mt || mt === "application/octet-stream" || ["audio/mp4", "audio/quicktime"].includes(mt));
+  const isMisreportedVideo = looksLikeMisreportedVideo || looksLikeMisreportedVideoWithoutExtension;
 
   // Explicit client hints are used only when they agree with a plausible file
   // extension/MIME. This fixes Android gallery files occasionally reported as
   // audio/mp4 even though the selected file is an MP4 video.
   if (hint === "audio" && (mt.startsWith("audio/") || audioExts.has(ext) || looksLikeVoiceRecording)
-    && !looksLikeMisreportedVideo) return "audio";
-  if (hint === "video" && (mt.startsWith("video/") || videoExts.has(ext))) return "video";
+    && !isMisreportedVideo) return "audio";
+  // Android photo pickers occasionally label a selected video as audio/mp4 or
+  // audio/quicktime and may also omit the normal .mp4/.mov extension. An
+  // explicit video hint from the image/video picker is authoritative here.
+  if (hint === "video" && !looksLikeVoiceRecording
+    && (mt.startsWith("video/") || videoExts.has(ext)
+      || ["audio/mp4", "audio/quicktime"].includes(mt))) return "video";
   if (hint === "gif" && (mt === "image/gif" || ext === ".gif")) return "gif";
   if (hint === "image" && (mt.startsWith("image/") || imageExts.has(ext))) return ext === ".gif" ? "gif" : "image";
   if (hint === "pdf" && (mt === "application/pdf" || ext === ".pdf")) return "pdf";
@@ -1580,12 +1597,23 @@ function classifyFileType(mimeType, originalName = "", clientHint = "") {
   // Some Android gallery providers incorrectly report MP4/MOV videos as
   // audio/mp4 or audio/quicktime. The extension wins unless this is one of
   // TOMI's deliberately named voice recordings.
-  if (looksLikeMisreportedVideo) return "video";
+  if (isMisreportedVideo) return "video";
   if (mt.startsWith("audio/") || audioExts.has(ext) || looksLikeVoiceRecording) return "audio";
   // If a generic/incorrect mobile MIME reaches us, a known video extension is
   // still a stronger signal than application/octet-stream.
   if (videoExts.has(ext)) return "video";
   return "file";
+}
+
+function normalizeMediaMimeType(fileType, mimeType, originalName = "") {
+  const mt = String(mimeType || "application/octet-stream").toLowerCase();
+  if (fileType !== "video" || mt.startsWith("video/")) return mimeType || "application/octet-stream";
+  const ext = path.extname(String(originalName || "")).toLowerCase();
+  if (ext === ".webm") return "video/webm";
+  if (ext === ".mov") return "video/quicktime";
+  if (ext === ".3gp" || ext === ".3g2") return "video/3gpp";
+  if (ext === ".avi") return "video/x-msvideo";
+  return "video/mp4";
 }
 
 const uploadStorage = multer.diskStorage({
@@ -3245,6 +3273,7 @@ app.post("/api/upload/session", uploadLimiter, requireHttpAuth, limitConcurrentU
     const mimeType = String(body.mimeType || "application/octet-stream").trim().slice(0, 160) || "application/octet-stream";
     const clientFileType = String(body.clientFileType || "").trim().toLowerCase().slice(0, 24);
     const fileType = classifyFileType(mimeType, originalName, clientFileType);
+    const storedMimeType = normalizeMediaMimeType(fileType, mimeType, originalName);
     const sessionId = "ups_" + crypto.randomBytes(18).toString("hex");
     const fileId = "upl_" + crypto.randomBytes(16).toString("hex");
     const tempName = `${sessionId}.part`;
@@ -3258,7 +3287,7 @@ app.post("/api/upload/session", uploadLimiter, requireHttpAuth, limitConcurrentU
       roomId: scope.roomId,
       context,
       originalName,
-      mimeType,
+      mimeType: storedMimeType,
       clientFileType,
       fileType,
       fileSize,
@@ -3612,6 +3641,7 @@ app.post("/api/upload", uploadLimiter, requireHttpAuth, limitConcurrentUploads, 
 
     const clientFileType = String(req.body.clientFileType || "").trim().toLowerCase();
     const fileType = classifyFileType(req.file.mimetype, req.file.originalname, clientFileType);
+    const storedMimeType = normalizeMediaMimeType(fileType, req.file.mimetype, req.file.originalname);
     if (["background", "avatar", "frame", "voice-room-image"].includes(context) && !["image", "gif"].includes(fileType)) {
       safeUnlink(req.file.path);
       return res.status(400).json({ error: "خلفية المحادثة يجب أن تكون صورة" });
@@ -3635,7 +3665,7 @@ app.post("/api/upload", uploadLimiter, requireHttpAuth, limitConcurrentUploads, 
       gridFsId: cloudFile.gridFsId,
       storage: cloudFile.storage,
       originalName: String(req.file.originalname || "file").slice(0, 180),
-      mimeType: req.file.mimetype || "application/octet-stream",
+      mimeType: storedMimeType,
       fileType,
       size: req.file.size,
       uploader,
@@ -3725,10 +3755,15 @@ function effectiveStoredMimeType(record) {
   const ext = path.extname(name);
   const mimeType = String(record?.mimeType || "application/octet-stream").toLowerCase();
   const isVoice = /^voice[-_]/i.test(path.basename(name));
+  const looksLikeVideoLabel = /^(?:mp4|video|vid)[._-]/i.test(path.basename(name));
+  const audioExts = new Set([".m4a", ".mp3", ".aac", ".wav", ".ogg", ".opus", ".flac", ".weba"]);
   // Repair already-stored Android gallery videos that arrived as audio/mp4.
   if (!isVoice && [".mp4", ".m4v"].includes(ext)) return "video/mp4";
   if (!isVoice && ext === ".mov") return "video/quicktime";
   if (!isVoice && ext === ".webm" && record?.fileType === "video") return "video/webm";
+  if (!isVoice && record?.fileType === "video") return normalizeMediaMimeType("video", mimeType, name);
+  if (!isVoice && looksLikeVideoLabel && !audioExts.has(ext)
+    && ["", "application/octet-stream", "audio/mp4", "audio/quicktime"].includes(mimeType)) return "video/mp4";
   return mimeType || "application/octet-stream";
 }
 
