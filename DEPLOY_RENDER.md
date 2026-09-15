@@ -75,7 +75,12 @@ remain resident after a streamed upload finishes. Keep
 `MEMORY_GUARD_RESTART=false` on the small Render instance; enable it only when
 the Render logs show sustained Heap/external-buffer pressure and the thresholds
 have been adjusted for the selected plan. The service also limits concurrent
-upload requests with `MAX_CONCURRENT_UPLOAD_REQUESTS` (default `6`).
+  upload requests with `MAX_CONCURRENT_UPLOAD_REQUESTS` (default `6`).
+
+Large chat videos use resumable 8MB chunks by default (`UPLOAD_CHUNK_SIZE`),
+so a mobile reconnect resumes from the last confirmed byte. The completed video
+is served immediately from the exact local byte copy while GridFS persistence
+finishes in the background; GridFS remains the durable source after migration.
 
 When MongoDB is configured, the local JSON backup is disabled by default to
 avoid synchronous full-state serialization on every message. Set

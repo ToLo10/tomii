@@ -414,6 +414,11 @@ async function migrateLegacyBase64MediaToGridFS() {
 function repairLegacyMediaMetadata() {
   let repaired = 0;
   const byFileId = db.uploads || {};
+  const legacyVideoExts = new Set([
+    ".mp4", ".m4v", ".mov", ".webm", ".mkv", ".avi", ".3gp", ".3g2", ".mpeg", ".mpg",
+    ".m2v", ".m1v", ".ts", ".mts", ".m2ts", ".ogv", ".flv", ".f4v", ".wmv", ".asf",
+    ".vob", ".rm", ".rmvb", ".mxf", ".divx", ".xvid"
+  ]);
   for (const record of Object.values(byFileId)) {
     if (!record || typeof record !== "object") continue;
     const name = String(record.originalName || "").toLowerCase();
@@ -423,15 +428,11 @@ function repairLegacyMediaMetadata() {
     const looksLikeVideoMime = ["", "application/octet-stream", "audio/mp4", "audio/quicktime"]
       .includes(String(record.mimeType || "").toLowerCase());
     if (!isVoice && record.fileType === "audio"
-      && ([".mp4", ".m4v"].includes(ext)
+      && (legacyVideoExts.has(ext)
         || (looksLikeVideoLabel && looksLikeVideoMime
           && ![".m4a", ".mp3", ".aac", ".wav", ".ogg", ".opus", ".flac", ".weba"].includes(ext)))) {
       record.fileType = "video";
       record.mimeType = "video/mp4";
-      repaired += 1;
-    } else if (!isVoice && record.fileType === "audio" && ext === ".mov") {
-      record.fileType = "video";
-      record.mimeType = "video/quicktime";
       repaired += 1;
     }
   }
@@ -1522,12 +1523,12 @@ const MAX_UPLOAD_BYTES = Math.max(
   10 * 1024 * 1024,
   Number(process.env.MAX_UPLOAD_BYTES || 512 * 1024 * 1024)
 );
-// Large media is sent in resumable pieces. Four megabytes keeps each request
-// small enough for mobile browsers and Render while still avoiding hundreds of
-// tiny requests for normal videos.
+// Large media is sent in resumable pieces. Eight megabytes reduces HTTP
+// round-trip overhead for normal videos; a failed mobile request still loses
+// only the current bounded chunk and resumes from the confirmed offset.
 const UPLOAD_CHUNK_SIZE = Math.max(
   512 * 1024,
-  Math.min(8 * 1024 * 1024, Number(process.env.UPLOAD_CHUNK_SIZE || 4 * 1024 * 1024) || 4 * 1024 * 1024)
+  Math.min(8 * 1024 * 1024, Number(process.env.UPLOAD_CHUNK_SIZE || 8 * 1024 * 1024) || 8 * 1024 * 1024)
 );
 // Keep the remote GridFS write batches aligned with the resumable upload
 // chunks. The previous driver default (about 255 KB) caused large videos to
@@ -1562,7 +1563,11 @@ function classifyFileType(mimeType, originalName = "", clientHint = "") {
   const name = String(originalName || "").toLowerCase();
   const ext = path.extname(name).toLowerCase();
   const hint = String(clientHint || "").toLowerCase();
-  const videoExts = new Set([".mp4", ".m4v", ".mov", ".webm", ".mkv", ".avi", ".3gp", ".3g2", ".mpeg", ".mpg"]);
+  const videoExts = new Set([
+    ".mp4", ".m4v", ".mov", ".webm", ".mkv", ".avi", ".3gp", ".3g2", ".mpeg", ".mpg",
+    ".m2v", ".m1v", ".ts", ".mts", ".m2ts", ".ogv", ".flv", ".f4v", ".wmv", ".asf",
+    ".vob", ".rm", ".rmvb", ".mxf", ".divx", ".xvid"
+  ]);
   const audioExts = new Set([".m4a", ".mp3", ".aac", ".wav", ".ogg", ".opus", ".flac", ".weba"]);
   const imageExts = new Set([".jpg", ".jpeg", ".png", ".webp", ".bmp", ".heic", ".heif", ".avif"]);
   const looksLikeVoiceRecording = /^voice[-_]/i.test(path.basename(name));
@@ -1575,17 +1580,16 @@ function classifyFileType(mimeType, originalName = "", clientHint = "") {
     && (!mt || mt === "application/octet-stream" || ["audio/mp4", "audio/quicktime"].includes(mt));
   const isMisreportedVideo = looksLikeMisreportedVideo || looksLikeMisreportedVideoWithoutExtension;
 
-  // Explicit client hints are used only when they agree with a plausible file
-  // extension/MIME. This fixes Android gallery files occasionally reported as
-  // audio/mp4 even though the selected file is an MP4 video.
+  // Explicit media-picker hints cover Android gallery files that arrive with a
+  // generic MIME type or without a normal extension. Deliberate voice and image
+  // extensions remain protected from being relabelled as video.
   if (hint === "audio" && (mt.startsWith("audio/") || audioExts.has(ext) || looksLikeVoiceRecording)
     && !isMisreportedVideo) return "audio";
   // Android photo pickers occasionally label a selected video as audio/mp4 or
   // audio/quicktime and may also omit the normal .mp4/.mov extension. An
   // explicit video hint from the image/video picker is authoritative here.
-  if (hint === "video" && !looksLikeVoiceRecording
-    && (mt.startsWith("video/") || videoExts.has(ext)
-      || ["audio/mp4", "audio/quicktime"].includes(mt))) return "video";
+  if (hint === "video" && !looksLikeVoiceRecording && !audioExts.has(ext)
+    && !imageExts.has(ext) && ext !== ".gif" && ext !== ".pdf") return "video";
   if (hint === "gif" && (mt === "image/gif" || ext === ".gif")) return "gif";
   if (hint === "image" && (mt.startsWith("image/") || imageExts.has(ext))) return ext === ".gif" ? "gif" : "image";
   if (hint === "pdf" && (mt === "application/pdf" || ext === ".pdf")) return "pdf";
@@ -1609,10 +1613,36 @@ function normalizeMediaMimeType(fileType, mimeType, originalName = "") {
   const mt = String(mimeType || "application/octet-stream").toLowerCase();
   if (fileType !== "video" || mt.startsWith("video/")) return mimeType || "application/octet-stream";
   const ext = path.extname(String(originalName || "")).toLowerCase();
-  if (ext === ".webm") return "video/webm";
-  if (ext === ".mov") return "video/quicktime";
-  if (ext === ".3gp" || ext === ".3g2") return "video/3gpp";
-  if (ext === ".avi") return "video/x-msvideo";
+  const byExtension = {
+    ".mp4": "video/mp4",
+    ".m4v": "video/mp4",
+    ".webm": "video/webm",
+    ".mov": "video/quicktime",
+    ".3gp": "video/3gpp",
+    ".3g2": "video/3gpp2",
+    ".avi": "video/x-msvideo",
+    ".mkv": "video/x-matroska",
+    ".mpeg": "video/mpeg",
+    ".mpg": "video/mpeg",
+    ".m2v": "video/mpeg",
+    ".m1v": "video/mpeg",
+    ".ogv": "video/ogg",
+    ".flv": "video/x-flv",
+    ".f4v": "video/x-f4v",
+    ".wmv": "video/x-ms-wmv",
+    ".asf": "video/x-ms-asf",
+    ".vob": "video/mpeg",
+    ".rm": "video/x-pn-realvideo",
+    ".rmvb": "video/x-pn-realvideo",
+    ".ts": "video/mp2t",
+    ".mts": "video/mp2t",
+    ".m2ts": "video/mp2t",
+    ".mxf": "application/mxf",
+    ".divx": "video/x-msvideo",
+    ".xvid": "video/x-msvideo"
+  };
+  if (byExtension[ext]) return byExtension[ext];
+  if (mt === "application/octet-stream" || !mt) return "application/octet-stream";
   return "video/mp4";
 }
 
@@ -1692,12 +1722,10 @@ async function persistUploadedFileToCloud(reqFile, fileId, { keepLocalCache = fa
   };
 }
 
-// Resumable video uploads used to write the complete file to the temporary
-// disk first and then upload the same complete file to GridFS during the
-// finalisation request. That second pass is what made the progress card sit at
-// 99% for a long time. Stream video bytes to GridFS while the browser is still
-// sending the resumable chunks; the temporary file remains as a local cache and
-// as a safe fallback if the cloud stream has a transient error.
+// These helpers keep a GridFS streaming fallback for already-created sessions.
+// New video sessions receive into the local file only, so the browser is not
+// throttled by an Atlas round trip on every chunk. The complete local file is
+// then copied to GridFS by the background persistence queue below.
 function startResumableVideoCloudStream(session) {
   if (!session || session.context !== "chat" || session.fileType !== "video" || !mongoReady || !gridFsBucket) return false;
   if (session.gridFsUploadStream || session.gridFsUploadFailed) return Boolean(session.gridFsUploadStream);
@@ -1853,6 +1881,121 @@ async function persistResumableUploadToCloud(session, fileId, { keepLocalCache =
     mimetype: session.mimeType,
     size: session.fileSize
   }, fileId, { keepLocalCache });
+}
+
+// A completed HTTP upload must not wait on the final GridFS `finish` round trip.
+// The temporary file already contains the exact bytes received from the client,
+// so it is a safe, immediately-served source while the durable GridFS copy is
+// finalized in the background. This removes the long 99% pause on slow Atlas
+// connections without sacrificing the cloud copy or the original container.
+function localFirstVideoFile(session, fileId, keepLocalCache = false) {
+  return {
+    fileId,
+    storage: "local",
+    storedName: session.tempName,
+    cacheStoredName: null,
+    cacheExpiresAt: null,
+    gridFsId: null,
+    size: session.fileSize,
+    cloudPending: Boolean(mongoReady && gridFsBucket),
+    keepLocalCache: Boolean(keepLocalCache)
+  };
+}
+
+function queueResumableVideoCloudPersistence(session, fileId, record, { keepLocalCache = false, attempt = 0 } = {}) {
+  if (!session || !fileId || !record || session.cloudPersisting) return;
+  if (record.storage !== "local" || record.storedName !== session.tempName) return;
+  if (!mongoReady || !gridFsBucket) {
+    record.cloudPending = false;
+    return;
+  }
+
+  session.cloudPersisting = true;
+  setImmediate(async () => {
+    try {
+      const current = db.uploads?.[fileId];
+      if (!current || current !== record) {
+        try { session.gridFsUploadStream?.destroy(); } catch (_) {}
+        return;
+      }
+
+      // Keep the local file until the database record has switched to GridFS.
+      // Passing false here would let the lower-level helper unlink the source
+      // a few milliseconds before the record update, creating a tiny 404 race
+      // for the recipient who opens the video immediately.
+      const cloudFile = await persistResumableUploadToCloud(session, fileId, { keepLocalCache: true });
+      const latest = db.uploads?.[fileId];
+      if (!latest || latest !== record) return;
+      const useLocalCache = cloudFile.storage === "gridfs" && keepLocalCache;
+
+      record.storage = cloudFile.storage;
+      record.storedName = cloudFile.storedName || null;
+      record.cacheStoredName = useLocalCache ? (cloudFile.cacheStoredName || session.tempName) : null;
+      record.cacheExpiresAt = useLocalCache
+        ? (cloudFile.cacheExpiresAt || new Date(Date.now() + MEDIA_LOCAL_CACHE_TTL_MS).toISOString())
+        : null;
+      record.gridFsId = cloudFile.gridFsId || null;
+      record.cloudPending = false;
+      record.cloudLastErrorAt = null;
+      saveDB(db);
+      if (cloudFile.storage === "gridfs" && !keepLocalCache) safeUnlink(session.tempPath);
+    } catch (err) {
+      // Keep the local source available if Atlas is temporarily unavailable.
+      // Retry a few times without blocking the chat response; a later process
+      // restart also picks up records that still have cloudPending=true.
+      record.cloudPending = true;
+      record.cloudLastErrorAt = new Date().toISOString();
+      console.warn("Background video persistence delayed:", err?.message || err);
+      if (attempt < 2 && db.uploads?.[fileId] === record) {
+        const delay = Math.min(30_000, 5_000 * (attempt + 1));
+        session.cloudRetryScheduled = true;
+        setTimeout(() => {
+          session.cloudPersisting = false;
+          session.cloudRetryScheduled = false;
+          queueResumableVideoCloudPersistence(session, fileId, record, {
+            keepLocalCache,
+            attempt: attempt + 1
+          });
+        }, delay).unref?.();
+        return;
+      }
+    } finally {
+      if (session.cloudPersisting && !session.cloudRetryScheduled) session.cloudPersisting = false;
+    }
+  });
+}
+
+function resumePendingVideoCloudUploads() {
+  if (!mongoReady || !gridFsBucket) return;
+  for (const [fileId, record] of Object.entries(db.uploads || {})) {
+    if (!record || record.cloudPending !== true || record.storage !== "local" || !record.storedName) continue;
+    const tempName = path.basename(String(record.storedName));
+    const tempPath = path.join(UPLOAD_DIR, tempName);
+    if (!fs.existsSync(tempPath)) {
+      record.cloudPending = false;
+      continue;
+    }
+    const session = {
+      id: "recovered_" + fileId,
+      fileId,
+      tempName,
+      tempPath,
+      originalName: record.originalName || tempName,
+      mimeType: record.mimeType || "video/mp4",
+      fileSize: Number(record.size || 0),
+      gridFsUploadStream: null,
+      gridFsId: null,
+      gridFsUploadFailed: false,
+      gridFsUploadFinished: false,
+      gridFsDeleteQueued: false,
+      gridFsError: null,
+      cloudPersisting: false,
+      cloudRetryScheduled: false
+    };
+    queueResumableVideoCloudPersistence(session, fileId, record, {
+      keepLocalCache: Number(record.size || 0) <= MEDIA_LOCAL_CACHE_MAX_FILE_BYTES
+    });
+  }
 }
 
 function parseHttpByteRange(rangeHeader, totalSize) {
@@ -3274,6 +3417,63 @@ app.post("/api/upload/session", uploadLimiter, requireHttpAuth, limitConcurrentU
     const clientFileType = String(body.clientFileType || "").trim().toLowerCase().slice(0, 24);
     const fileType = classifyFileType(mimeType, originalName, clientFileType);
     const storedMimeType = normalizeMediaMimeType(fileType, mimeType, originalName);
+    const requestedMsgId = String(body.msgId || "").trim().slice(0, 180);
+
+    // The POST response itself can be lost when Android backgrounds the page
+    // immediately after the picker closes. Reusing the same message id makes a
+    // repeated session-init request idempotent and prevents an orphaned second
+    // copy of the video from starting at byte zero.
+    if (requestedMsgId) {
+      for (const existing of uploadSessions.values()) {
+        if (!existing
+          || existing.uploader !== uploader
+          || existing.context !== context
+          || existing.roomId !== scope.roomId
+          || existing.msgId !== requestedMsgId
+          || Number(existing.fileSize) !== fileSize
+          || existing.originalName !== originalName
+          || !["uploading", "completing", "completed", "uploaded"].includes(existing.status)) continue;
+        existing.expiresAt = Date.now() + UPLOAD_SESSION_TTL_MS;
+        return res.status(200).json({
+          success: true,
+          sessionId: existing.id,
+          chunkSize: UPLOAD_CHUNK_SIZE,
+          received: existing.received,
+          fileSize: existing.fileSize,
+          status: existing.status,
+          result: ["completed", "uploaded"].includes(existing.status) ? existing.result : null,
+          expiresAt: new Date(existing.expiresAt).toISOString()
+        });
+      }
+
+      // The previous process may have completed and published the message just
+      // before a Render restart, which clears the in-memory session map. The
+      // persistent message id is enough to recover the already-uploaded file
+      // and avoid forcing the phone to send it a second time.
+      if (context === "chat" && scope.roomId) {
+        const existingMessage = (db.roomHistory?.[scope.roomId] || [])
+          .find(message => message?.msgId === requestedMsgId);
+        const existingFile = existingMessage?.fileId ? db.uploads?.[existingMessage.fileId] : null;
+        if (existingFile && existingFile.uploader === uploader && Number(existingFile.size) === fileSize) {
+          const recoveredSession = {
+            fileId: existingFile.fileId,
+            originalName: existingFile.originalName,
+            fileType: existingFile.fileType,
+            mimeType: existingFile.mimeType,
+            fileSize: existingFile.size
+          };
+          return res.status(200).json({
+            ...uploadSessionPublicResult(recoveredSession, existingFile, existingMessage),
+            sessionId: "done_" + existingFile.fileId,
+            chunkSize: UPLOAD_CHUNK_SIZE,
+            received: existingFile.size,
+            fileSize: existingFile.size,
+            status: "completed",
+            result: uploadSessionPublicResult(recoveredSession, existingFile, existingMessage)
+          });
+        }
+      }
+    }
     const sessionId = "ups_" + crypto.randomBytes(18).toString("hex");
     const fileId = "upl_" + crypto.randomBytes(16).toString("hex");
     const tempName = `${sessionId}.part`;
@@ -3294,7 +3494,7 @@ app.post("/api/upload/session", uploadLimiter, requireHttpAuth, limitConcurrentU
       received: 0,
       tempName,
       tempPath,
-      msgId: String(body.msgId || "").trim().slice(0, 180),
+      msgId: requestedMsgId,
       time: String(body.time || "").trim().slice(0, 80),
       replyTo: body.replyTo && typeof body.replyTo === "object" ? body.replyTo : null,
       voiceDurationMs: Math.max(0, Math.min(60 * 60 * 1000, Number(body.voiceDurationMs || 0) || 0)),
@@ -3314,7 +3514,10 @@ app.post("/api/upload/session", uploadLimiter, requireHttpAuth, limitConcurrentU
       gridFsError: null
     };
     uploadSessions.set(sessionId, session);
-    if (fileType === "video") startResumableVideoCloudStream(session);
+    // Receive the browser stream into one bounded local file first. A live
+    // GridFS tee would make every mobile chunk wait for the Atlas round trip,
+    // so it would still throttle the upload even though the final 99% wait was
+    // removed. The completed local file is copied to GridFS asynchronously.
     analyticsService?.track("upload_started", {
       userId: uploader,
       bytes: fileSize,
@@ -3426,19 +3629,9 @@ app.put("/api/upload/session/:sessionId/chunk", uploadLimiter, requireHttpAuth, 
     }
     session.received += requestBytes;
     session.expiresAt = Date.now() + UPLOAD_SESSION_TTL_MS;
-    if (session.received >= session.fileSize && session.gridFsUploadStream && !session.gridFsUploadFailed) {
-      // Finish the already-streamed GridFS object before acknowledging the
-      // final chunk. The subsequent /complete request only creates metadata
-      // and publishes the message, so the old full-file 99% wait disappears.
-      try {
-        await finishResumableVideoCloudStream(session);
-      } catch (err) {
-        // The complete local file is still available. Let completion replay it
-        // once as a reliable fallback instead of failing the user's upload.
-        console.warn("Resumable video cloud finalization delayed; using fallback:", err?.message || err);
-        queuePartialResumableGridFsDelete(session);
-      }
-    }
+    // Do not wait for GridFS to write its final files document here. The local
+    // copy is complete and is served immediately by the completion response;
+    // cloud finalisation is queued after the upload record is created.
     res.json({ success: true, received: session.received, done: session.received >= session.fileSize });
   } catch (err) {
     await fs.promises.truncate(session.tempPath, session.received).catch(() => {});
@@ -3485,10 +3678,12 @@ app.post("/api/upload/session/:sessionId/complete", uploadLimiter, requireHttpAu
     session.status = "completing";
     const fileId = session.fileId || ("upl_" + crypto.randomBytes(16).toString("hex"));
     let record = db.uploads?.[fileId] || null;
+    const sessionFileType = classifyFileType(session.mimeType, session.originalName, session.clientFileType);
+    const keepLocalCache = ["image", "gif", "video", "audio"].includes(sessionFileType)
+      && session.fileSize <= MEDIA_LOCAL_CACHE_MAX_FILE_BYTES;
 
     if (!record) {
-      const fileType = classifyFileType(session.mimeType, session.originalName, session.clientFileType);
-      if (["background", "avatar", "frame", "voice-room-image"].includes(session.context) && !["image", "gif"].includes(fileType)) {
+      if (["background", "avatar", "frame", "voice-room-image"].includes(session.context) && !["image", "gif"].includes(sessionFileType)) {
         const error = new Error("خلفية المحادثة يجب أن تكون صورة");
         error.statusCode = 400;
         throw error;
@@ -3501,9 +3696,12 @@ app.post("/api/upload/session/:sessionId/complete", uploadLimiter, requireHttpAu
         mimetype: session.mimeType,
         size: session.fileSize
       };
-      const keepLocalCache = ["image", "gif", "video", "audio"].includes(fileType) && session.fileSize <= MEDIA_LOCAL_CACHE_MAX_FILE_BYTES;
-      const cloudFile = fileType === "video"
-        ? await persistResumableUploadToCloud(session, fileId, { keepLocalCache })
+      // Videos are intentionally local-first: the client gets a successful
+      // response as soon as all bytes are safely on disk, while the durable
+      // GridFS copy continues in the background. Other upload contexts keep
+      // their existing synchronous persistence behaviour.
+      const cloudFile = sessionFileType === "video"
+        ? localFirstVideoFile(session, fileId, keepLocalCache)
         : await persistUploadedFileToCloud(reqFile, fileId, { keepLocalCache });
       record = {
         fileId,
@@ -3514,12 +3712,14 @@ app.post("/api/upload/session/:sessionId/complete", uploadLimiter, requireHttpAu
         storage: cloudFile.storage,
         originalName: session.originalName,
         mimeType: session.mimeType,
-        fileType,
+        fileType: sessionFileType,
         size: session.fileSize,
         uploader: session.uploader,
         roomId: session.roomId,
         context: session.context,
-        createdAt: new Date().toISOString()
+        createdAt: new Date().toISOString(),
+        cloudPending: Boolean(cloudFile.cloudPending),
+        cloudLastErrorAt: null
       };
       db.uploads[fileId] = record;
       session.fileId = fileId;
@@ -3531,6 +3731,10 @@ app.post("/api/upload/session/:sessionId/complete", uploadLimiter, requireHttpAu
       saveDB(db);
     } else {
       session.fileId = fileId;
+    }
+
+    if (sessionFileType === "video" && record.storage === "local" && record.cloudPending) {
+      queueResumableVideoCloudPersistence(session, fileId, record, { keepLocalCache });
     }
 
     let publishedMessage = null;
@@ -7948,6 +8152,10 @@ async function startServer() {
   consolidatePlatformInboxes();
   trimAllRoomHistories();
   cleanupExpiredRuntimeState({ aggressive: true });
+  // If a previous instance restarted while a video was being copied from the
+  // fast local source to GridFS, continue that copy without making the user
+  // upload the video again.
+  resumePendingVideoCloudUploads();
   // Keep notification subscriptions across restarts. When VAPID variables are
   // not supplied, initializeWebPush creates one key pair and persists it in
   // the existing database so Render restarts do not invalidate every phone.

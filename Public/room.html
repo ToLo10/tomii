@@ -6096,7 +6096,7 @@
             const name = String(file?.name || '').toLowerCase();
             const mime = String(file?.type || '').toLowerCase();
             const ext = name.includes('.') ? name.slice(name.lastIndexOf('.')) : '';
-            const videoExts = new Set(['.mp4','.m4v','.mov','.webm','.mkv','.avi','.3gp','.3g2','.mpeg','.mpg']);
+            const videoExts = new Set(['.mp4','.m4v','.mov','.webm','.mkv','.avi','.3gp','.3g2','.mpeg','.mpg','.m2v','.m1v','.ts','.mts','.m2ts','.ogv','.flv','.f4v','.wmv','.asf','.vob','.rm','.rmvb','.mxf','.divx','.xvid']);
             const audioExts = new Set(['.m4a','.mp3','.aac','.wav','.ogg','.opus','.flac','.weba']);
             const mediaPickerVideoMime = pickerKind === 'media'
                 && !/^voice[-_]/.test(name)
@@ -6111,6 +6111,12 @@
             if (!/^voice[-_]/.test(name) && videoExts.has(ext) && (mime === 'audio/mp4' || mime === 'audio/quicktime')) return 'video';
             if (mime.startsWith('audio/') || audioExts.has(ext) || /^voice[-_]/.test(name)) return 'audio';
             if (videoExts.has(ext)) return 'video';
+            // The native media picker can return a video with no extension and
+            // application/octet-stream. Treat the remaining non-audio media as
+            // video so its original bytes are delivered instead of hiding it as
+            // a generic document.
+            if (pickerKind === 'media' && !/^voice[-_]/.test(name)
+                && !audioExts.has(ext) && !mime.startsWith('audio/')) return 'video';
             return 'file';
         }
 
@@ -6185,7 +6191,17 @@
             });
         }
 
-        async function uploadFileChunkedToServer(file, { context = 'chat', targetRoomId = roomId, progressUI = null, messageMeta = null, clientFileType = '' } = {}) {
+        async function uploadFileChunkedToServer(file, options = {}) {
+            // Keep the options object alive across the caller's retry. If the
+            // browser loses the response after a chunk was accepted, the next
+            // attempt resumes the same server session instead of uploading the
+            // whole video from byte zero again.
+            const context = options.context || 'chat';
+            const targetRoomId = options.targetRoomId == null ? roomId : options.targetRoomId;
+            const progressUI = options.progressUI || null;
+            const messageMeta = options.messageMeta || null;
+            const clientFileType = options.clientFileType || '';
+            const previousSessionId = String(options.resumeSessionId || '').trim();
             const metadata = {
                 context,
                 roomId: targetRoomId || '',
@@ -6196,6 +6212,28 @@
                 ...uploadMessageMetadata(messageMeta)
             };
             let session = null;
+            let resumed = false;
+            if (previousSessionId) {
+                try {
+                    const existing = await getUploadSessionStatus(previousSessionId);
+                    if (['completed', 'uploaded'].includes(existing?.status) && existing.result) {
+                        delete options.resumeSessionId;
+                        return existing.result;
+                    }
+                    if (Number(existing?.fileSize) === Number(file.size)
+                        && ['uploading', 'completing'].includes(String(existing?.status || ''))) {
+                        session = existing;
+                        resumed = true;
+                    } else {
+                        delete options.resumeSessionId;
+                    }
+                } catch (_) {
+                    // A 404/410 means the old in-memory session was lost (for
+                    // example after a Render restart). Start a clean session;
+                    // ordinary network errors are handled by the init retry.
+                    delete options.resumeSessionId;
+                }
+            }
             let initError = null;
             for (let attempt = 0; attempt < 3 && !session; attempt += 1) {
                 try {
@@ -6214,11 +6252,17 @@
             }
             if (!session) throw initError || new Error('تعذر بدء رفع الملف');
 
+            if (['completed', 'uploaded'].includes(session?.status) && session.result) {
+                delete options.resumeSessionId;
+                return session.result;
+            }
+
             const sessionId = session.sessionId;
+            options.resumeSessionId = sessionId;
             const chunkSize = Math.max(512 * 1024, Math.min(8 * 1024 * 1024, Number(session.chunkSize || clientConfig.uploadChunkSize || 4 * 1024 * 1024)));
             const startedAt = performance.now();
             let offset = Math.max(0, Math.min(file.size, Number(session.received || 0)));
-            uploadProgressSnapshot(progressUI, file, offset, startedAt, 'جاري بدء الرفع');
+            uploadProgressSnapshot(progressUI, file, offset, startedAt, resumed ? 'استئناف الرفع من آخر مقطع محفوظ' : 'جاري بدء الرفع');
 
             while (offset < file.size) {
                 let chunkResult = null;
@@ -6289,6 +6333,7 @@
                 }
             }
             if (!result) throw new Error('تعذر تثبيت الملف على الخادم');
+            delete options.resumeSessionId;
             if (progressUI) {
                 progressUI.bar.style.width = '100%';
                 progressUI.percent.textContent = 'تم';
@@ -6298,8 +6343,14 @@
             return result;
         }
 
-        function uploadFileToServer(file, { context = 'chat', targetRoomId = roomId, progressUI = null, messageMeta = null, clientFileType = '' } = {}) {
+        function uploadFileToServer(file, options = {}) {
             if (!file) return Promise.reject(new Error('لم يتم اختيار ملف'));
+
+            const context = options.context || 'chat';
+            const targetRoomId = options.targetRoomId == null ? roomId : options.targetRoomId;
+            const progressUI = options.progressUI || null;
+            const messageMeta = options.messageMeta || null;
+            const clientFileType = options.clientFileType || '';
 
             const maxBytes = Number(clientConfig.maxUploadBytes || 0);
             if (maxBytes > 0 && file.size > maxBytes) {
@@ -6309,7 +6360,7 @@
             const uploadType = String(clientFileType || inferClientUploadType(file, 'file')).toLowerCase();
             if (context === 'chat' && clientConfig.resumableUploads !== false
                 && (file.size >= RESUMABLE_UPLOAD_THRESHOLD || uploadType === 'video')) {
-                return uploadFileChunkedToServer(file, { context, targetRoomId, progressUI, messageMeta, clientFileType });
+                return uploadFileChunkedToServer(file, options);
             }
 
             return new Promise((resolve, reject) => {
@@ -6419,24 +6470,33 @@
             });
         }
 
-        async function uploadChatFileWithOneRetry(file, options) {
-            try {
-                return await uploadFileToServer(file, options);
-            } catch (firstError) {
-                const message = String(firstError?.message || '');
-                const looksTemporary = /انقطع الاتصال|network|failed to fetch|تعذر الاتصال/i.test(message);
-                if (!looksTemporary) throw firstError;
+        async function uploadChatFileWithOneRetry(file, options = {}) {
+            let lastError = null;
+            for (let retry = 0; retry < 3; retry += 1) {
+                try {
+                    return await uploadFileToServer(file, options);
+                } catch (error) {
+                    lastError = error;
+                    const message = String(error?.message || '');
+                    const status = Number(error?.status || 0);
+                    const looksTemporary = [408, 425, 429, 500, 502, 503, 504].includes(status)
+                        || /انقطع|مؤقت|يمكن إعادة المحاولة|network|failed to fetch|تعذر الاتصال|timeout/i.test(message);
+                    if (!looksTemporary || retry >= 2) throw error;
 
-                // Android browsers may briefly suspend the page while Samsung Gallery /
-                // the system photo picker is open. Give the network stack a moment to resume.
-                await new Promise(resolve => setTimeout(resolve, 900));
-                if (options?.progressUI) {
-                    options.progressUI.bar.style.width = '0%';
-                    options.progressUI.percent.textContent = 'إعادة المحاولة...';
-                    if (options.progressUI.meta) options.progressUI.meta.textContent = 'انقطع الاتصال مؤقتاً • إعادة الرفع تلقائياً';
+                    // Android browsers may briefly suspend the page while the
+                    // system photo picker is open. Keep the current progress and
+                    // resumeSessionId so the retry continues from the server's
+                    // confirmed offset.
+                    const waitMs = Math.min(5000, 900 * (retry + 1));
+                    await new Promise(resolve => setTimeout(resolve, waitMs));
+                    if (options?.progressUI) {
+                        options.progressUI.item?.classList.add('upload-completing');
+                        options.progressUI.percent.textContent = 'استئناف...';
+                        if (options.progressUI.meta) options.progressUI.meta.textContent = 'انقطع الاتصال مؤقتاً • استئناف من آخر مقطع محفوظ';
+                    }
                 }
-                return uploadFileToServer(file, options);
             }
+            throw lastError || new Error('تعذر رفع الملف');
         }
 
         async function uploadAndSendChatFile(file, replySnapshot = null, pickerKind = 'file', extraMessageMeta = null) {
@@ -6935,7 +6995,7 @@
             const mime = String(data?.mimeType || '').toLowerCase();
             const name = String(data?.fileName || '').toLowerCase();
             const ext = name.includes('.') ? name.slice(name.lastIndexOf('.')) : '';
-            const videoExts = new Set(['.mp4','.m4v','.mov','.webm','.mkv','.avi','.3gp','.3g2','.mpeg','.mpg']);
+            const videoExts = new Set(['.mp4','.m4v','.mov','.webm','.mkv','.avi','.3gp','.3g2','.mpeg','.mpg','.m2v','.m1v','.ts','.mts','.m2ts','.ogv','.flv','.f4v','.wmv','.asf','.vob','.rm','.rmvb','.mxf','.divx','.xvid']);
             const audioExts = new Set(['.m4a','.mp3','.aac','.wav','.ogg','.opus','.flac','.weba']);
             const isVoice = /^voice[-_]/.test(name);
             const looksLikeVideoLabel = /^(?:mp4|video|vid)[._-]/.test(name);
@@ -7059,6 +7119,14 @@
                 else if (/\.webm$/i.test(data.fileName || '')) source.type = 'video/webm';
                 else if (/\.3g(pp|2)$/i.test(data.fileName || '')) source.type = 'video/3gpp';
                 else if (/\.avi$/i.test(data.fileName || '')) source.type = 'video/x-msvideo';
+                else if (/\.mkv$/i.test(data.fileName || '')) source.type = 'video/x-matroska';
+                else if (/\.(ts|mts|m2ts)$/i.test(data.fileName || '')) source.type = 'video/mp2t';
+                else if (/\.ogv$/i.test(data.fileName || '')) source.type = 'video/ogg';
+                else if (/\.flv$/i.test(data.fileName || '')) source.type = 'video/x-flv';
+                else if (/\.wmv$/i.test(data.fileName || '')) source.type = 'video/x-ms-wmv';
+                else if (/\.(mpeg|mpg|m2v|m1v|vob)$/i.test(data.fileName || '')) source.type = 'video/mpeg';
+                else if (/\.(rm|rmvb)$/i.test(data.fileName || '')) source.type = 'video/x-pn-realvideo';
+                else if (/\.mxf$/i.test(data.fileName || '')) source.type = 'application/mxf';
                 video.appendChild(source);
 
                 const state = document.createElement('div');

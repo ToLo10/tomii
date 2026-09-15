@@ -48,6 +48,8 @@ services:
         value: "3"
       - key: HTTP_REQUEST_TIMEOUT_MS
         value: "900000"
+      - key: UPLOAD_CHUNK_SIZE
+        value: "8388608"
       - key: MAX_CONCURRENT_UPLOADS_PER_USER
         value: "2"
       - key: MAX_CONCURRENT_UPLOAD_REQUESTS
