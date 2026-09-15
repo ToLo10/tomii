@@ -5,6 +5,7 @@ const server = createServer(app);
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
+const { spawn } = require("node:child_process");
 const { Readable, Transform, Writable } = require("node:stream");
 const { pipeline } = require("node:stream/promises");
 const { Server } = require("socket.io");
@@ -233,10 +234,18 @@ function queuePhysicalUploadDelete(record) {
         if (record.cacheStoredName) {
           await fs.promises.unlink(path.join(UPLOAD_DIR, record.cacheStoredName)).catch(() => {});
         }
+        if (record.playbackCacheStoredName) {
+          await fs.promises.unlink(path.join(UPLOAD_DIR, record.playbackCacheStoredName)).catch(() => {});
+        }
         if (record.storage === "gridfs" && record.gridFsId && gridFsBucket) {
           await gridFsBucket.delete(new mongoose.Types.ObjectId(record.gridFsId));
         } else if (record.storedName) {
           await fs.promises.unlink(path.join(UPLOAD_DIR, record.storedName)).catch(() => {});
+        }
+        if (record.playbackStorage === "gridfs" && record.playbackGridFsId && gridFsBucket) {
+          await gridFsBucket.delete(new mongoose.Types.ObjectId(record.playbackGridFsId)).catch(() => {});
+        } else if (record.playbackStoredName) {
+          await fs.promises.unlink(path.join(UPLOAD_DIR, record.playbackStoredName)).catch(() => {});
         }
       } catch (err) {
         // A missing file is already effectively cleaned. Do not turn cleanup into
@@ -1558,6 +1567,35 @@ const MEDIA_LOCAL_CACHE_MAX_FILE_BYTES = Math.max(
   Number(process.env.MEDIA_LOCAL_CACHE_MAX_FILE_BYTES || 128 * 1024 * 1024)
 );
 
+// Desktop browsers can decode the audio track of an HEVC/H.265, MKV or other
+// camera/container upload while failing to decode its video track. Keep the
+// original bytes for download/mobile playback, and prepare one browser-safe
+// H.264/AAC copy in the background. Render's native runtime includes ffmpeg;
+// the command can still be overridden for local deployments.
+const VIDEO_COMPATIBILITY_ENABLED = String(
+  process.env.VIDEO_COMPATIBILITY_ENABLED || "true"
+).toLowerCase() !== "false";
+const VIDEO_COMPATIBILITY_MAX_BYTES = Math.min(
+  MAX_UPLOAD_BYTES,
+  Math.max(
+    16 * 1024 * 1024,
+    Number(process.env.VIDEO_COMPATIBILITY_MAX_BYTES || MAX_UPLOAD_BYTES) || MAX_UPLOAD_BYTES
+  )
+);
+const VIDEO_COMPATIBILITY_TIMEOUT_MS = Math.max(
+  2 * 60 * 1000,
+  Number(process.env.VIDEO_COMPATIBILITY_TIMEOUT_MS || 30 * 60 * 1000) || 30 * 60 * 1000
+);
+const VIDEO_COMPATIBILITY_MAX_QUEUE = Math.max(
+  10,
+  Math.min(100, Number(process.env.VIDEO_COMPATIBILITY_MAX_QUEUE || 50) || 50)
+);
+const FFMPEG_PATH = String(process.env.FFMPEG_PATH || "ffmpeg").trim() || "ffmpeg";
+const FFPROBE_PATH = String(process.env.FFPROBE_PATH || "ffprobe").trim() || "ffprobe";
+const videoCompatibilityQueue = [];
+const videoCompatibilityQueued = new Set();
+let videoCompatibilityRunning = false;
+
 function classifyFileType(mimeType, originalName = "", clientHint = "") {
   const mt = String(mimeType || "").toLowerCase();
   const name = String(originalName || "").toLowerCase();
@@ -1881,6 +1919,350 @@ async function persistResumableUploadToCloud(session, fileId, { keepLocalCache =
     mimetype: session.mimeType,
     size: session.fileSize
   }, fileId, { keepLocalCache });
+}
+
+function appendCommandOutput(current, chunk, maxBytes = 24 * 1024) {
+  if (current.length >= maxBytes) return current;
+  const text = String(chunk || "");
+  return current + text.slice(0, maxBytes - current.length);
+}
+
+function runMediaCommand(command, args, { timeoutMs = VIDEO_COMPATIBILITY_TIMEOUT_MS } = {}) {
+  return new Promise((resolve, reject) => {
+    let child;
+    try {
+      child = spawn(command, args, {
+        stdio: ["ignore", "pipe", "pipe"],
+        windowsHide: true
+      });
+    } catch (err) {
+      reject(err);
+      return;
+    }
+
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      try { child.kill("SIGKILL"); } catch (_) {}
+    }, Math.max(5_000, timeoutMs));
+    timer.unref?.();
+
+    const finish = (err, result = null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (err) reject(err);
+      else resolve(result);
+    };
+
+    child.stdout?.on("data", chunk => { stdout = appendCommandOutput(stdout, chunk); });
+    child.stderr?.on("data", chunk => { stderr = appendCommandOutput(stderr, chunk); });
+    child.once("error", err => finish(err));
+    child.once("close", (code, signal) => {
+      if (timedOut) {
+        const err = new Error("انتهت مهلة تجهيز نسخة الفيديو المتوافقة");
+        err.code = "MEDIA_COMMAND_TIMEOUT";
+        finish(err);
+        return;
+      }
+      if (code !== 0) {
+        const detail = stderr.trim().replace(/\s+/g, " ").slice(0, 400);
+        const err = new Error(detail || `أداة الوسائط انتهت بالرمز ${code ?? signal ?? "unknown"}`);
+        err.code = "MEDIA_COMMAND_FAILED";
+        err.exitCode = code;
+        finish(err);
+        return;
+      }
+      finish(null, { stdout, stderr, code, signal });
+    });
+  });
+}
+
+async function inspectVideoForBrowserCompatibility(inputPath, record) {
+  const result = await runMediaCommand(FFPROBE_PATH, [
+    "-v", "error",
+    "-show_entries", "stream=codec_type,codec_name,pix_fmt:format=format_name",
+    "-of", "json",
+    inputPath
+  ], { timeoutMs: 60_000 });
+  let parsed;
+  try {
+    parsed = JSON.parse(result.stdout || "{}");
+  } catch {
+    throw new Error("تعذر قراءة معلومات ترميز الفيديو");
+  }
+
+  const streams = Array.isArray(parsed.streams) ? parsed.streams : [];
+  const video = streams.find(stream => stream?.codec_type === "video");
+  const audio = streams.find(stream => stream?.codec_type === "audio");
+  if (!video) return { compatible: false, hasVideo: false, reason: "no-video-track" };
+
+  const formatNames = String(parsed.format?.format_name || "").toLowerCase().split(",");
+  const originalName = String(record?.originalName || "").toLowerCase();
+  const originalMime = String(record?.mimeType || "").toLowerCase().split(";", 1)[0];
+  const isMp4Family = formatNames.some(name => ["mov", "mp4", "m4v", "3gp", "3g2"].includes(name))
+    || ["video/mp4", "video/quicktime", "video/3gpp", "video/3gpp2"].includes(originalMime)
+    || /\.(mp4|m4v|mov|3gp|3g2)$/i.test(originalName);
+  const videoCodec = String(video.codec_name || "").toLowerCase();
+  const audioCodec = String(audio?.codec_name || "").toLowerCase();
+  const pixelFormat = String(video.pix_fmt || "").toLowerCase();
+  const safeVideoCodec = videoCodec === "h264" && !/(10|12|14)le?$/.test(pixelFormat);
+  const safeAudioCodec = !audio || ["aac", "mp3"].includes(audioCodec);
+
+  return {
+    compatible: Boolean(isMp4Family && safeVideoCodec && safeAudioCodec),
+    hasVideo: true,
+    videoCodec,
+    audioCodec,
+    pixelFormat,
+    format: formatNames[0] || ""
+  };
+}
+
+function localUploadPath(storedName) {
+  const safeName = path.basename(String(storedName || ""));
+  if (!safeName) return null;
+  const fullPath = path.join(UPLOAD_DIR, safeName);
+  try {
+    if (fs.statSync(fullPath).isFile()) return fullPath;
+  } catch (_) {}
+  return null;
+}
+
+async function materializeVideoInput(record) {
+  const localCandidates = [record?.cacheStoredName, record?.storedName];
+  for (const name of localCandidates) {
+    const fullPath = localUploadPath(name);
+    if (fullPath) return { path: fullPath, temporary: false };
+  }
+
+  if (!gridFsBucket || !record?.gridFsId) {
+    throw new Error("ملف الفيديو غير متاح للتحويل حالياً");
+  }
+
+  const tempName = `.video-compat-${String(record.fileId || "file")}-${crypto.randomBytes(6).toString("hex")}.source`;
+  const tempPath = path.join(UPLOAD_DIR, tempName);
+  try {
+    const objectId = new mongoose.Types.ObjectId(record.gridFsId);
+    const input = gridFsBucket.openDownloadStream(objectId);
+    await pipeline(input, fs.createWriteStream(tempPath, { flags: "wx" }));
+    return { path: tempPath, temporary: true };
+  } catch (err) {
+    safeUnlink(tempPath);
+    throw err;
+  }
+}
+
+function videoCompatibilityVariant(record) {
+  if (!record?.playbackGridFsId && !record?.playbackStoredName && !record?.playbackCacheStoredName) return null;
+  return {
+    ...record,
+    fileId: `${record.fileId}:compat`,
+    storage: record.playbackStorage || "local",
+    storedName: record.playbackStoredName || null,
+    cacheStoredName: record.playbackCacheStoredName || null,
+    cacheExpiresAt: record.playbackCacheExpiresAt || null,
+    gridFsId: record.playbackGridFsId || null,
+    mimeType: record.playbackMimeType || "video/mp4",
+    size: Number(record.playbackSize || 0),
+    originalName: `${String(record.originalName || "video").replace(/[\\/]+/g, "_")}.compat.mp4`,
+    createdAt: record.playbackCreatedAt || record.createdAt
+  };
+}
+
+function emitVideoCompatibilityStatus(record, status, extra = {}) {
+  if (!record?.roomId || !record.fileId) return;
+  const payload = {
+    fileId: record.fileId,
+    status,
+    ...extra
+  };
+  io.to(record.roomId).emit("media-playback-status", payload);
+  const audience = typeof getRoomAudience === "function" ? getRoomAudience(record.roomId) : [];
+  for (const username of audience) io.to(`user_${username}`).emit("media-playback-status", payload);
+}
+
+async function processVideoCompatibilityJob(fileId) {
+  const record = db.uploads?.[fileId];
+  if (!record || record.fileType !== "video") return;
+  if (!VIDEO_COMPATIBILITY_ENABLED) {
+    record.playbackStatus = "disabled";
+    record.playbackMode = "original";
+    return;
+  }
+  if (Number(record.size || 0) > VIDEO_COMPATIBILITY_MAX_BYTES) {
+    record.playbackStatus = "skipped";
+    record.playbackMode = "original";
+    record.playbackError = "حجم الملف أكبر من حد تجهيز نسخة التشغيل";
+    saveDB(db);
+    emitVideoCompatibilityStatus(record, "skipped", { message: record.playbackError });
+    return;
+  }
+
+  record.playbackStatus = "checking";
+  record.playbackError = null;
+  saveDB(db);
+  emitVideoCompatibilityStatus(record, "checking");
+
+  let input = null;
+  let outputPath = null;
+  let outputOwnedByRecord = false;
+  try {
+    input = await materializeVideoInput(record);
+    const probe = await inspectVideoForBrowserCompatibility(input.path, record);
+    if (probe.compatible) {
+      record.playbackStatus = "ready";
+      record.playbackMode = "original";
+      record.playbackReadyAt = new Date().toISOString();
+      record.playbackError = null;
+      saveDB(db);
+      emitVideoCompatibilityStatus(record, "ready", { original: true });
+      return;
+    }
+
+    record.playbackStatus = "processing";
+    record.playbackMode = "compatibility";
+    saveDB(db);
+    emitVideoCompatibilityStatus(record, "processing");
+
+    const variantName = `${String(fileId).replace(/[^a-zA-Z0-9_-]/g, "_")}.compat.mp4`;
+    outputPath = path.join(UPLOAD_DIR, variantName);
+    safeUnlink(outputPath);
+    await runMediaCommand(FFMPEG_PATH, [
+      "-hide_banner", "-loglevel", "error", "-y",
+      "-i", input.path,
+      "-map", "0:v:0",
+      "-map", "0:a:0?",
+      "-sn", "-dn",
+      "-vf", "scale=w='min(1920,iw)':h=-2:flags=lanczos",
+      "-c:v", "libx264",
+      "-preset", "veryfast",
+      "-crf", "23",
+      "-pix_fmt", "yuv420p",
+      "-profile:v", "main",
+      "-level", "4.1",
+      "-c:a", "aac",
+      "-b:a", "128k",
+      "-ar", "48000",
+      "-ac", "2",
+      "-movflags", "+faststart",
+      "-threads", "1",
+      outputPath
+    ]);
+
+    const outputStat = await fs.promises.stat(outputPath);
+    if (!outputStat.isFile() || outputStat.size < 1024) throw new Error("نسخة الفيديو الناتجة فارغة");
+
+    const variantFileId = `${fileId}_compat`;
+    const keepVariantCache = outputStat.size <= MEDIA_LOCAL_CACHE_MAX_FILE_BYTES;
+    const cloudFile = await persistUploadedFileToCloud({
+      path: outputPath,
+      filename: variantName,
+      originalname: `${String(record.originalName || "video").slice(0, 150)}.compat.mp4`,
+      mimetype: "video/mp4",
+      size: outputStat.size
+    }, variantFileId, { keepLocalCache: keepVariantCache });
+
+    if (db.uploads?.[fileId] !== record) {
+      queuePhysicalUploadDelete({
+        storage: cloudFile.storage,
+        storedName: cloudFile.storedName,
+        cacheStoredName: cloudFile.cacheStoredName,
+        gridFsId: cloudFile.gridFsId
+      });
+      return;
+    }
+
+    record.playbackStatus = "ready";
+    record.playbackMode = "compatibility";
+    record.playbackStorage = cloudFile.storage;
+    record.playbackStoredName = cloudFile.storedName || null;
+    record.playbackCacheStoredName = cloudFile.cacheStoredName || null;
+    record.playbackCacheExpiresAt = cloudFile.cacheExpiresAt || null;
+    record.playbackGridFsId = cloudFile.gridFsId || null;
+    record.playbackMimeType = "video/mp4";
+    record.playbackSize = outputStat.size;
+    record.playbackCreatedAt = new Date().toISOString();
+    record.playbackReadyAt = record.playbackCreatedAt;
+    record.playbackError = null;
+    outputOwnedByRecord = cloudFile.storage === "local" || Boolean(cloudFile.cacheStoredName);
+    saveDB(db);
+
+    const playbackUrl = `/api/files/${encodeURIComponent(fileId)}?playback=compatible&v=${encodeURIComponent(record.playbackReadyAt)}`;
+    emitVideoCompatibilityStatus(record, "ready", {
+      url: playbackUrl,
+      mimeType: "video/mp4",
+      size: outputStat.size,
+      original: false
+    });
+  } catch (err) {
+    const missingTool = err?.code === "ENOENT" || /not found|spawn ff/i.test(String(err?.message || ""));
+    record.playbackStatus = missingTool ? "unavailable" : "failed";
+    record.playbackMode = "original";
+    record.playbackError = missingTool
+      ? "أداة تجهيز الفيديو غير متوفرة على الخادم"
+      : String(err?.message || "تعذر تجهيز نسخة متوافقة").slice(0, 500);
+    saveDB(db);
+    console.warn(`Video compatibility ${record.playbackStatus} (${fileId}):`, record.playbackError);
+    emitVideoCompatibilityStatus(record, record.playbackStatus, { message: record.playbackError });
+  } finally {
+    if (input?.temporary) safeUnlink(input.path);
+    if (outputPath && !outputOwnedByRecord) safeUnlink(outputPath);
+  }
+}
+
+function pumpVideoCompatibilityQueue() {
+  if (videoCompatibilityRunning) return;
+  const fileId = videoCompatibilityQueue.shift();
+  if (!fileId) return;
+  videoCompatibilityQueued.delete(fileId);
+  videoCompatibilityRunning = true;
+  processVideoCompatibilityJob(fileId)
+    .catch(err => console.warn(`Video compatibility job failed (${fileId}):`, err?.message || err))
+    .finally(() => {
+      videoCompatibilityRunning = false;
+      setImmediate(pumpVideoCompatibilityQueue);
+    });
+}
+
+function queueVideoCompatibilityJob(fileId) {
+  if (!VIDEO_COMPATIBILITY_ENABLED || !fileId) return false;
+  const record = db.uploads?.[fileId];
+  if (!record || record.fileType !== "video") return false;
+  if (["ready", "processing", "checking"].includes(record.playbackStatus)) return false;
+  if (record.playbackStatus === "skipped" || record.playbackStatus === "disabled") return false;
+  if (videoCompatibilityQueued.has(fileId)) return true;
+  if (videoCompatibilityQueue.length >= VIDEO_COMPATIBILITY_MAX_QUEUE) {
+    record.playbackStatus = "queued";
+    record.playbackError = "ينتظر دوره لتجهيز نسخة التشغيل";
+    saveDB(db);
+    return false;
+  }
+  record.playbackStatus = "queued";
+  record.playbackMode = "original";
+  record.playbackError = null;
+  record.playbackQueuedAt = new Date().toISOString();
+  videoCompatibilityQueued.add(fileId);
+  videoCompatibilityQueue.push(fileId);
+  saveDB(db);
+  setImmediate(pumpVideoCompatibilityQueue);
+  return true;
+}
+
+function resumePendingVideoCompatibilityJobs() {
+  if (!VIDEO_COMPATIBILITY_ENABLED) return;
+  for (const [fileId, record] of Object.entries(db.uploads || {})) {
+    if (!record || record.fileType !== "video") continue;
+    if (["queued", "checking", "processing"].includes(record.playbackStatus)) {
+      // A process restart cannot retain the in-memory running job. Put an
+      // interrupted check/transcode back into the bounded queue.
+      record.playbackStatus = "queued";
+      queueVideoCompatibilityJob(fileId);
+    }
+  }
 }
 
 // A completed HTTP upload must not wait on the final GridFS `finish` round trip.
@@ -2516,6 +2898,12 @@ app.get("/api/health", (_req, res) => {
       enabled: Boolean(analyticsService),
       activeUsers: analyticsService?.getActiveUsers?.() || 0,
       activeSockets: analyticsService?.getActiveSockets?.() || 0
+    },
+    videoCompatibility: {
+      enabled: VIDEO_COMPATIBILITY_ENABLED,
+      queued: videoCompatibilityQueue.length,
+      running: videoCompatibilityRunning,
+      maxBytes: VIDEO_COMPATIBILITY_MAX_BYTES
     },
     historyLimitPerChat: CHAT_HISTORY_LIMIT,
     memory: (() => {
@@ -3290,6 +3678,7 @@ function publishStoredUploadMessage({ actor, roomIdOrCode, fileId, msgId, time, 
     fileType: file.fileType,
     mimeType: file.mimeType,
     fileSize: file.size,
+    playbackStatus: file.fileType === "video" ? (file.playbackStatus || "queued") : null,
     userId: actor,
     username: actor,
     displayName: user.displayName || actor,
@@ -3394,6 +3783,12 @@ function uploadSessionPublicResult(session, record, message = null, extra = {}) 
     mimeType: record?.mimeType || session.mimeType,
     size: Number(record?.size || session.fileSize || 0),
     url: `/api/files/${encodeURIComponent(fileId)}`,
+    playbackStatus: record?.fileType === "video" ? (record.playbackStatus || "queued") : null,
+    playbackUrl: record?.fileType === "video"
+      && record.playbackStatus === "ready"
+      && record.playbackMode === "compatibility"
+      ? `/api/files/${encodeURIComponent(fileId)}?playback=compatible`
+      : null,
     message,
     ...extra
   };
@@ -3736,6 +4131,7 @@ app.post("/api/upload/session/:sessionId/complete", uploadLimiter, requireHttpAu
     if (sessionFileType === "video" && record.storage === "local" && record.cloudPending) {
       queueResumableVideoCloudPersistence(session, fileId, record, { keepLocalCache });
     }
+    if (sessionFileType === "video") queueVideoCompatibilityJob(fileId);
 
     let publishedMessage = null;
     if (session.context === "chat" && session.roomId) {
@@ -3884,6 +4280,7 @@ app.post("/api/upload", uploadLimiter, requireHttpAuth, limitConcurrentUploads, 
     }
 
     saveDB(db);
+    if (fileType === "video") queueVideoCompatibilityJob(fileId);
     analyticsService?.track("upload_complete", {
       userId: uploader,
       bytes: Number(req.file.size || 0),
@@ -3934,6 +4331,7 @@ app.post("/api/upload", uploadLimiter, requireHttpAuth, limitConcurrentUploads, 
       mimeType: db.uploads[fileId].mimeType,
       size: req.file.size,
       url: `/api/files/${encodeURIComponent(fileId)}`,
+      playbackStatus: fileType === "video" ? (db.uploads[fileId].playbackStatus || "queued") : null,
       message: publishedMessage
     });
   } catch (err) {
@@ -3971,6 +4369,13 @@ function effectiveStoredMimeType(record) {
   return mimeType || "application/octet-stream";
 }
 
+function selectVideoPlaybackRecord(record, req) {
+  const requested = String(req?.query?.playback || "").toLowerCase();
+  if (requested === "original" || record?.fileType !== "video") return record;
+  if (record?.playbackStatus !== "ready" || record?.playbackMode !== "compatibility") return record;
+  return videoCompatibilityVariant(record) || record;
+}
+
 function setStoredFileResponseHeaders(record, res) {
   const fileId = String(record.fileId || "file");
   const totalSize = Number(record.size || 0);
@@ -3988,6 +4393,20 @@ function setStoredFileResponseHeaders(record, res) {
     "Content-Disposition",
     `${inline ? "inline" : "attachment"}; filename*=UTF-8''${encodeURIComponent(safeName)}`
   );
+}
+
+function setVideoCompatibilityCachePolicy(record, playbackRecord, req, res) {
+  const requestedCompatibility = String(req?.query?.playback || "").toLowerCase() === "compatible";
+  const variantReady = record?.fileType === "video"
+    && record.playbackStatus === "ready"
+    && record.playbackMode === "compatibility"
+    && playbackRecord !== record;
+  // Before conversion completes, do not let the browser keep the original
+  // HEVC response forever under the compatibility URL. The ready event also
+  // adds a version query, but this short cache makes refresh/reopen reliable.
+  if (requestedCompatibility && !variantReady) {
+    res.setHeader("Cache-Control", "private, max-age=5, must-revalidate");
+  }
 }
 
 function serveLocalStoredFile(fullPath, record, req, res) {
@@ -4035,42 +4454,48 @@ function resolveAuthorizedUpload(req, res) {
 app.head("/api/files/:fileId", requireHttpAuth, (req, res) => {
   const record = resolveAuthorizedUpload(req, res);
   if (!record) return;
-  setStoredFileResponseHeaders(record, res);
-  if (Number(record.size || 0) > 0) res.setHeader("Content-Length", String(record.size));
+  if (record.fileType === "video" && !record.playbackStatus) queueVideoCompatibilityJob(record.fileId);
+  const playbackRecord = selectVideoPlaybackRecord(record, req);
+  setStoredFileResponseHeaders(playbackRecord, res);
+  setVideoCompatibilityCachePolicy(record, playbackRecord, req, res);
+  if (Number(playbackRecord.size || 0) > 0) res.setHeader("Content-Length", String(playbackRecord.size));
   res.status(200).end();
 });
 
 app.get("/api/files/:fileId", requireHttpAuth, (req, res) => {
   const record = resolveAuthorizedUpload(req, res);
   if (!record) return;
+  if (record.fileType === "video" && !record.playbackStatus) queueVideoCompatibilityJob(record.fileId);
 
-  setStoredFileResponseHeaders(record, res);
-  const etag = `\"${String(record.fileId || "file")}-${Number(record.size || 0)}\"`;
+  const playbackRecord = selectVideoPlaybackRecord(record, req);
+  setStoredFileResponseHeaders(playbackRecord, res);
+  setVideoCompatibilityCachePolicy(record, playbackRecord, req, res);
+  const etag = `\"${String(playbackRecord.fileId || "file")}-${Number(playbackRecord.size || 0)}\"`;
   if (!req.headers.range && req.headers["if-none-match"] === etag) return res.status(304).end();
 
   // Prefer the bounded ephemeral cache immediately after upload. This avoids a
   // remote GridFS round-trip for every browser byte-range seek while a newly
   // shared video is being watched. If the cache has expired or Render restarted,
   // transparently fall back to GridFS.
-  if (record.cacheStoredName) {
-    const cachePath = path.join(UPLOAD_DIR, record.cacheStoredName);
+  if (playbackRecord.cacheStoredName) {
+    const cachePath = path.join(UPLOAD_DIR, path.basename(playbackRecord.cacheStoredName));
     if (fs.existsSync(cachePath)) {
-      return serveLocalStoredFile(cachePath, record, req, res);
+      return serveLocalStoredFile(cachePath, playbackRecord, req, res);
     }
   }
 
-  if (record.storage === "gridfs" && record.gridFsId) {
-    if (!streamGridFsFile(record, req, res)) {
+  if (playbackRecord.storage === "gridfs" && playbackRecord.gridFsId) {
+    if (!streamGridFsFile(playbackRecord, req, res)) {
       return res.status(404).json({ error: "الملف غير موجود في التخزين السحابي" });
     }
     return;
   }
 
-  const fullPath = path.join(UPLOAD_DIR, record.storedName || "");
-  if (!record.storedName || !fs.existsSync(fullPath)) {
+  const fullPath = path.join(UPLOAD_DIR, path.basename(playbackRecord.storedName || ""));
+  if (!playbackRecord.storedName || !fs.existsSync(fullPath)) {
     return res.status(404).json({ error: "الملف غير موجود على الخادم" });
   }
-  serveLocalStoredFile(fullPath, record, req, res);
+  serveLocalStoredFile(fullPath, playbackRecord, req, res);
 });
 
 // =========================================================
@@ -8035,11 +8460,25 @@ function cleanupExpiredRuntimeState({ aggressive = false } = {}) {
   // object remains untouched and continues to serve the message after cache TTL.
   for (const record of Object.values(db.uploads || {})) {
     if (!record?.cacheStoredName) continue;
+    if (["checking", "processing"].includes(record.playbackStatus)) continue;
     const expires = Date.parse(record.cacheExpiresAt || "");
     if (Number.isFinite(expires) && expires <= now) {
       fs.promises.unlink(path.join(UPLOAD_DIR, record.cacheStoredName)).catch(() => {});
       record.cacheStoredName = null;
       record.cacheExpiresAt = null;
+      changed = true;
+    }
+  }
+
+  // The compatibility copy has its own short-lived local acceleration cache;
+  // its durable GridFS copy is never removed here.
+  for (const record of Object.values(db.uploads || {})) {
+    if (!record?.playbackCacheStoredName || ["checking", "processing"].includes(record.playbackStatus)) continue;
+    const expires = Date.parse(record.playbackCacheExpiresAt || "");
+    if (Number.isFinite(expires) && expires <= now) {
+      fs.promises.unlink(path.join(UPLOAD_DIR, record.playbackCacheStoredName)).catch(() => {});
+      record.playbackCacheStoredName = null;
+      record.playbackCacheExpiresAt = null;
       changed = true;
     }
   }
@@ -8066,6 +8505,7 @@ function cleanupExpiredRuntimeState({ aggressive = false } = {}) {
         if (Date.now() - st.mtimeMs >= UNSENT_CHAT_UPLOAD_TTL_MS) {
           const known = Object.values(db.uploads || {}).some(r =>
             r?.storedName === entry.name || r?.cacheStoredName === entry.name
+              || r?.playbackStoredName === entry.name || r?.playbackCacheStoredName === entry.name
           );
           if (!known) await fs.promises.unlink(full).catch(() => {});
         }
@@ -8145,6 +8585,9 @@ transientCleanupTimer.unref?.();
 async function startServer() {
   await initCloudDatabase();
   db = normalizeDatabaseState(db);
+  // Apply the same legacy Android MP4 repair in local mode as in MongoDB mode;
+  // otherwise an old audio/mp4 record could still bypass desktop conversion.
+  repairLegacyMediaMetadata();
   ensurePlatformOwner();
   analyticsService?.ensureAllReferralCodes();
   await analyticsService?.configureMongo?.();
@@ -8156,6 +8599,10 @@ async function startServer() {
   // fast local source to GridFS, continue that copy without making the user
   // upload the video again.
   resumePendingVideoCloudUploads();
+  // Continue any compatibility conversion that was interrupted by a deploy or
+  // restart. The queue is intentionally single-file to protect small Render
+  // instances from concurrent ffmpeg processes.
+  resumePendingVideoCompatibilityJobs();
   // Keep notification subscriptions across restarts. When VAPID variables are
   // not supplied, initializeWebPush creates one key pair and persists it in
   // the existing database so Render restarts do not invalidate every phone.

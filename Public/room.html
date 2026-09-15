@@ -6990,6 +6990,13 @@
             return wrap;
         }
 
+        function withVideoPlaybackMode(url, mode = 'compatible') {
+            const raw = String(url || '');
+            if (!raw || raw.startsWith('data:') || raw.startsWith('blob:')) return raw;
+            const separator = raw.includes('?') ? '&' : '?';
+            return `${raw}${separator}playback=${encodeURIComponent(mode)}`;
+        }
+
         function normalizeMediaTypeForRender(data) {
             let type = String(data?.fileType || 'file').toLowerCase();
             const mime = String(data?.mimeType || '').toLowerCase();
@@ -7103,6 +7110,7 @@
             } else if (fileType === 'video') {
                 const videoWrap = document.createElement('div');
                 videoWrap.className = 'chat-video-wrap';
+                videoWrap.dataset.mediaFileId = String(data.fileId || '');
                 const video = document.createElement('video');
                 video.controls = true;
                 // Metadata is enough to size the card without downloading the
@@ -7112,26 +7120,21 @@
                 video.setAttribute('playsinline', '');
                 video.setAttribute('webkit-playsinline', '');
                 const source = document.createElement('source');
-                source.src = sourceUrl;
-                if (data.mimeType && String(data.mimeType).startsWith('video/')) source.type = data.mimeType;
-                else if (/\.(mp4|m4v)$/i.test(data.fileName || '')) source.type = 'video/mp4';
-                else if (/\.mov$/i.test(data.fileName || '')) source.type = 'video/quicktime';
-                else if (/\.webm$/i.test(data.fileName || '')) source.type = 'video/webm';
-                else if (/\.3g(pp|2)$/i.test(data.fileName || '')) source.type = 'video/3gpp';
-                else if (/\.avi$/i.test(data.fileName || '')) source.type = 'video/x-msvideo';
-                else if (/\.mkv$/i.test(data.fileName || '')) source.type = 'video/x-matroska';
-                else if (/\.(ts|mts|m2ts)$/i.test(data.fileName || '')) source.type = 'video/mp2t';
-                else if (/\.ogv$/i.test(data.fileName || '')) source.type = 'video/ogg';
-                else if (/\.flv$/i.test(data.fileName || '')) source.type = 'video/x-flv';
-                else if (/\.wmv$/i.test(data.fileName || '')) source.type = 'video/x-ms-wmv';
-                else if (/\.(mpeg|mpg|m2v|m1v|vob)$/i.test(data.fileName || '')) source.type = 'video/mpeg';
-                else if (/\.(rm|rmvb)$/i.test(data.fileName || '')) source.type = 'video/x-pn-realvideo';
-                else if (/\.mxf$/i.test(data.fileName || '')) source.type = 'application/mxf';
+                // Let the response Content-Type decide the container. A stale
+                // client MIME (for example audio/mp4 from some Android gallery
+                // providers) can make desktop Chrome select an audio-only
+                // interpretation before it inspects the actual file.
+                const compatibleSourceUrl = withVideoPlaybackMode(sourceUrl, 'compatible');
+                source.src = compatibleSourceUrl;
                 video.appendChild(source);
+                video.dataset.mediaFileId = String(data.fileId || '');
+                video.dataset.originalSourceUrl = withVideoPlaybackMode(sourceUrl, 'original');
 
                 const state = document.createElement('div');
                 state.className = 'chat-video-state';
-                state.textContent = 'جاري تجهيز الفيديو...';
+                state.textContent = ['queued', 'checking', 'processing'].includes(String(data.playbackStatus || '').toLowerCase())
+                    ? 'جاري تجهيز نسخة تشغيل متوافقة...'
+                    : 'جاري تجهيز الفيديو...';
                 videoWrap.appendChild(video);
                 videoWrap.appendChild(state);
 
@@ -7158,20 +7161,24 @@
                     state.classList.remove('hidden');
                 });
                 video.addEventListener('error', () => {
-                    state.textContent = 'تعذر تشغيل الفيديو داخل المتصفح';
+                    const pendingCompatibility = ['queued', 'checking', 'processing'].includes(String(data.playbackStatus || '').toLowerCase());
+                    state.textContent = pendingCompatibility
+                        ? 'جاري تجهيز نسخة متوافقة للابتوب...'
+                        : 'تعذر تشغيل ترميز الفيديو على هذا المتصفح';
                     state.classList.remove('hidden');
                     if (!videoWrap.querySelector('.media-fallback-link')) {
                         const fallback = document.createElement('a');
-                        fallback.href = sourceUrl;
+                        fallback.href = video.dataset.originalSourceUrl || sourceUrl;
                         fallback.target = '_blank';
                         fallback.rel = 'noopener';
                         fallback.className = 'media-fallback-link';
-                        fallback.textContent = 'تعذر التشغيل هنا — فتح/تنزيل الفيديو';
+                        fallback.textContent = 'فتح/تنزيل الفيديو الأصلي';
                         fallback.download = data.fileName || '';
                         videoWrap.appendChild(fallback);
                     }
                 });
                 messageElement.appendChild(videoWrap);
+                video.load();
                 mediaSummaryText = data.fileName || 'فيديو 🎥';
             } else if (fileType === 'audio') {
                 const isVoiceNote = Boolean(data.voiceNote || /^voice[-_]/i.test(String(data.fileName || '')));
@@ -7215,6 +7222,49 @@
             renderMediaItem(data);
             if (wasPinned || data.userId === myUserId || data.username === myUsername) smartScrollChat(true);
             refreshChats();
+        });
+
+        // The original upload remains available immediately. If the server
+        // detects HEVC/H.265 or another desktop-incompatible video track, it
+        // sends this event when the background H.264/AAC copy is ready.
+        socket.on('media-playback-status', function(payload) {
+            const fileId = String(payload?.fileId || '');
+            if (!fileId) return;
+            document.querySelectorAll('.chat-video-wrap').forEach(videoWrap => {
+                if (String(videoWrap.dataset.mediaFileId || '') !== fileId) return;
+                const video = videoWrap.querySelector('video');
+                const source = video?.querySelector('source');
+                const state = videoWrap.querySelector('.chat-video-state');
+                if (!video || !source) return;
+
+                if (payload.status === 'ready' && payload.url && payload.original === false) {
+                    source.src = String(payload.url);
+                    source.removeAttribute('type');
+                    video.dataset.playbackReady = 'true';
+                    if (state) {
+                        state.textContent = 'جاري تشغيل نسخة الفيديو المتوافقة...';
+                        state.classList.remove('hidden');
+                    }
+                    videoWrap.querySelector('.media-fallback-link')?.remove();
+                    video.load();
+                    return;
+                }
+
+                if (['queued', 'checking', 'processing'].includes(String(payload.status || ''))) {
+                    if (state) {
+                        state.textContent = 'جاري تجهيز نسخة تشغيل متوافقة للابتوب...';
+                        state.classList.remove('hidden');
+                    }
+                    return;
+                }
+
+                if (['unavailable', 'failed', 'skipped', 'disabled'].includes(String(payload.status || ''))) {
+                    if (state) {
+                        state.textContent = payload.message || 'تعذر تجهيز نسخة تشغيل للابتوب؛ يمكنك تنزيل الملف الأصلي.';
+                        state.classList.remove('hidden');
+                    }
+                }
+            });
         });
 
 

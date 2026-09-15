@@ -82,6 +82,16 @@ so a mobile reconnect resumes from the last confirmed byte. The completed video
 is served immediately from the exact local byte copy while GridFS persistence
 finishes in the background; GridFS remains the durable source after migration.
 
+To make phone-camera HEVC/H.265, MKV and other desktop-incompatible videos play
+with both picture and sound, the server checks the uploaded file with `ffprobe`
+and prepares an H.264/AAC MP4 compatibility copy with `ffmpeg` in a single
+background queue. The original file is kept intact, and the upload response is
+not held open for conversion. Render's native Node runtime includes both tools.
+The relevant controls are `VIDEO_COMPATIBILITY_ENABLED`,
+`VIDEO_COMPATIBILITY_MAX_BYTES`, `VIDEO_COMPATIBILITY_MAX_QUEUE` and
+`VIDEO_COMPATIBILITY_TIMEOUT_MS`. Set the first one to `false` only if a local
+deployment intentionally has no ffmpeg installation.
+
 When MongoDB is configured, the local JSON backup is disabled by default to
 avoid synchronous full-state serialization on every message. Set
 `WRITE_LOCAL_JSON_BACKUP=true` only when that local backup is deliberately

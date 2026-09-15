@@ -60,6 +60,18 @@ services:
         value: "1200000"
       - key: MEDIA_LOCAL_CACHE_MAX_FILE_BYTES
         value: "134217728"
+      - key: VIDEO_COMPATIBILITY_ENABLED
+        value: "true"
+      - key: VIDEO_COMPATIBILITY_MAX_BYTES
+        value: "536870912"
+      - key: VIDEO_COMPATIBILITY_MAX_QUEUE
+        value: "50"
+      - key: VIDEO_COMPATIBILITY_TIMEOUT_MS
+        value: "1800000"
+      - key: FFMPEG_PATH
+        value: "ffmpeg"
+      - key: FFPROBE_PATH
+        value: "ffprobe"
       - key: LOCAL_ARCHIVE_ENABLED
         value: "false"
       - key: NODE_OPTIONS
