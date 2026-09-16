@@ -7,9 +7,11 @@
     <title>TOMI</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <link rel="stylesheet" href="styles.css?v=20260908-frame-cutout-v3">
+    <link rel="stylesheet" href="/ai.css?v=20260915-ai1">
     <script src="/notifications.js"></script>
     <script src="/socket.io/socket.io.js"></script>
     <script src="/analytics-client.js" defer></script>
+    <script src="/ai-client.js?v=20260915-ai1" defer></script>
     <style>
         :root {
             --bg-primary: #0f0f1a;
@@ -1833,6 +1835,8 @@
                     'manage_platform_bans',
                     'manage_moderators',
                     'manage_reports',
+                    'view_analytics',
+                    'manage_ai_safety',
                     'send_platform_broadcast'
                 ].includes(p));
         }

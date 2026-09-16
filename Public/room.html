@@ -7,7 +7,9 @@
     <title>TOMI - Room Chat</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <link rel="stylesheet" href="room.css">
+    <link rel="stylesheet" href="/ai.css?v=20260915-ai1">
     <script src="/analytics-client.js" defer></script>
+    <script src="/ai-client.js?v=20260915-ai1" defer></script>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #0a0a12; color: #fff; overflow: hidden; height: 100vh; width: 100vw; }
@@ -3076,7 +3078,10 @@
             maxUploadBytes: 512 * 1024 * 1024,
             audioRecording: {
                 preferredMimeType: 'audio/webm;codecs=opus',
-                audioBitsPerSecond: 128000,
+                audioBitsPerSecond: 160000,
+                sampleRate: 48000,
+                sampleSize: 16,
+                channelCount: 1,
                 echoCancellation: true,
                 noiseSuppression: true,
                 autoGainControl: true
@@ -6359,7 +6364,7 @@
 
             const uploadType = String(clientFileType || inferClientUploadType(file, 'file')).toLowerCase();
             if (context === 'chat' && clientConfig.resumableUploads !== false
-                && (file.size >= RESUMABLE_UPLOAD_THRESHOLD || uploadType === 'video')) {
+                && (file.size >= RESUMABLE_UPLOAD_THRESHOLD || uploadType === 'video' || uploadType === 'audio')) {
                 return uploadFileChunkedToServer(file, options);
             }
 
@@ -6745,23 +6750,42 @@
                         echoCancellation: audioCfg.echoCancellation !== false,
                         noiseSuppression: audioCfg.noiseSuppression !== false,
                         autoGainControl: audioCfg.autoGainControl !== false,
-                        channelCount: 1
+                        channelCount: Number(audioCfg.channelCount || 1),
+                        sampleRate: Number(audioCfg.sampleRate || 48000),
+                        sampleSize: Number(audioCfg.sampleSize || 16),
+                        latency: 0
                     },
                     video: false
                 });
 
                 startVoiceWaveformCapture(recordingStream);
 
-                // iPhone/iPad Safari is much more reliable with MP4/AAC. Chromium/Firefox
-                // can fall back to WebM/Opus. Pick the first type the current browser accepts.
-                const candidates = [
-                    'audio/mp4;codecs=mp4a.40.2',
-                    'audio/mp4',
-                    audioCfg.preferredMimeType || 'audio/webm;codecs=opus',
-                    'audio/webm;codecs=opus',
-                    'audio/webm',
-                    'audio/ogg;codecs=opus'
-                ];
+                // iPhone/iPad Safari is much more reliable with MP4/AAC. Chrome,
+                // Android Chrome and Firefox are much more reliable with WebM/Opus.
+                // Keeping MP4 first on Chromium can create an audio-only track or
+                // fail at stop, so the order is intentional.
+                const userAgent = String(navigator.userAgent || '');
+                const isAppleSafari = /iPhone|iPad|iPod/i.test(userAgent)
+                    ? !/(CriOS|FxiOS|EdgiOS|OPiOS)/i.test(userAgent)
+                    : /Safari/i.test(userAgent) && !/(Chrome|Chromium|CriOS|FxiOS|Edg|OPR|Android)/i.test(userAgent);
+                const configuredMime = String(audioCfg.preferredMimeType || '').trim();
+                const candidates = Array.from(new Set((isAppleSafari
+                    ? [
+                        'audio/mp4;codecs=mp4a.40.2',
+                        'audio/mp4',
+                        configuredMime,
+                        'audio/webm;codecs=opus',
+                        'audio/webm',
+                        'audio/ogg;codecs=opus'
+                    ]
+                    : [
+                        configuredMime,
+                        'audio/webm;codecs=opus',
+                        'audio/webm',
+                        'audio/ogg;codecs=opus',
+                        'audio/mp4;codecs=mp4a.40.2',
+                        'audio/mp4'
+                    ]).filter(Boolean)));
                 const selectedMime = candidates.find(type =>
                     window.MediaRecorder && typeof MediaRecorder.isTypeSupported === 'function' && MediaRecorder.isTypeSupported(type)
                 ) || '';
@@ -6770,7 +6794,19 @@
                 if (selectedMime) options.mimeType = selectedMime;
                 if (audioCfg.audioBitsPerSecond) options.audioBitsPerSecond = Number(audioCfg.audioBitsPerSecond);
 
-                mediaRecorder = new MediaRecorder(recordingStream, options);
+                // A few mobile WebViews claim support for a codec but reject it
+                // when the recorder is constructed. Retry without the bitrate,
+                // then with browser defaults so recording never becomes a hard
+                // failure just because one advertised profile is broken.
+                try {
+                    mediaRecorder = new MediaRecorder(recordingStream, options);
+                } catch (_) {
+                    try {
+                        mediaRecorder = new MediaRecorder(recordingStream, selectedMime ? { mimeType: selectedMime } : {});
+                    } catch (_) {
+                        mediaRecorder = new MediaRecorder(recordingStream);
+                    }
+                }
                 audioChunks = [];
                 voiceRecordingShouldSend = false;
 
@@ -6790,11 +6826,12 @@
                     await stopVoiceWaveformCapture();
                     voiceRecordingStartedAt = 0;
 
-                    const mimeType = mediaRecorder.mimeType || selectedMime || 'audio/webm';
-                    const audioBlob = new Blob(audioChunks, { type: mimeType });
-                    const extension = mimeType.includes('ogg') ? 'ogg'
-                        : (mimeType.includes('mp4') || mimeType.includes('m4a') ? 'm4a' : 'webm');
-                    const file = new File([audioBlob], 'voice-' + Date.now() + '.' + extension, { type: mimeType });
+                    const recordedMimeType = String(mediaRecorder.mimeType || selectedMime || 'audio/webm').trim().toLowerCase();
+                    const mimeBase = recordedMimeType.split(';', 1)[0].trim() || 'audio/webm';
+                    const audioBlob = new Blob(audioChunks, { type: recordedMimeType || mimeBase });
+                    const extension = mimeBase.includes('ogg') ? 'ogg'
+                        : (mimeBase.includes('mp4') || mimeBase.includes('m4a') ? 'm4a' : 'webm');
+                    const file = new File([audioBlob], 'voice-' + Date.now() + '.' + extension, { type: recordedMimeType || mimeBase });
                     const replySnapshot = activeReplyData ? { ...activeReplyData } : null;
 
                     if (recordingStream) {

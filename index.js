@@ -20,6 +20,7 @@ const rateLimitModule = require("express-rate-limit");
 const rateLimit = rateLimitModule.rateLimit || rateLimitModule;
 const mongoose = require("mongoose");
 const { createAnalyticsService } = require("./analytics");
+const { createTomiAiService } = require("./ai-service");
 let webpush = null; // Loaded lazily so a missing optional push dependency never blocks chat.
 
 const io = new Server(server, {
@@ -69,6 +70,7 @@ let mongoSaveDirty = false;
 let ChatifyState = null;
 let gridFsBucket = null;
 let analyticsService = null;
+let aiService = null;
 const MONGO_SAVE_DEBOUNCE_MS = Math.max(750, Number(process.env.MONGO_SAVE_DEBOUNCE_MS || 1500) || 1500);
 
 function emptyDatabase() {
@@ -92,7 +94,9 @@ function emptyDatabase() {
     pushConfig: {},
     voiceRooms: {},
     voiceRoomBans: {},
-    voiceRoomInvites: {}
+    voiceRoomInvites: {},
+    aiPreferences: {},
+    aiModerationAlerts: {}
   };
 }
 
@@ -1076,7 +1080,8 @@ const ALL_PERMISSIONS = Object.freeze([
   "view_analytics",
   "view_system_metrics",
   "view_user_analytics",
-  "manage_referrals"
+  "manage_referrals",
+  "manage_ai_safety"
 ]);
 
 function normalizePermissions(list) {
@@ -1532,6 +1537,10 @@ const MAX_UPLOAD_BYTES = Math.max(
   10 * 1024 * 1024,
   Number(process.env.MAX_UPLOAD_BYTES || 512 * 1024 * 1024)
 );
+const AUDIO_RECORDING_BITRATE = Math.min(
+  256000,
+  Math.max(64000, Number(process.env.AUDIO_RECORDING_BITRATE || 160000) || 160000)
+);
 // Large media is sent in resumable pieces. Eight megabytes reduces HTTP
 // round-trip overhead for normal videos; a failed mobile request still loses
 // only the current bounded chunk and resumes from the confirmed offset.
@@ -1597,7 +1606,7 @@ const videoCompatibilityQueued = new Set();
 let videoCompatibilityRunning = false;
 
 function classifyFileType(mimeType, originalName = "", clientHint = "") {
-  const mt = String(mimeType || "").toLowerCase();
+  const mt = String(mimeType || "").toLowerCase().split(";", 1)[0].trim();
   const name = String(originalName || "").toLowerCase();
   const ext = path.extname(name).toLowerCase();
   const hint = String(clientHint || "").toLowerCase();
@@ -1648,9 +1657,24 @@ function classifyFileType(mimeType, originalName = "", clientHint = "") {
 }
 
 function normalizeMediaMimeType(fileType, mimeType, originalName = "") {
-  const mt = String(mimeType || "application/octet-stream").toLowerCase();
-  if (fileType !== "video" || mt.startsWith("video/")) return mimeType || "application/octet-stream";
+  const rawMime = String(mimeType || "application/octet-stream").trim().toLowerCase();
+  const mt = rawMime.split(";", 1)[0].trim();
   const ext = path.extname(String(originalName || "")).toLowerCase();
+  const audioByExtension = {
+    ".m4a": "audio/mp4",
+    ".mp3": "audio/mpeg",
+    ".aac": "audio/aac",
+    ".wav": "audio/wav",
+    ".ogg": "audio/ogg",
+    ".opus": "audio/ogg",
+    ".flac": "audio/flac",
+    ".weba": "audio/webm"
+  };
+  if (fileType === "audio") {
+    if (mt.startsWith("audio/")) return mt;
+    return audioByExtension[ext] || "audio/webm";
+  }
+  if (fileType !== "video" || mt.startsWith("video/")) return mt || "application/octet-stream";
   const byExtension = {
     ".mp4": "video/mp4",
     ".m4v": "video/mp4",
@@ -1765,7 +1789,7 @@ async function persistUploadedFileToCloud(reqFile, fileId, { keepLocalCache = fa
 // throttled by an Atlas round trip on every chunk. The complete local file is
 // then copied to GridFS by the background persistence queue below.
 function startResumableVideoCloudStream(session) {
-  if (!session || session.context !== "chat" || session.fileType !== "video" || !mongoReady || !gridFsBucket) return false;
+  if (!session || session.context !== "chat" || !["video", "audio"].includes(session.fileType) || !mongoReady || !gridFsBucket) return false;
   if (session.gridFsUploadStream || session.gridFsUploadFailed) return Boolean(session.gridFsUploadStream);
 
   try {
@@ -1790,7 +1814,7 @@ function startResumableVideoCloudStream(session) {
   } catch (err) {
     session.gridFsUploadFailed = true;
     session.gridFsError = err;
-    console.warn("Resumable video cloud stream unavailable; using finalization fallback:", err?.message || err);
+    console.warn("Resumable media cloud stream unavailable; using finalization fallback:", err?.message || err);
     return false;
   }
 }
@@ -1804,7 +1828,7 @@ function createUploadTee(session, localOutput, requestBytesRef) {
     write(chunk, encoding, callback) {
       requestBytesRef.value += chunk.length;
       if (session.gridFsUploadFailed || !cloudStream || cloudStream.destroyed) {
-        return callback(session.gridFsError || new Error("تعذر حفظ مقطع الفيديو في التخزين السحابي"));
+        return callback(session.gridFsError || new Error("تعذر حفظ مقطع الوسائط في التخزين السحابي"));
       }
 
       let pending = 2;
@@ -1890,7 +1914,7 @@ async function persistResumableUploadToCloud(session, fileId, { keepLocalCache =
     try {
       await finishResumableVideoCloudStream(session);
     } catch (err) {
-      console.warn("Resumable video cloud finalization failed; replaying local file:", err?.message || err);
+      console.warn("Resumable media cloud finalization failed; replaying local file:", err?.message || err);
       queuePartialResumableGridFsDelete(session);
     }
   }
@@ -2327,7 +2351,7 @@ function queueResumableVideoCloudPersistence(session, fileId, record, { keepLoca
       // restart also picks up records that still have cloudPending=true.
       record.cloudPending = true;
       record.cloudLastErrorAt = new Date().toISOString();
-      console.warn("Background video persistence delayed:", err?.message || err);
+      console.warn("Background media persistence delayed:", err?.message || err);
       if (attempt < 2 && db.uploads?.[fileId] === record) {
         const delay = Math.min(30_000, 5_000 * (attempt + 1));
         session.cloudRetryScheduled = true;
@@ -2350,7 +2374,7 @@ function queueResumableVideoCloudPersistence(session, fileId, record, { keepLoca
 function resumePendingVideoCloudUploads() {
   if (!mongoReady || !gridFsBucket) return;
   for (const [fileId, record] of Object.entries(db.uploads || {})) {
-    if (!record || record.cloudPending !== true || record.storage !== "local" || !record.storedName) continue;
+    if (!record || !["video", "audio"].includes(record.fileType) || record.cloudPending !== true || record.storage !== "local" || !record.storedName) continue;
     const tempName = path.basename(String(record.storedName));
     const tempPath = path.join(UPLOAD_DIR, tempName);
     if (!fs.existsSync(tempPath)) {
@@ -2867,6 +2891,81 @@ analyticsService.setRuntimeProvider(() => ({
   database: mongoReady ? "mongodb" : "local-json",
   fileStorage: gridFsBucket ? "gridfs" : "local-disk"
 }));
+
+async function buildTomiAiAnalyticsSnapshot({ from, to, actor } = {}) {
+  const endCandidate = to ? new Date(to) : new Date();
+  const end = Number.isFinite(endCandidate.getTime()) ? endCandidate : new Date();
+  const startCandidate = from ? new Date(from) : new Date(end.getTime() - 24 * 60 * 60 * 1000);
+  const start = Number.isFinite(startCandidate.getTime()) ? startCandidate : new Date(end.getTime() - 24 * 60 * 60 * 1000);
+  const todayStart = new Date(end);
+  todayStart.setHours(0, 0, 0, 0);
+
+  const [overview, timeseries, todayOverview] = await Promise.all([
+    analyticsService.getOverview({ from: start, to: end }),
+    analyticsService.getTimeseries({ from: start, to: end }),
+    analyticsService.getOverview({ from: todayStart, to: end })
+  ]);
+
+  const rooms = Object.entries(db.rooms || {})
+    .filter(([, room]) => room && !room.isPrivate && !room.systemRoom)
+    .map(([roomId, room]) => {
+      const history = Array.isArray(db.roomHistory?.[roomId]) ? db.roomHistory[roomId] : [];
+      const messages = history.filter(message => {
+        if (!message || message.deleted) return false;
+        const at = Date.parse(message.createdAt || "");
+        return !Number.isFinite(at) || (at >= start.getTime() && at <= end.getTime());
+      }).length;
+      const lastActivity = getLastActivityIso(roomId, room.updatedAt || room.createdAt || null);
+      return {
+        roomId,
+        name: String(room.roomName || room.name || "غرفة عامة").slice(0, 100),
+        messages,
+        members: Array.isArray(room.members) ? room.members.length : 0,
+        lastActivity
+      };
+    })
+    .sort((a, b) => b.messages - a.messages || b.members - a.members)
+    .slice(0, 20);
+
+  let referrals = [];
+  if (actor && hasPermission(actor, "manage_referrals")) {
+    referrals = (await analyticsService.getReferrals({})).referrals || [];
+  }
+
+  return {
+    period: { from: start.toISOString(), to: end.toISOString() },
+    overview,
+    timeseries,
+    todayOverview,
+    rooms,
+    referrals
+  };
+}
+
+aiService = createTomiAiService({
+  getDb: () => db,
+  getUser: username => db.users?.[username],
+  canAccessRoom: (roomId, username) => canUserAccessRoom(roomId, username),
+  getRoomLabel: (roomId, room) => room?.roomName || room?.name || roomId,
+  persist: () => saveDB(db),
+  emitStaff: (permission, eventName, payload) => emitToStaffWithPermission(permission, eventName, payload),
+  notifyStaff: async alert => {
+    const targets = [];
+    for (const username of activeOnlineUsers.keys()) {
+      if (username === PLATFORM_OWNER_USERNAME || hasPermission(username, "manage_ai_safety")) targets.push(username);
+    }
+    await Promise.allSettled(targets.map(username => sendPushToUser(username, "ai-safety", {
+      title: "TOMI • تنبيه أمان ذكي",
+      body: `${alert.senderDisplayName || alert.sender || "مستخدم"}: ${alert.categories?.join("، ") || "محتوى يحتاج مراجعة"}`,
+      url: "/analytics.html",
+      tag: alert.alertId,
+      type: "moderation",
+      requireInteraction: true
+    })));
+  },
+  getAnalyticsSnapshot: buildTomiAiAnalyticsSnapshot,
+  ownerUsername: PLATFORM_OWNER_USERNAME
+});
 app.use(analyticsService.httpMiddleware);
 app.use(express.static(path.resolve("./Public")));
 
@@ -3002,6 +3101,14 @@ const analyticsLimiter = rateLimit({
   legacyHeaders: false
 });
 
+const aiLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 60,
+  standardHeaders: "draft-8",
+  legacyHeaders: false,
+  message: { error: "طلبات المساعد كثيرة حالياً. انتظر قليلاً ثم حاول مرة أخرى." }
+});
+
 function requireAnalyticsAdmin(req, res, next) {
   requireHttpAuth(req, res, () => {
     if (!analyticsService || !hasPermission(req.authUser, "view_analytics")) {
@@ -3100,6 +3207,103 @@ app.get("/api/admin/analytics/referrals", requireAnalyticsAdmin, async (req, res
 app.get("/api/admin/analytics/ai-summary", requireAnalyticsAdmin, async (req, res) => {
   try { res.json({ success: true, ...(await analyticsService.buildAiSummary(analyticsRange(req))) }); }
   catch (error) { res.status(500).json({ error: "تعذر إنشاء التحليل الذكي" }); }
+});
+
+// =========================================================
+// TOMI AI: help, support, private search, recommendations & safety
+// =========================================================
+app.get("/api/ai/help", requireHttpAuth, (_req, res) => {
+  res.json({ success: true, ...aiService.getHelpCatalog() });
+});
+
+app.post("/api/ai/ask", aiLimiter, requireHttpAuth, async (req, res) => {
+  try {
+    const question = String(req.body?.question || "").trim();
+    if (!question) return res.status(400).json({ error: "اكتب سؤالك أولاً" });
+    const answer = await aiService.answerQuestion(req.authUser, question, { mode: "assistant" });
+    res.json({ success: true, ...answer });
+  } catch (error) {
+    console.warn("TOMI AI assistant failed:", error.message);
+    res.status(500).json({ error: "تعذر تشغيل مساعد TOMI حالياً" });
+  }
+});
+
+app.post("/api/ai/support", aiLimiter, requireHttpAuth, async (req, res) => {
+  try {
+    const question = String(req.body?.question || "").trim();
+    if (!question) return res.status(400).json({ error: "اكتب سؤالك أولاً" });
+    const answer = await aiService.answerQuestion(req.authUser, question, { mode: "support" });
+    res.json({ success: true, ...answer });
+  } catch (error) {
+    console.warn("TOMI AI support failed:", error.message);
+    res.status(500).json({ error: "تعذر تشغيل الدعم الذكي حالياً" });
+  }
+});
+
+app.post("/api/ai/search", aiLimiter, requireHttpAuth, (req, res) => {
+  try {
+    const query = String(req.body?.query || "").trim();
+    if (!query) return res.status(400).json({ error: "اكتب كلمة البحث أولاً" });
+    res.json({ success: true, ...aiService.searchMessages(req.authUser, query, req.body?.limit) });
+  } catch (error) {
+    res.status(500).json({ error: "تعذر البحث داخل محادثاتك" });
+  }
+});
+
+app.get("/api/ai/preferences", requireHttpAuth, (req, res) => {
+  res.json({ success: true, preferences: aiService.getPreferences(req.authUser) });
+});
+
+app.post("/api/ai/preferences", aiLimiter, requireHttpAuth, (req, res) => {
+  try {
+    const preferences = aiService.setPreferences(req.authUser, req.body?.interests);
+    res.json({ success: true, preferences });
+  } catch (error) {
+    res.status(400).json({ error: "تعذر حفظ اهتماماتك" });
+  }
+});
+
+app.get("/api/ai/recommendations", aiLimiter, requireHttpAuth, (req, res) => {
+  try {
+    res.json({ success: true, ...aiService.getRecommendations(req.authUser) });
+  } catch (error) {
+    res.status(500).json({ error: "تعذر تحميل الاقتراحات" });
+  }
+});
+
+function requireAiSafetyAdmin(req, res, next) {
+  requireHttpAuth(req, res, () => {
+    if (!hasPermission(req.authUser, "manage_ai_safety")) {
+      return res.status(403).json({ error: "لا تملك صلاحية مراجعة تنبيهات الأمان الذكي" });
+    }
+    next();
+  });
+}
+
+app.get("/api/admin/ai/alerts", requireAiSafetyAdmin, (req, res) => {
+  res.json({ success: true, ...aiService.listAlerts({ status: req.query?.status || "pending", limit: req.query?.limit }) });
+});
+
+app.post("/api/admin/ai/alerts/:alertId", requireAiSafetyAdmin, (req, res) => {
+  const alert = aiService.reviewAlert(
+    req.params.alertId,
+    req.authUser,
+    req.body?.status,
+    req.body?.resolution
+  );
+  if (!alert) return res.status(404).json({ error: "تنبيه الأمان غير موجود" });
+  res.json({ success: true, alert });
+});
+
+app.post("/api/admin/analytics/ask", aiLimiter, requireAnalyticsAdmin, async (req, res) => {
+  try {
+    const question = String(req.body?.question || "").trim();
+    if (!question) return res.status(400).json({ error: "اكتب سؤال التحليلات أولاً" });
+    res.json({ success: true, ...(await aiService.answerAnalyticsQuestion(req.authUser, question, analyticsRange(req))) });
+  } catch (error) {
+    console.warn("TOMI AI analytics question failed:", error.message);
+    res.status(500).json({ error: "تعذر تحليل السؤال حالياً" });
+  }
 });
 
 // 📝 API: Register
@@ -3262,7 +3466,10 @@ app.get("/api/client-config", requireHttpAuth, (_req, res) => {
     resumableUploads: true,
     audioRecording: {
       preferredMimeType: "audio/webm;codecs=opus",
-      audioBitsPerSecond: 128000,
+      audioBitsPerSecond: AUDIO_RECORDING_BITRATE,
+      sampleRate: 48000,
+      sampleSize: 16,
+      channelCount: 1,
       echoCancellation: true,
       noiseSuppression: true,
       autoGainControl: true
@@ -3980,7 +4187,7 @@ app.put("/api/upload/session/:sessionId/chunk", uploadLimiter, requireHttpAuth, 
     // Keep one listener for the lifetime of this chunk so an asynchronous disk
     // error cannot become an unhandled process error on a mobile upload.
     output.on("error", err => { outputError = err; });
-    const directCloud = session.fileType === "video"
+    const directCloud = ["video", "audio"].includes(session.fileType)
       && session.gridFsUploadStream
       && !session.gridFsUploadFailed;
 
@@ -4095,7 +4302,8 @@ app.post("/api/upload/session/:sessionId/complete", uploadLimiter, requireHttpAu
       // response as soon as all bytes are safely on disk, while the durable
       // GridFS copy continues in the background. Other upload contexts keep
       // their existing synchronous persistence behaviour.
-      const cloudFile = sessionFileType === "video"
+    const localFirstChatMedia = session.context === "chat" && ["video", "audio"].includes(sessionFileType);
+    const cloudFile = localFirstChatMedia
         ? localFirstVideoFile(session, fileId, keepLocalCache)
         : await persistUploadedFileToCloud(reqFile, fileId, { keepLocalCache });
       record = {
@@ -4128,7 +4336,7 @@ app.post("/api/upload/session/:sessionId/complete", uploadLimiter, requireHttpAu
       session.fileId = fileId;
     }
 
-    if (sessionFileType === "video" && record.storage === "local" && record.cloudPending) {
+    if (["video", "audio"].includes(sessionFileType) && record.storage === "local" && record.cloudPending) {
       queueResumableVideoCloudPersistence(session, fileId, record, { keepLocalCache });
     }
     if (sessionFileType === "video") queueVideoCompatibilityJob(fileId);
@@ -4256,7 +4464,27 @@ app.post("/api/upload", uploadLimiter, requireHttpAuth, limitConcurrentUploads, 
       page: "/api/upload",
       feature: context
     });
-    const cloudFile = await persistUploadedFileToCloud(req.file, fileId, { keepLocalCache });
+    const localFirstChatMedia = context === "chat" && ["video", "audio"].includes(fileType);
+    const localFirstSession = localFirstChatMedia ? {
+      id: "legacy_" + fileId,
+      fileId,
+      tempName: req.file.filename,
+      tempPath: req.file.path,
+      originalName: String(req.file.originalname || "file").slice(0, 180),
+      mimeType: storedMimeType,
+      fileSize: Number(req.file.size || 0),
+      cloudPersisting: false,
+      cloudRetryScheduled: false,
+      gridFsUploadStream: null,
+      gridFsUploadFailed: false,
+      gridFsUploadFinished: false,
+      gridFsDeleteQueued: false,
+      gridFsId: null,
+      gridFsError: null
+    } : null;
+    const cloudFile = localFirstSession
+      ? localFirstVideoFile(localFirstSession, fileId, keepLocalCache)
+      : await persistUploadedFileToCloud(req.file, fileId, { keepLocalCache });
     db.uploads[fileId] = {
       fileId,
       storedName: cloudFile.storedName,
@@ -4271,7 +4499,8 @@ app.post("/api/upload", uploadLimiter, requireHttpAuth, limitConcurrentUploads, 
       uploader,
       roomId,
       context,
-      createdAt: new Date().toISOString()
+      createdAt: new Date().toISOString(),
+      cloudPending: Boolean(cloudFile.cloudPending)
     };
 
     if (context === "avatar" && db.users[uploader]) {
@@ -4280,6 +4509,9 @@ app.post("/api/upload", uploadLimiter, requireHttpAuth, limitConcurrentUploads, 
     }
 
     saveDB(db);
+    if (localFirstSession && db.uploads[fileId].storage === "local" && db.uploads[fileId].cloudPending) {
+      queueResumableVideoCloudPersistence(localFirstSession, fileId, db.uploads[fileId], { keepLocalCache });
+    }
     if (fileType === "video") queueVideoCompatibilityJob(fileId);
     analyticsService?.track("upload_complete", {
       userId: uploader,
@@ -4355,10 +4587,23 @@ function canViewerOpenUpload(record, viewer) {
 function effectiveStoredMimeType(record) {
   const name = String(record?.originalName || "").toLowerCase();
   const ext = path.extname(name);
-  const mimeType = String(record?.mimeType || "application/octet-stream").toLowerCase();
+  const mimeType = String(record?.mimeType || "application/octet-stream").toLowerCase().split(";", 1)[0].trim();
   const isVoice = /^voice[-_]/i.test(path.basename(name));
   const looksLikeVideoLabel = /^(?:mp4|video|vid)[._-]/i.test(path.basename(name));
   const audioExts = new Set([".m4a", ".mp3", ".aac", ".wav", ".ogg", ".opus", ".flac", ".weba"]);
+  const audioByExtension = {
+    ".m4a": "audio/mp4",
+    ".mp3": "audio/mpeg",
+    ".aac": "audio/aac",
+    ".wav": "audio/wav",
+    ".ogg": "audio/ogg",
+    ".opus": "audio/ogg",
+    ".flac": "audio/flac",
+    ".weba": "audio/webm"
+  };
+  if (record?.fileType === "audio") {
+    return mimeType.startsWith("audio/") ? mimeType : (audioByExtension[ext] || "audio/webm");
+  }
   // Repair already-stored Android gallery videos that arrived as audio/mp4.
   if (!isVoice && [".mp4", ".m4v"].includes(ext)) return "video/mp4";
   if (!isVoice && ext === ".mov") return "video/quicktime";
@@ -6447,6 +6692,14 @@ io.on("connection", (socket) => {
 
       io.to(rId).emit("broadcast-message", messageData);
 
+      // Safety scanning is intentionally asynchronous. It never blocks message
+      // delivery and never runs inside the upload pipeline; flagged messages
+      // create a review alert for the owner/staff with manage_ai_safety.
+      aiService?.scanMessage({
+        ...messageData,
+        roomName: roomDoc.roomName || roomDoc.name || rId
+      }).catch(error => console.warn("AI safety scan failed:", error.message));
+
       // Also wake participant clients that are online but not currently inside
       // the opened room, so the conversations window can refresh immediately.
       for (const participant of getRoomAudience(rId)) {
@@ -7307,7 +7560,8 @@ io.on("connection", (socket) => {
         { id: "view_analytics", label: "عرض تحليلات المنصة" },
         { id: "view_system_metrics", label: "عرض مؤشرات السيرفر والذاكرة" },
         { id: "view_user_analytics", label: "عرض إحصائيات المستخدمين" },
-        { id: "manage_referrals", label: "عرض وإدارة إحصائيات الإحالة" }
+        { id: "manage_referrals", label: "عرض وإدارة إحصائيات الإحالة" },
+        { id: "manage_ai_safety", label: "مراجعة تنبيهات الأمان والسبام الذكية" }
       ]
     });
   });

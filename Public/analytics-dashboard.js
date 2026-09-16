@@ -92,6 +92,72 @@
     $("aiAlerts").innerHTML = alerts.map((item, index) => `<span class="ai-alert ${alerts.length === 1 && index === 0 && /لا توجد/.test(item) ? "ok" : ""}"><i class="fa-solid ${index === 0 && alerts.length > 1 ? "fa-triangle-exclamation" : "fa-circle-info"}"></i> ${esc(item)}</span>`).join("");
   }
 
+  function renderAiSafety(data) {
+    const host = $("aiSafetyAlerts");
+    if (!host) return;
+    if (data?.accessError) {
+      host.innerHTML = `<div class="table-empty">${esc(data.accessError)}</div>`;
+      return;
+    }
+    const rows = Array.isArray(data?.alerts) ? data.alerts : [];
+    if (!rows.length) {
+      host.innerHTML = '<div class="table-empty">لا توجد تنبيهات أمان بالحالة المحددة.</div>';
+      return;
+    }
+    const statusLabels = { pending: "قيد الانتظار", reviewing: "قيد المراجعة", actioned: "تم اتخاذ إجراء", dismissed: "مرفوض" };
+    host.innerHTML = rows.map(row => {
+      const status = Object.prototype.hasOwnProperty.call(statusLabels, row.status) ? row.status : "pending";
+      const tags = Array.isArray(row.categories) && row.categories.length
+        ? row.categories.map(item => `<span class="ai-safety-tag">${esc(item)}</span>`).join("")
+        : '<span class="ai-safety-tag">مراجعة</span>';
+      const score = Math.round(Math.max(0, Math.min(1, Number(row.score || 0))) * 100);
+      return `<article class="ai-safety-card status-${status}" data-alert-id="${esc(row.alertId)}">
+        <div class="ai-safety-card-head"><div><strong>${esc(row.senderDisplayName || row.sender || "مستخدم")}</strong><small>${esc(row.roomName || row.roomId || "محادثة")} • ${esc(date(row.createdAt))}</small></div><span class="ai-safety-score">ثقة ${score}%</span></div>
+        <div class="ai-safety-tags">${tags}</div>
+        <p>${esc(row.preview || "لا يوجد نص معاينة")}</p>
+        <div class="ai-safety-card-meta"><span>${esc((Array.isArray(row.reasons) ? row.reasons : []).join("، ") || "تحتاج مراجعة بشرية")}</span><span>الحالة: ${esc(statusLabels[status])}</span></div>
+        <div class="ai-safety-actions">
+          <select data-ai-alert-status aria-label="حالة التنبيه">
+            ${Object.entries(statusLabels).map(([value, label]) => `<option value="${value}"${value === status ? " selected" : ""}>${label}</option>`).join("")}
+          </select>
+          <input data-ai-alert-resolution maxlength="1000" value="${esc(row.resolution || "")}" placeholder="ملاحظة المشرف..." aria-label="ملاحظة المشرف">
+          <button type="button" data-ai-alert-review>حفظ المراجعة</button>
+        </div>
+      </article>`;
+    }).join("");
+  }
+
+  async function askAnalyticsQuestion(question) {
+    const clean = String(question || "").trim();
+    const input = $("analyticsAiQuestion");
+    const answer = $("analyticsAiAnswer");
+    const button = $("askAnalyticsAiBtn");
+    if (!clean || !answer) return;
+    if (input) input.value = clean;
+    if (button) button.disabled = true;
+    answer.className = "ai-question-answer loading";
+    answer.textContent = "جاري قراءة المؤشرات...";
+    try {
+      const query = new URLSearchParams(range()).toString();
+      const response = await fetch(`/api/admin/analytics/ask?${query}`, {
+        method: "POST",
+        credentials: "same-origin",
+        cache: "no-store",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ question: clean })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || "تعذر تحليل السؤال");
+      answer.className = "ai-question-answer";
+      answer.textContent = data.answer || "لا توجد إجابة كافية لهذه الفترة.";
+    } catch (error) {
+      answer.className = "ai-question-answer error";
+      answer.textContent = error.message || "تعذر تحليل السؤال حالياً";
+    } finally {
+      if (button) button.disabled = false;
+    }
+  }
+
   function renderReferrals(data) {
     const rows = Array.isArray(data?.referrals) ? data.referrals : [];
     $("referralsTable").innerHTML = rows.length ? rows.map(row => `<tr><td><div class="user-name"><strong>${esc(row.ownerUserId || "—")}</strong><small>${esc(row.lastClickAt ? date(row.lastClickAt) : "لا توجد زيارة أخيرة")}</small></div></td><td><span class="role-tag">${esc(row.code)}</span></td><td>${number(row.clicks)}</td><td>${number(row.uniqueClicks)}</td><td>${number(row.registrations)}</td><td>${percent(row.conversionRate)}</td></tr>`).join("") : '<tr><td colspan="6" class="table-empty">لا توجد إحالات بعد</td></tr>';
@@ -113,19 +179,22 @@
     $("pageError").hidden = true;
     const r = range();
     const base = { from: r.from, to: r.to };
+    const alertStatus = $("aiAlertsStatus")?.value || "pending";
     try {
-      const [overview, timeseries, system, referrals, users, ai] = await Promise.all([
+      const [overview, timeseries, system, referrals, users, ai, safety] = await Promise.all([
         qs("/api/admin/analytics/overview", base),
         qs("/api/admin/analytics/timeseries", base),
         qs("/api/admin/analytics/system", base).catch(() => ({ points: [] })),
         qs("/api/admin/analytics/referrals").catch(() => ({ referrals: [] })),
         qs("/api/admin/analytics/users", { q: userQuery, limit: 100 }).catch(() => ({ users: [] })),
-        qs("/api/admin/analytics/ai-summary", base).catch(() => ({}))
+        qs("/api/admin/analytics/ai-summary", base).catch(() => ({})),
+        qs("/api/admin/ai/alerts", { status: alertStatus, limit: 100 }).catch(error => ({ alerts: [], accessError: error.message }))
       ]);
       renderOverview(overview);
       renderBars("activityChart", timeseries.points, "activeUsers", { limit: period === "24h" ? 24 : 36 });
       renderBars("systemChart", system.points, "memory.rssMB", { limit: 36, system: true });
       renderAi(ai);
+      renderAiSafety(safety);
       renderReferrals(referrals);
       renderUsers(users);
       $("lastUpdated").textContent = new Date().toLocaleTimeString("ar-IQ", { hour: "2-digit", minute: "2-digit" });
@@ -149,6 +218,36 @@
   $("refreshBtn")?.addEventListener("click", load);
   $("userSearchBtn")?.addEventListener("click", () => { userQuery = $("userSearch").value.trim(); load(); });
   $("userSearch")?.addEventListener("keydown", event => { if (event.key === "Enter") { userQuery = event.target.value.trim(); load(); } });
+  $("askAnalyticsAiBtn")?.addEventListener("click", () => askAnalyticsQuestion($("analyticsAiQuestion")?.value));
+  $("analyticsAiQuestion")?.addEventListener("keydown", event => { if (event.key === "Enter") { event.preventDefault(); askAnalyticsQuestion(event.target.value); } });
+  document.querySelectorAll("[data-analytics-question]").forEach(button => button.addEventListener("click", () => askAnalyticsQuestion(button.dataset.analyticsQuestion)));
+  $("refreshAiAlertsBtn")?.addEventListener("click", load);
+  $("aiAlertsStatus")?.addEventListener("change", load);
+  $("aiSafetyAlerts")?.addEventListener("click", async event => {
+    const button = event.target.closest("[data-ai-alert-review]");
+    const card = button?.closest("[data-alert-id]");
+    if (!button || !card) return;
+    const alertId = card.dataset.alertId;
+    const status = card.querySelector("[data-ai-alert-status]")?.value || "reviewing";
+    const resolution = card.querySelector("[data-ai-alert-resolution]")?.value || "";
+    button.disabled = true;
+    try {
+      const response = await fetch(`/api/admin/ai/alerts/${encodeURIComponent(alertId)}`, {
+        method: "POST",
+        credentials: "same-origin",
+        cache: "no-store",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ status, resolution })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || "تعذر حفظ المراجعة");
+      await load();
+    } catch (error) {
+      button.disabled = false;
+      button.textContent = error.message || "تعذر الحفظ";
+      window.setTimeout(() => { if (button.isConnected) button.textContent = "حفظ المراجعة"; }, 2200);
+    }
+  });
   load();
   refreshTimer = window.setInterval(load, 60 * 1000);
   window.addEventListener("beforeunload", () => window.clearInterval(refreshTimer));

@@ -92,3 +92,19 @@ services:
         value: "150000"
       - key: ANALYTICS_LOCAL_BACKUP
         value: "false"
+      # Optional AI provider. Local TOMI help/safety/analytics logic works
+      # without these secrets; enable remote calls only after reviewing privacy.
+      - key: AI_REMOTE_ENABLED
+        value: "false"
+      - key: AI_REMOTE_SAFETY_ENABLED
+        value: "false"
+      - key: AI_API_KEY
+        sync: false
+      - key: AI_API_URL
+        value: "https://api.openai.com/v1/chat/completions"
+      - key: AI_MODEL
+        value: "gpt-4o-mini"
+      - key: AI_TIMEOUT_MS
+        value: "8000"
+      - key: AUDIO_RECORDING_BITRATE
+        value: "160000"

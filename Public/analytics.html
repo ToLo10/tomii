@@ -7,7 +7,10 @@
   <title>TOMI - تحليلات المنصة</title>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
   <link rel="stylesheet" href="analytics.css?v=20260915">
+  <link rel="stylesheet" href="/ai.css?v=20260915-ai1">
+  <link rel="stylesheet" href="/ai-analytics.css?v=20260915-ai1">
   <script src="/analytics-client.js" defer></script>
+  <script src="/ai-client.js?v=20260915-ai1" defer></script>
 </head>
 <body>
   <main class="analytics-shell">
@@ -63,6 +66,36 @@
       <div id="aiAlerts" class="ai-alerts"></div>
     </section>
 
+    <section class="panel ai-question-panel">
+      <div class="panel-heading"><div class="ai-icon"><i class="fa-solid fa-comments-question-check"></i></div><div><h2>اسأل تحليلات TOMI</h2><p>اسأل عن الضغط والمستخدمين والغرف والإحالات من الأرقام المجمعة</p></div></div>
+      <div class="ai-question-form">
+        <input id="analyticsAiQuestion" type="text" maxlength="800" autocomplete="off" placeholder="مثلاً: ما أكثر أوقات الضغط؟">
+        <button id="askAnalyticsAiBtn" class="secondary-btn" type="button"><i class="fa-solid fa-wand-magic-sparkles"></i> تحليل</button>
+      </div>
+      <div class="ai-question-shortcuts">
+        <button type="button" data-analytics-question="ما أكثر أوقات الضغط؟">أوقات الضغط</button>
+        <button type="button" data-analytics-question="كم مستخدم جديد دخل اليوم؟">المستخدمون الجدد</button>
+        <button type="button" data-analytics-question="ما أكثر غرفة نشاطاً؟">الغرفة النشطة</button>
+        <button type="button" data-analytics-question="هل يوجد ارتفاع غير طبيعي في الاستخدام؟">الارتفاع غير الطبيعي</button>
+      </div>
+      <div id="analyticsAiAnswer" class="ai-question-answer">اكتب سؤالاً حتى أرتب لك الإجابة من بيانات المنصة.</div>
+    </section>
+
+    <section class="panel table-panel ai-safety-panel">
+      <div class="panel-heading"><div><i class="fa-solid fa-shield-halved"></i></div><div><h2>تنبيهات الأمان الذكي</h2><p>سبام، روابط مشبوهة، احتيال، إساءة أو تهديدات تحتاج مراجعة بشرية</p></div></div>
+      <div class="table-tools ai-alert-tools">
+        <select id="aiAlertsStatus" aria-label="حالة التنبيهات">
+          <option value="pending">قيد الانتظار</option>
+          <option value="reviewing">قيد المراجعة</option>
+          <option value="actioned">تم اتخاذ إجراء</option>
+          <option value="dismissed">مرفوض</option>
+          <option value="all">الكل</option>
+        </select>
+        <button id="refreshAiAlertsBtn" class="secondary-btn" type="button"><i class="fa-solid fa-rotate"></i> تحديث</button>
+      </div>
+      <div id="aiSafetyAlerts" class="ai-safety-list"><div class="table-empty">جاري تحميل التنبيهات...</div></div>
+    </section>
+
     <section class="panel table-panel">
       <div class="panel-heading"><div><i class="fa-solid fa-link"></i></div><div><h2>نظام الإحالة</h2><p>الضغطات، التسجيلات، ونسبة التحويل لكل مستخدم</p></div></div>
       <div class="table-scroll"><table><thead><tr><th>المستخدم</th><th>الرمز</th><th>الزيارات</th><th>الفريدة</th><th>التسجيلات</th><th>التحويل</th></tr></thead><tbody id="referralsTable"><tr><td colspan="6" class="table-empty">جاري التحميل...</td></tr></tbody></table></div>
@@ -74,7 +107,7 @@
       <div class="table-scroll"><table><thead><tr><th>المستخدم</th><th>الحالة</th><th>التسجيل</th><th>آخر نشاط</th><th>الجلسات</th><th>الرسائل</th><th>الرفع</th></tr></thead><tbody id="usersTable"><tr><td colspan="7" class="table-empty">جاري التحميل...</td></tr></tbody></table></div>
     </section>
 
-    <footer class="analytics-footer">تُحفظ مؤشرات التحليلات في Collections منفصلة مع مدة احتفاظ محدودة لتقليل الحمل على السيرفر.</footer>
+    <footer class="analytics-footer">تُحفظ مؤشرات التحليلات في Collections منفصلة مع مدة احتفاظ محدودة لتقليل الحمل على السيرفر. فحص الأمان لا يحظر المستخدم تلقائياً.</footer>
   </main>
   <script src="/analytics-dashboard.js" defer></script>
 </body>
