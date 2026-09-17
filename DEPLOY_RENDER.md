@@ -3,7 +3,7 @@
 ## What this build does
 - Runs the Node.js + Socket.IO server on Render without keeping a laptop on.
 - Loads/saves the Chatify application state in MongoDB Atlas when `MONGODB_URI` is configured.
-- Stores uploaded files in MongoDB GridFS when MongoDB is connected, with the existing local `uploads/` directory as a development fallback.
+- Stores new uploads in Cloudflare R2 with direct browser-to-bucket multipart transfer when the `R2_*` variables are configured. Existing MongoDB GridFS files remain readable, with the local `uploads/` directory as a development fallback.
 - Persists login sessions in the same cloud state so normal Render restarts do not automatically sign everybody out.
 - Adds `/api/health` for Render health checks.
 - Adds account Settings for display name, password and avatar.
@@ -31,7 +31,14 @@ Set `MONGODB_URI` to your Atlas connection string. On the first successful cloud
 After confirming the cloud data is correct, keep a private backup of `chat_database.json`; do not publish it because it can contain account and conversation data.
 
 ## Files
-With MongoDB connected, new uploads are placed in the `chatifyUploads` GridFS bucket. This avoids relying on Render's ephemeral filesystem for persistent chat media.
+For the recommended production setup, follow [R2_SETUP.md](R2_SETUP.md). New
+browser uploads then go directly to Cloudflare R2 and playback is served from a
+short-lived signed R2 URL, so large media does not consume the Node host's
+upload/download bandwidth. Older GridFS files continue to work through the
+authorized `/api/files/:fileId` route.
+
+If R2 is not configured, the existing GridFS/local-disk fallback remains active;
+configure R2 before using large production media.
 
 ## Calls
 For basic WebRTC calls, STUN is included. For reliable cloud-hosted calls add a TURN service:

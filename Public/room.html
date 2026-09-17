@@ -6169,7 +6169,65 @@
             });
         }
 
-        function sendUploadChunk(sessionId, file, offset, chunkSize, progressUI, startedAt) {
+        async function sendR2UploadPart(sessionId, file, offset, chunkSize, progressUI, startedAt) {
+            const partNumber = Math.floor(offset / chunkSize) + 1;
+            const blob = file.slice(offset, Math.min(file.size, offset + chunkSize));
+            const urlResponse = await fetch('/api/upload/session/' + encodeURIComponent(sessionId) + '/part-url?partNumber=' + encodeURIComponent(partNumber), {
+                credentials: 'same-origin', cache: 'no-store'
+            });
+            const urlData = await urlResponse.json().catch(() => ({}));
+            if (!urlResponse.ok || !urlData?.success || !urlData.url) {
+                throw new Error(urlData?.error || 'تعذر تجهيز رابط التخزين الخارجي');
+            }
+
+            return new Promise((resolve, reject) => {
+                const xhr = new XMLHttpRequest();
+                // This request goes straight to R2. Do not send the chat cookie
+                // or an application header to the presigned object-store URL.
+                xhr.open('PUT', urlData.url);
+                xhr.timeout = 15 * 60 * 1000;
+                xhr.upload.onprogress = event => {
+                    if (!event.lengthComputable) return;
+                    uploadProgressSnapshot(progressUI, file, offset + event.loaded, startedAt, 'رفع مباشر إلى التخزين الخارجي');
+                };
+                xhr.onload = async () => {
+                    if (xhr.status < 200 || xhr.status >= 300) {
+                        const error = new Error('رفض التخزين الخارجي مقطع الملف');
+                        error.status = xhr.status;
+                        reject(error);
+                        return;
+                    }
+                    const etag = String(xhr.getResponseHeader('ETag') || xhr.getResponseHeader('etag') || '').trim();
+                    if (!etag) {
+                        reject(new Error('لم يُرجع التخزين الخارجي ETag للمقطع؛ طبّق إعداد CORS المرفق مع المشروع'));
+                        return;
+                    }
+                    try {
+                        const registerResponse = await fetch('/api/upload/session/' + encodeURIComponent(sessionId) + '/part', {
+                            method: 'POST', credentials: 'same-origin', cache: 'no-store',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ partNumber, etag, size: blob.size })
+                        });
+                        const registerData = await registerResponse.json().catch(() => ({}));
+                        if (!registerResponse.ok || !registerData?.success) {
+                            throw new Error(registerData?.error || 'تعذر تأكيد مقطع التخزين الخارجي');
+                        }
+                        resolve({ ...registerData, partNumber, etag, size: blob.size });
+                    } catch (error) {
+                        reject(error);
+                    }
+                };
+                xhr.onerror = () => reject(new Error('انقطع الاتصال أثناء رفع المقطع إلى التخزين الخارجي'));
+                xhr.ontimeout = () => reject(new Error('انتهت مهلة رفع مقطع الملف ويمكن إعادة المحاولة'));
+                xhr.onabort = () => reject(new Error('تم إلغاء رفع الملف'));
+                xhr.send(blob);
+            });
+        }
+
+        function sendUploadChunk(sessionId, file, offset, chunkSize, progressUI, startedAt, uploadSession = null) {
+            if (uploadSession?.mode === 'r2-multipart') {
+                return sendR2UploadPart(sessionId, file, offset, chunkSize, progressUI, startedAt);
+            }
             return new Promise((resolve, reject) => {
                 const blob = file.slice(offset, Math.min(file.size, offset + chunkSize));
                 const xhr = new XMLHttpRequest();
@@ -6264,7 +6322,17 @@
 
             const sessionId = session.sessionId;
             options.resumeSessionId = sessionId;
-            const chunkSize = Math.max(512 * 1024, Math.min(8 * 1024 * 1024, Number(session.chunkSize || clientConfig.uploadChunkSize || 4 * 1024 * 1024)));
+            const directR2 = session.mode === 'r2-multipart';
+            const chunkSize = directR2
+                ? Math.max(5 * 1024 * 1024, Number(session.partSize || session.chunkSize || 8 * 1024 * 1024))
+                : Math.max(512 * 1024, Math.min(8 * 1024 * 1024, Number(session.chunkSize || clientConfig.uploadChunkSize || 4 * 1024 * 1024)));
+            const directParts = new Map((Array.isArray(session.uploadedParts) ? session.uploadedParts : [])
+                .map(part => [Number(part?.partNumber), {
+                    partNumber: Number(part?.partNumber),
+                    etag: String(part?.etag || ''),
+                    size: Number(part?.size || 0)
+                }])
+                .filter(([partNumber, part]) => Number.isInteger(partNumber) && partNumber > 0 && part.etag));
             const startedAt = performance.now();
             let offset = Math.max(0, Math.min(file.size, Number(session.received || 0)));
             uploadProgressSnapshot(progressUI, file, offset, startedAt, resumed ? 'استئناف الرفع من آخر مقطع محفوظ' : 'جاري بدء الرفع');
@@ -6273,13 +6341,32 @@
                 let chunkResult = null;
                 for (let attempt = 0; attempt < 4 && !chunkResult; attempt += 1) {
                     try {
-                        chunkResult = await sendUploadChunk(sessionId, file, offset, chunkSize, progressUI, startedAt);
+                        chunkResult = await sendUploadChunk(sessionId, file, offset, chunkSize, progressUI, startedAt, session);
+                        if (directR2 && chunkResult?.partNumber && chunkResult?.etag) {
+                            directParts.set(Number(chunkResult.partNumber), {
+                                partNumber: Number(chunkResult.partNumber),
+                                etag: String(chunkResult.etag),
+                                size: Number(chunkResult.size || 0)
+                            });
+                        }
                     } catch (error) {
                         // If the phone lost the response after the server wrote the
                         // chunk, recover the confirmed offset instead of duplicating it.
                         try {
                             const status = await getUploadSessionStatus(sessionId);
                             if (['completed', 'uploaded'].includes(status?.status) && status.result) return status.result;
+                            if (directR2 && Array.isArray(status?.uploadedParts)) {
+                                for (const part of status.uploadedParts) {
+                                    const partNumber = Number(part?.partNumber);
+                                    if (Number.isInteger(partNumber) && partNumber > 0 && part?.etag) {
+                                        directParts.set(partNumber, {
+                                            partNumber,
+                                            etag: String(part.etag),
+                                            size: Number(part.size || 0)
+                                        });
+                                    }
+                                }
+                            }
                             const confirmed = Number(status?.received || 0);
                             if (confirmed > offset) {
                                 const recoveredOffset = Math.min(file.size, confirmed);
@@ -6298,7 +6385,9 @@
                     throw new Error('لم يؤكد الخادم استلام مقطع الملف');
                 }
                 offset = Math.min(file.size, confirmedOffset);
-                uploadProgressSnapshot(progressUI, file, offset, startedAt, offset >= file.size ? 'اكتمل النقل • جاري تثبيت الملف' : 'تم حفظ المقطع');
+                uploadProgressSnapshot(progressUI, file, offset, startedAt, offset >= file.size
+                    ? (directR2 ? 'اكتمل النقل المباشر • جاري تثبيت الملف' : 'اكتمل النقل • جاري تثبيت الملف')
+                    : (directR2 ? 'تم حفظ المقطع خارجياً' : 'تم حفظ المقطع'));
             }
 
             if (progressUI) {
@@ -6310,11 +6399,14 @@
             const complete = async () => {
                 const response = await fetch('/api/upload/session/' + encodeURIComponent(sessionId) + '/complete', {
                     method: 'POST', credentials: 'same-origin', cache: 'no-store',
-                    headers: { 'Content-Type': 'application/json' }, body: '{}'
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(directR2 ? {
+                        parts: [...directParts.values()]
+                    } : {})
                 });
                 const data = await response.json().catch(() => ({}));
                 if (!response.ok || !data?.success) {
-                    const error = new Error(data?.error || 'تعذر تثبيت الملف على الخادم');
+                    const error = new Error(data?.error || 'تعذر إكمال حفظ الملف');
                     error.status = response.status;
                     throw error;
                 }
@@ -6337,7 +6429,7 @@
                     await new Promise(resolve => setTimeout(resolve, 700 * (attempt + 1)));
                 }
             }
-            if (!result) throw new Error('تعذر تثبيت الملف على الخادم');
+            if (!result) throw new Error('تعذر إكمال حفظ الملف');
             delete options.resumeSessionId;
             if (progressUI) {
                 progressUI.bar.style.width = '100%';
@@ -6363,6 +6455,11 @@
             }
 
             const uploadType = String(clientFileType || inferClientUploadType(file, 'file')).toLowerCase();
+            if (clientConfig.directObjectStorage || (context === 'chat' && clientConfig.resumableUploads !== false
+                && (file.size >= RESUMABLE_UPLOAD_THRESHOLD || uploadType === 'video' || uploadType === 'audio'))) {
+                return uploadFileChunkedToServer(file, options);
+            }
+
             if (context === 'chat' && clientConfig.resumableUploads !== false
                 && (file.size >= RESUMABLE_UPLOAD_THRESHOLD || uploadType === 'video' || uploadType === 'audio')) {
                 return uploadFileChunkedToServer(file, options);

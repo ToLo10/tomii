@@ -19,9 +19,15 @@ const helmet = require("helmet");
 const rateLimitModule = require("express-rate-limit");
 const rateLimit = rateLimitModule.rateLimit || rateLimitModule;
 const mongoose = require("mongoose");
+const { createObjectStorage } = require("./object-storage");
 const { createAnalyticsService } = require("./analytics");
 const { createTomiAiService } = require("./ai-service");
 let webpush = null; // Loaded lazily so a missing optional push dependency never blocks chat.
+
+// Chat media uses direct browser-to-R2 multipart uploads when these variables
+// are configured. MongoDB/GridFS remains available for existing files and as a
+// compatibility path for deployments that have not added R2 yet.
+const objectStorage = createObjectStorage();
 
 const io = new Server(server, {
   // Chat media is uploaded through /api/upload. Keep Socket.IO payloads small so
@@ -241,12 +247,16 @@ function queuePhysicalUploadDelete(record) {
         if (record.playbackCacheStoredName) {
           await fs.promises.unlink(path.join(UPLOAD_DIR, record.playbackCacheStoredName)).catch(() => {});
         }
-        if (record.storage === "gridfs" && record.gridFsId && gridFsBucket) {
+        if (record.storage === "r2" && record.r2Key) {
+          await objectStorage.deleteObject({ key: record.r2Key });
+        } else if (record.storage === "gridfs" && record.gridFsId && gridFsBucket) {
           await gridFsBucket.delete(new mongoose.Types.ObjectId(record.gridFsId));
         } else if (record.storedName) {
           await fs.promises.unlink(path.join(UPLOAD_DIR, record.storedName)).catch(() => {});
         }
-        if (record.playbackStorage === "gridfs" && record.playbackGridFsId && gridFsBucket) {
+        if (record.playbackStorage === "r2" && record.playbackR2Key) {
+          await objectStorage.deleteObject({ key: record.playbackR2Key });
+        } else if (record.playbackStorage === "gridfs" && record.playbackGridFsId && gridFsBucket) {
           await gridFsBucket.delete(new mongoose.Types.ObjectId(record.playbackGridFsId)).catch(() => {});
         } else if (record.playbackStoredName) {
           await fs.promises.unlink(path.join(UPLOAD_DIR, record.playbackStoredName)).catch(() => {});
@@ -1563,10 +1573,8 @@ const uploadSessions = new Map();
 const UPLOAD_DIR = path.join(__dirname, "uploads");
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
-// Keep a bounded local copy of *recent* media after it has been persisted to
-// GridFS. Render's ephemeral disk is much faster than repeatedly seeking a
-// remote GridFS object, which greatly reduces video/audio buffering immediately
-// after upload. GridFS remains the source of truth and the cache is disposable.
+// Keep a bounded local copy of *recent* media only for the legacy GridFS/local
+// fallback. R2-backed uploads do not retain a server-side media cache.
 const MEDIA_LOCAL_CACHE_TTL_MS = Math.max(
   2 * 60 * 1000,
   Number(process.env.MEDIA_LOCAL_CACHE_TTL_MS || 20 * 60 * 1000)
@@ -1742,8 +1750,41 @@ function safeUnlink(filePath) {
 }
 
 
-async function persistUploadedFileToCloud(reqFile, fileId, { keepLocalCache = false } = {}) {
+async function persistUploadedFileToCloud(reqFile, fileId, {
+  keepLocalCache = false,
+  context = "chat",
+  roomId = ""
+} = {}) {
   if (!reqFile) throw new Error("الملف غير موجود");
+
+  // R2 is the canonical store for new uploads. The source file is removed only
+  // after the object-store write succeeds, so a transient R2 failure can be
+  // retried without losing the upload.
+  if (objectStorage.isConfigured()) {
+    const objectKey = objectStorage.buildObjectKey({
+      fileId,
+      originalName: reqFile.originalname || reqFile.filename,
+      context,
+      roomId
+    });
+    await objectStorage.putFile({
+      key: objectKey,
+      filePath: reqFile.path,
+      contentType: reqFile.mimetype || "application/octet-stream",
+      metadata: { fileId, context }
+    });
+    safeUnlink(reqFile.path);
+    return {
+      storage: "r2",
+      storedName: null,
+      cacheStoredName: null,
+      cacheExpiresAt: null,
+      gridFsId: null,
+      r2Key: objectKey,
+      size: reqFile.size
+    };
+  }
+
   if (!mongoReady || !gridFsBucket) {
     return {
       storage: "local",
@@ -1751,6 +1792,7 @@ async function persistUploadedFileToCloud(reqFile, fileId, { keepLocalCache = fa
       cacheStoredName: null,
       cacheExpiresAt: null,
       gridFsId: null,
+      r2Key: null,
       size: reqFile.size
     };
   }
@@ -1780,11 +1822,13 @@ async function persistUploadedFileToCloud(reqFile, fileId, { keepLocalCache = fa
     cacheStoredName,
     cacheExpiresAt: cacheStoredName ? new Date(Date.now() + MEDIA_LOCAL_CACHE_TTL_MS).toISOString() : null,
     gridFsId: String(uploadStream.id),
+    r2Key: null,
     size: reqFile.size
   };
 }
 
-// These helpers keep a GridFS streaming fallback for already-created sessions.
+// These helpers keep a GridFS streaming fallback for already-created sessions
+// from deployments that have not switched to direct R2 uploads.
 // New video sessions receive into the local file only, so the browser is not
 // throttled by an Atlas round trip on every chunk. The complete local file is
 // then copied to GridFS by the background persistence queue below.
@@ -1909,13 +1953,29 @@ function queuePartialResumableGridFsDelete(session) {
     .then(() => gridFsBucket.delete(new mongoose.Types.ObjectId(gridFsId)).catch(() => {}));
 }
 
+function queuePartialResumableR2Delete(session) {
+  if (!session?.r2UploadId || session.r2DeleteQueued || !session.r2Key) return;
+  session.r2DeleteQueued = true;
+  uploadDeletionChain = uploadDeletionChain
+    .catch(() => {})
+    .then(() => objectStorage.abortMultipartUpload({
+      key: session.r2Key,
+      uploadId: session.r2UploadId
+    }).catch(() => {}));
+}
+
+function queuePartialResumableUploadDelete(session) {
+  queuePartialResumableGridFsDelete(session);
+  queuePartialResumableR2Delete(session);
+}
+
 async function persistResumableUploadToCloud(session, fileId, { keepLocalCache = false } = {}) {
   if (session?.gridFsUploadStream && !session.gridFsUploadFailed) {
     try {
       await finishResumableVideoCloudStream(session);
     } catch (err) {
       console.warn("Resumable media cloud finalization failed; replaying local file:", err?.message || err);
-      queuePartialResumableGridFsDelete(session);
+      queuePartialResumableUploadDelete(session);
     }
   }
 
@@ -1928,6 +1988,7 @@ async function persistResumableUploadToCloud(session, fileId, { keepLocalCache =
       cacheStoredName,
       cacheExpiresAt: cacheStoredName ? new Date(Date.now() + MEDIA_LOCAL_CACHE_TTL_MS).toISOString() : null,
       gridFsId: session.gridFsId,
+      r2Key: null,
       size: session.fileSize
     };
   }
@@ -1935,14 +1996,18 @@ async function persistResumableUploadToCloud(session, fileId, { keepLocalCache =
   // If GridFS was unavailable or the live stream failed, the complete local
   // file is still intact. Replaying it once is slower but keeps the upload
   // reliable instead of losing the message.
-  queuePartialResumableGridFsDelete(session);
+  queuePartialResumableUploadDelete(session);
   return persistUploadedFileToCloud({
     path: session.tempPath,
     filename: session.tempName,
     originalname: session.originalName,
     mimetype: session.mimeType,
     size: session.fileSize
-  }, fileId, { keepLocalCache });
+  }, fileId, {
+    keepLocalCache,
+    context: session.context || "chat",
+    roomId: session.roomId || ""
+  });
 }
 
 function appendCommandOutput(current, chunk, maxBytes = 24 * 1024) {
@@ -2063,6 +2128,18 @@ async function materializeVideoInput(record) {
     if (fullPath) return { path: fullPath, temporary: false };
   }
 
+  if (record?.storage === "r2" && record.r2Key) {
+    const tempName = `.video-compat-${String(record.fileId || "file")}-${crypto.randomBytes(6).toString("hex")}.source`;
+    const tempPath = path.join(UPLOAD_DIR, tempName);
+    try {
+      await objectStorage.downloadObjectToFile({ key: record.r2Key, filePath: tempPath });
+      return { path: tempPath, temporary: true };
+    } catch (err) {
+      safeUnlink(tempPath);
+      throw err;
+    }
+  }
+
   if (!gridFsBucket || !record?.gridFsId) {
     throw new Error("ملف الفيديو غير متاح للتحويل حالياً");
   }
@@ -2081,11 +2158,12 @@ async function materializeVideoInput(record) {
 }
 
 function videoCompatibilityVariant(record) {
-  if (!record?.playbackGridFsId && !record?.playbackStoredName && !record?.playbackCacheStoredName) return null;
+  if (!record?.playbackR2Key && !record?.playbackGridFsId && !record?.playbackStoredName && !record?.playbackCacheStoredName) return null;
   return {
     ...record,
     fileId: `${record.fileId}:compat`,
     storage: record.playbackStorage || "local",
+    r2Key: record.playbackR2Key || null,
     storedName: record.playbackStoredName || null,
     cacheStoredName: record.playbackCacheStoredName || null,
     cacheExpiresAt: record.playbackCacheExpiresAt || null,
@@ -2188,11 +2266,16 @@ async function processVideoCompatibilityJob(fileId) {
       originalname: `${String(record.originalName || "video").slice(0, 150)}.compat.mp4`,
       mimetype: "video/mp4",
       size: outputStat.size
-    }, variantFileId, { keepLocalCache: keepVariantCache });
+    }, variantFileId, {
+      keepLocalCache: keepVariantCache,
+      context: record.context || "chat",
+      roomId: record.roomId || ""
+    });
 
     if (db.uploads?.[fileId] !== record) {
       queuePhysicalUploadDelete({
         storage: cloudFile.storage,
+        r2Key: cloudFile.r2Key,
         storedName: cloudFile.storedName,
         cacheStoredName: cloudFile.cacheStoredName,
         gridFsId: cloudFile.gridFsId
@@ -2203,6 +2286,7 @@ async function processVideoCompatibilityJob(fileId) {
     record.playbackStatus = "ready";
     record.playbackMode = "compatibility";
     record.playbackStorage = cloudFile.storage;
+    record.playbackR2Key = cloudFile.r2Key || null;
     record.playbackStoredName = cloudFile.storedName || null;
     record.playbackCacheStoredName = cloudFile.cacheStoredName || null;
     record.playbackCacheExpiresAt = cloudFile.cacheExpiresAt || null;
@@ -2302,8 +2386,9 @@ function localFirstVideoFile(session, fileId, keepLocalCache = false) {
     cacheStoredName: null,
     cacheExpiresAt: null,
     gridFsId: null,
+    r2Key: null,
     size: session.fileSize,
-    cloudPending: Boolean(mongoReady && gridFsBucket),
+    cloudPending: Boolean(objectStorage.isConfigured() || (mongoReady && gridFsBucket)),
     keepLocalCache: Boolean(keepLocalCache)
   };
 }
@@ -2311,7 +2396,7 @@ function localFirstVideoFile(session, fileId, keepLocalCache = false) {
 function queueResumableVideoCloudPersistence(session, fileId, record, { keepLocalCache = false, attempt = 0 } = {}) {
   if (!session || !fileId || !record || session.cloudPersisting) return;
   if (record.storage !== "local" || record.storedName !== session.tempName) return;
-  if (!mongoReady || !gridFsBucket) {
+  if (!objectStorage.isConfigured() && (!mongoReady || !gridFsBucket)) {
     record.cloudPending = false;
     return;
   }
@@ -2325,7 +2410,8 @@ function queueResumableVideoCloudPersistence(session, fileId, record, { keepLoca
         return;
       }
 
-      // Keep the local file until the database record has switched to GridFS.
+      // Keep the local file until the database record has switched to durable
+      // storage. The R2 path removes it after the object-store write succeeds.
       // Passing false here would let the lower-level helper unlink the source
       // a few milliseconds before the record update, creating a tiny 404 race
       // for the recipient who opens the video immediately.
@@ -2335,6 +2421,7 @@ function queueResumableVideoCloudPersistence(session, fileId, record, { keepLoca
       const useLocalCache = cloudFile.storage === "gridfs" && keepLocalCache;
 
       record.storage = cloudFile.storage;
+      record.r2Key = cloudFile.r2Key || null;
       record.storedName = cloudFile.storedName || null;
       record.cacheStoredName = useLocalCache ? (cloudFile.cacheStoredName || session.tempName) : null;
       record.cacheExpiresAt = useLocalCache
@@ -2346,7 +2433,8 @@ function queueResumableVideoCloudPersistence(session, fileId, record, { keepLoca
       saveDB(db);
       if (cloudFile.storage === "gridfs" && !keepLocalCache) safeUnlink(session.tempPath);
     } catch (err) {
-      // Keep the local source available if Atlas is temporarily unavailable.
+      // Keep the local source available if the configured durable store is
+      // temporarily unavailable.
       // Retry a few times without blocking the chat response; a later process
       // restart also picks up records that still have cloudPending=true.
       record.cloudPending = true;
@@ -2372,7 +2460,7 @@ function queueResumableVideoCloudPersistence(session, fileId, record, { keepLoca
 }
 
 function resumePendingVideoCloudUploads() {
-  if (!mongoReady || !gridFsBucket) return;
+  if (!objectStorage.isConfigured() && (!mongoReady || !gridFsBucket)) return;
   for (const [fileId, record] of Object.entries(db.uploads || {})) {
     if (!record || !["video", "audio"].includes(record.fileType) || record.cloudPending !== true || record.storage !== "local" || !record.storedName) continue;
     const tempName = path.basename(String(record.storedName));
@@ -2635,6 +2723,13 @@ let telegramMediaCopyChain = Promise.resolve();
 async function readStoredUploadBuffer(record) {
   if (!record || Number(record.size || 0) > TELEGRAM_MAX_COPY_BYTES) return null;
 
+  if (record.storage === "r2" && record.r2Key && objectStorage.isConfigured()) {
+    return objectStorage.readObjectBuffer({
+      key: record.r2Key,
+      maxBytes: TELEGRAM_MAX_COPY_BYTES
+    });
+  }
+
   if (record.storage === "gridfs" && record.gridFsId && gridFsBucket) {
     const chunks = [];
     let total = 0;
@@ -2889,7 +2984,7 @@ analyticsService.setRuntimeProvider(() => ({
   activeUploadRequests,
   activeUploadUsers: activeUploadsByUser.size,
   database: mongoReady ? "mongodb" : "local-json",
-  fileStorage: gridFsBucket ? "gridfs" : "local-disk"
+  fileStorage: objectStorage.isConfigured() ? "cloudflare-r2" : (gridFsBucket ? "gridfs" : "local-disk")
 }));
 
 async function buildTomiAiAnalyticsSnapshot({ from, to, actor } = {}) {
@@ -2990,7 +3085,10 @@ app.get("/api/health", (_req, res) => {
     ok: true,
     uptime: Math.round(process.uptime()),
     database: mongoReady ? "mongodb" : "local-json",
-    fileStorage: gridFsBucket ? "mongodb-gridfs" : "local-disk",
+    fileStorage: objectStorage.isConfigured()
+      ? "cloudflare-r2"
+      : (gridFsBucket ? "mongodb-gridfs" : "local-disk"),
+    directObjectStorage: objectStorage.isConfigured(),
     turn: CLOUDFLARE_TURN_CONFIGURED ? "cloudflare" : (staticTurnConfigured ? "static" : "stun-only"),
     notifications: webPushReady ? "enabled" : "unavailable",
     analytics: {
@@ -3464,6 +3562,9 @@ app.get("/api/client-config", requireHttpAuth, (_req, res) => {
     maxUploadBytes: MAX_UPLOAD_BYTES,
     uploadChunkSize: UPLOAD_CHUNK_SIZE,
     resumableUploads: true,
+    directObjectStorage: objectStorage.isConfigured(),
+    objectStorageProvider: objectStorage.isConfigured() ? "cloudflare-r2" : null,
+    objectStoragePartSize: objectStorage.isConfigured() ? objectStorage.getPartSize() : null,
     audioRecording: {
       preferredMimeType: "audio/webm;codecs=opus",
       audioBitsPerSecond: AUDIO_RECORDING_BITRATE,
@@ -4001,7 +4102,38 @@ function uploadSessionPublicResult(session, record, message = null, extra = {}) 
   };
 }
 
+function uploadSessionParts(session) {
+  if (!(session?.r2Parts instanceof Map)) return [];
+  return [...session.r2Parts.entries()]
+    .map(([partNumber, part]) => ({
+      partNumber: Number(partNumber),
+      etag: String(part?.etag || ""),
+      size: Number(part?.size || 0)
+    }))
+    .filter(part => Number.isInteger(part.partNumber) && part.partNumber > 0 && part.etag)
+    .sort((a, b) => a.partNumber - b.partNumber);
+}
+
+function uploadSessionState(session) {
+  const directR2 = session?.mode === "r2-multipart";
+  return {
+    success: true,
+    sessionId: session.id,
+    mode: session.mode || "server",
+    directUpload: directR2,
+    chunkSize: directR2 ? objectStorage.getPartSize() : UPLOAD_CHUNK_SIZE,
+    partSize: directR2 ? objectStorage.getPartSize() : null,
+    received: Number(session.received || 0),
+    fileSize: Number(session.fileSize || 0),
+    status: session.status,
+    ...(directR2 ? { uploadedParts: uploadSessionParts(session) } : {}),
+    result: ["completed", "uploaded"].includes(session.status) ? session.result : null,
+    expiresAt: new Date(session.expiresAt).toISOString()
+  };
+}
+
 app.post("/api/upload/session", uploadLimiter, requireHttpAuth, limitConcurrentUploads, async (req, res) => {
+  let pendingR2Upload = null;
   try {
     const uploader = req.authUser;
     const body = req.body || {};
@@ -4036,16 +4168,7 @@ app.post("/api/upload/session", uploadLimiter, requireHttpAuth, limitConcurrentU
           || existing.originalName !== originalName
           || !["uploading", "completing", "completed", "uploaded"].includes(existing.status)) continue;
         existing.expiresAt = Date.now() + UPLOAD_SESSION_TTL_MS;
-        return res.status(200).json({
-          success: true,
-          sessionId: existing.id,
-          chunkSize: UPLOAD_CHUNK_SIZE,
-          received: existing.received,
-          fileSize: existing.fileSize,
-          status: existing.status,
-          result: ["completed", "uploaded"].includes(existing.status) ? existing.result : null,
-          expiresAt: new Date(existing.expiresAt).toISOString()
-        });
+        return res.status(200).json(uploadSessionState(existing));
       }
 
       // The previous process may have completed and published the message just
@@ -4078,11 +4201,30 @@ app.post("/api/upload/session", uploadLimiter, requireHttpAuth, limitConcurrentU
     }
     const sessionId = "ups_" + crypto.randomBytes(18).toString("hex");
     const fileId = "upl_" + crypto.randomBytes(16).toString("hex");
-    const tempName = `${sessionId}.part`;
-    const tempPath = path.join(UPLOAD_DIR, tempName);
+    const directR2 = objectStorage.isConfigured() && fileSize > 0;
+    let tempName = null;
+    let tempPath = null;
+    let r2Key = null;
+    let r2UploadId = null;
+    if (directR2) {
+      r2Key = objectStorage.buildObjectKey({
+        fileId,
+        originalName,
+        context,
+        roomId: scope.roomId || ""
+      });
+      r2UploadId = await objectStorage.createMultipartUpload({
+        key: r2Key,
+        contentType: storedMimeType,
+        metadata: { fileId, context }
+      });
+      pendingR2Upload = { key: r2Key, uploadId: r2UploadId };
+    } else {
+      tempName = `${sessionId}.part`;
+      tempPath = path.join(UPLOAD_DIR, tempName);
+      await fs.promises.writeFile(tempPath, Buffer.alloc(0));
+    }
     const now = new Date().toISOString();
-
-    await fs.promises.writeFile(tempPath, Buffer.alloc(0));
     const session = {
       id: sessionId,
       uploader,
@@ -4094,8 +4236,14 @@ app.post("/api/upload/session", uploadLimiter, requireHttpAuth, limitConcurrentU
       fileType,
       fileSize,
       received: 0,
+      mode: directR2 ? "r2-multipart" : "server",
       tempName,
       tempPath,
+      r2Key,
+      r2UploadId,
+      r2Parts: new Map(),
+      r2DeleteQueued: false,
+      r2Completed: false,
       msgId: requestedMsgId,
       time: String(body.time || "").trim().slice(0, 80),
       replyTo: body.replyTo && typeof body.replyTo === "object" ? body.replyTo : null,
@@ -4116,10 +4264,11 @@ app.post("/api/upload/session", uploadLimiter, requireHttpAuth, limitConcurrentU
       gridFsError: null
     };
     uploadSessions.set(sessionId, session);
-    // Receive the browser stream into one bounded local file first. A live
-    // GridFS tee would make every mobile chunk wait for the Atlas round trip,
-    // so it would still throttle the upload even though the final 99% wait was
-    // removed. The completed local file is copied to GridFS asynchronously.
+    pendingR2Upload = null;
+    // With R2 enabled, the browser sends each part directly to the object store
+    // and this service only authorizes parts, records metadata, and publishes
+    // the chat message. The server-side file path remains for old deployments
+    // and zero-byte compatibility uploads.
     analyticsService?.track("upload_started", {
       userId: uploader,
       bytes: fileSize,
@@ -4127,17 +4276,14 @@ app.post("/api/upload/session", uploadLimiter, requireHttpAuth, limitConcurrentU
       feature: context
     });
 
-    res.status(201).json({
-      success: true,
-      sessionId,
-      chunkSize: UPLOAD_CHUNK_SIZE,
-      received: 0,
-      fileSize,
-      expiresAt: new Date(Date.now() + UPLOAD_SESSION_TTL_MS).toISOString()
-    });
+    res.status(201).json(uploadSessionState(session));
   } catch (err) {
+    if (pendingR2Upload) {
+      await objectStorage.abortMultipartUpload(pendingR2Upload).catch(() => {});
+    }
     console.error("Upload session creation failed:", err?.message || err);
-    res.status(500).json({ error: "تعذر بدء رفع الملف" });
+    const status = objectStorage.isConfigured() && /R2|object|multipart/i.test(String(err?.message || "")) ? 503 : 500;
+    res.status(status).json({ error: status === 503 ? "تعذر الاتصال بتخزين الملفات الخارجي، حاول بعد لحظة" : "تعذر بدء رفع الملف" });
   }
 });
 
@@ -4145,29 +4291,87 @@ app.get("/api/upload/session/:sessionId", requireHttpAuth, (req, res) => {
   const session = uploadSessions.get(String(req.params.sessionId || ""));
   if (!session || session.uploader !== req.authUser) return res.status(404).json({ error: "جلسة الرفع غير موجودة" });
   if (session.status !== "completed" && session.expiresAt <= Date.now()) {
-    if (session.status !== "uploaded") queuePartialResumableGridFsDelete(session);
+    if (session.status !== "uploaded") queuePartialResumableUploadDelete(session);
     safeUnlink(session.tempPath);
     uploadSessions.delete(session.id);
     return res.status(410).json({ error: "انتهت صلاحية جلسة الرفع" });
   }
-  res.json({
-    success: true,
-    sessionId: session.id,
-    status: session.status,
-    received: session.received,
-    fileSize: session.fileSize,
-    result: ["completed", "uploaded"].includes(session.status) ? session.result : null
-  });
+  res.json(uploadSessionState(session));
+});
+
+app.get("/api/upload/session/:sessionId/part-url", uploadLimiter, requireHttpAuth, async (req, res) => {
+  const session = uploadSessions.get(String(req.params.sessionId || ""));
+  if (!session || session.uploader !== req.authUser) return res.status(404).json({ error: "جلسة الرفع غير موجودة" });
+  if (session.mode !== "r2-multipart" || !session.r2Key || !session.r2UploadId) {
+    return res.status(409).json({ error: "هذه الجلسة تستخدم رفعاً عادياً" });
+  }
+  if (session.expiresAt <= Date.now()) {
+    queuePartialResumableUploadDelete(session);
+    uploadSessions.delete(session.id);
+    return res.status(410).json({ error: "انتهت صلاحية جلسة الرفع" });
+  }
+  if (!["uploading", "completing"].includes(session.status)) {
+    return res.status(409).json({ error: "الملف قيد المعالجة" });
+  }
+  const partNumber = Number.parseInt(req.query.partNumber, 10);
+  const totalParts = Math.max(1, Math.ceil(session.fileSize / objectStorage.getPartSize()));
+  if (!Number.isInteger(partNumber) || partNumber < 1 || partNumber > totalParts) {
+    return res.status(400).json({ error: "رقم مقطع الرفع غير صحيح" });
+  }
+  try {
+    const url = await objectStorage.getSignedPartUploadUrl({
+      key: session.r2Key,
+      uploadId: session.r2UploadId,
+      partNumber
+    });
+    res.json({ success: true, partNumber, url, expiresIn: 900 });
+  } catch (err) {
+    console.warn("R2 part URL failed:", err?.message || err);
+    res.status(503).json({ error: "تعذر تجهيز رابط رفع المقطع، حاول بعد لحظة" });
+  }
+});
+
+app.post("/api/upload/session/:sessionId/part", uploadLimiter, requireHttpAuth, async (req, res) => {
+  const session = uploadSessions.get(String(req.params.sessionId || ""));
+  if (!session || session.uploader !== req.authUser) return res.status(404).json({ error: "جلسة الرفع غير موجودة" });
+  if (session.mode !== "r2-multipart" || !session.r2Key || !session.r2UploadId) {
+    return res.status(409).json({ error: "هذه الجلسة تستخدم رفعاً عادياً" });
+  }
+  if (session.expiresAt <= Date.now()) {
+    queuePartialResumableUploadDelete(session);
+    uploadSessions.delete(session.id);
+    return res.status(410).json({ error: "انتهت صلاحية جلسة الرفع" });
+  }
+  const partNumber = Number(req.body?.partNumber);
+  const etag = String(req.body?.etag || "").trim();
+  const size = Number(req.body?.size || 0);
+  const totalParts = Math.max(1, Math.ceil(session.fileSize / objectStorage.getPartSize()));
+  if (!Number.isInteger(partNumber) || partNumber < 1 || partNumber > totalParts || !etag || !Number.isSafeInteger(size) || size <= 0) {
+    return res.status(400).json({ error: "بيانات مقطع الرفع غير صحيحة" });
+  }
+  const expectedSize = partNumber === totalParts
+    ? session.fileSize - objectStorage.getPartSize() * (totalParts - 1)
+    : objectStorage.getPartSize();
+  if (size !== expectedSize) {
+    return res.status(400).json({ error: "حجم مقطع الرفع غير صحيح" });
+  }
+  session.r2Parts.set(partNumber, { etag: etag.slice(0, 512), size });
+  session.received = [...session.r2Parts.values()].reduce((total, part) => total + Number(part.size || 0), 0);
+  session.expiresAt = Date.now() + UPLOAD_SESSION_TTL_MS;
+  res.json({ success: true, ...uploadSessionState(session) });
 });
 
 app.put("/api/upload/session/:sessionId/chunk", uploadLimiter, requireHttpAuth, limitConcurrentUploads, async (req, res) => {
   const session = uploadSessions.get(String(req.params.sessionId || ""));
   if (!session || session.uploader !== req.authUser) return res.status(404).json({ error: "جلسة الرفع غير موجودة" });
   if (session.expiresAt <= Date.now()) {
-    if (session.status !== "uploaded") queuePartialResumableGridFsDelete(session);
+    if (session.status !== "uploaded") queuePartialResumableUploadDelete(session);
     safeUnlink(session.tempPath);
     uploadSessions.delete(session.id);
     return res.status(410).json({ error: "انتهت صلاحية جلسة الرفع" });
+  }
+  if (session.mode === "r2-multipart") {
+    return res.status(409).json({ error: "هذه الجلسة ترفع مباشرة إلى التخزين الخارجي" });
   }
   if (session.status === "completed") return res.json({ success: true, received: session.received, done: true });
   if (session.status !== "uploading") return res.status(409).json({ error: "الملف قيد المعالجة", received: session.received });
@@ -4224,7 +4428,7 @@ app.put("/api/upload/session/:sessionId/chunk", uploadLimiter, requireHttpAuth, 
       if (directCloud) {
         session.gridFsUploadFailed = true;
         session.gridFsError = new Error("المقطع لم يصل بالحجم المتوقع");
-        queuePartialResumableGridFsDelete(session);
+        queuePartialResumableUploadDelete(session);
       }
       await fs.promises.truncate(session.tempPath, session.received).catch(() => {});
       return res.status(400).json({ error: "المقطع لم يصل كاملاً", received: session.received, expected });
@@ -4238,7 +4442,7 @@ app.put("/api/upload/session/:sessionId/chunk", uploadLimiter, requireHttpAuth, 
   } catch (err) {
     await fs.promises.truncate(session.tempPath, session.received).catch(() => {});
     if (session.fileType === "video" && session.gridFsId && !db.uploads?.[session.fileId]) {
-      queuePartialResumableGridFsDelete(session);
+      queuePartialResumableUploadDelete(session);
     }
     console.warn("Upload chunk failed:", err?.message || err);
     res.status(502).json({ error: "انقطع رفع المقطع ويمكن إعادة المحاولة", received: session.received });
@@ -4266,7 +4470,7 @@ app.post("/api/upload/session/:sessionId/complete", uploadLimiter, requireHttpAu
     return res.status(409).json({ error: "الملف قيد التثبيت، أعد المحاولة بعد لحظة", status: "completing" });
   }
   if (session.expiresAt <= Date.now()) {
-    if (session.status !== "uploaded") queuePartialResumableGridFsDelete(session);
+    if (session.status !== "uploaded") queuePartialResumableUploadDelete(session);
     safeUnlink(session.tempPath);
     uploadSessions.delete(session.id);
     return res.status(410).json({ error: "انتهت صلاحية جلسة الرفع" });
@@ -4291,27 +4495,65 @@ app.post("/api/upload/session/:sessionId/complete", uploadLimiter, requireHttpAu
         throw error;
       }
 
-      const reqFile = {
-        path: session.tempPath,
-        filename: session.tempName,
-        originalname: session.originalName,
-        mimetype: session.mimeType,
-        size: session.fileSize
-      };
-      // Videos are intentionally local-first: the client gets a successful
-      // response as soon as all bytes are safely on disk, while the durable
-      // GridFS copy continues in the background. Other upload contexts keep
-      // their existing synchronous persistence behaviour.
-    const localFirstChatMedia = session.context === "chat" && ["video", "audio"].includes(sessionFileType);
-    const cloudFile = localFirstChatMedia
-        ? localFirstVideoFile(session, fileId, keepLocalCache)
-        : await persistUploadedFileToCloud(reqFile, fileId, { keepLocalCache });
+      let cloudFile;
+      if (session.mode === "r2-multipart") {
+        const totalParts = Math.max(1, Math.ceil(session.fileSize / objectStorage.getPartSize()));
+        const parts = uploadSessionParts(session);
+        const expectedPartNumbers = Array.from({ length: totalParts }, (_value, index) => index + 1);
+        const receivedBytes = parts.reduce((total, part) => total + Number(part.size || 0), 0);
+        if (parts.length !== totalParts
+          || parts.some((part, index) => part.partNumber !== expectedPartNumbers[index])
+          || receivedBytes !== session.fileSize) {
+          const error = new Error("لم تكتمل مقاطع التخزين الخارجي بعد");
+          error.statusCode = 409;
+          throw error;
+        }
+        if (!session.r2Completed) {
+          await objectStorage.completeMultipartUpload({
+            key: session.r2Key,
+            uploadId: session.r2UploadId,
+            parts
+          });
+          session.r2Completed = true;
+        }
+        // The multipart upload is now a completed object; never abort it as a
+        // partial upload if a later chat-publish retry takes a moment.
+        session.r2UploadId = null;
+        cloudFile = {
+          storage: "r2",
+          storedName: null,
+          cacheStoredName: null,
+          cacheExpiresAt: null,
+          gridFsId: null,
+          r2Key: session.r2Key,
+          size: session.fileSize,
+          cloudPending: false
+        };
+      } else {
+        const reqFile = {
+          path: session.tempPath,
+          filename: session.tempName,
+          originalname: session.originalName,
+          mimetype: session.mimeType,
+          size: session.fileSize
+        };
+        // Old deployments without R2 keep the existing local/GridFS path.
+        const localFirstChatMedia = session.context === "chat" && ["video", "audio"].includes(sessionFileType);
+        cloudFile = localFirstChatMedia
+          ? localFirstVideoFile(session, fileId, keepLocalCache)
+          : await persistUploadedFileToCloud(reqFile, fileId, {
+            keepLocalCache,
+            context: session.context,
+            roomId: session.roomId || ""
+          });
+      }
       record = {
         fileId,
         storedName: cloudFile.storedName,
         cacheStoredName: cloudFile.cacheStoredName || null,
         cacheExpiresAt: cloudFile.cacheExpiresAt || null,
         gridFsId: cloudFile.gridFsId,
+        r2Key: cloudFile.r2Key || null,
         storage: cloudFile.storage,
         originalName: session.originalName,
         mimeType: session.mimeType,
@@ -4410,7 +4652,7 @@ app.post("/api/upload/session/:sessionId/complete", uploadLimiter, requireHttpAu
 app.delete("/api/upload/session/:sessionId", requireHttpAuth, (req, res) => {
   const session = uploadSessions.get(String(req.params.sessionId || ""));
   if (!session || session.uploader !== req.authUser) return res.status(404).json({ error: "جلسة الرفع غير موجودة" });
-  if (session.status !== "completed" && session.status !== "uploaded") queuePartialResumableGridFsDelete(session);
+  if (session.status !== "completed" && session.status !== "uploaded") queuePartialResumableUploadDelete(session);
   safeUnlink(session.tempPath);
   uploadSessions.delete(session.id);
   res.json({ success: true });
@@ -4464,7 +4706,8 @@ app.post("/api/upload", uploadLimiter, requireHttpAuth, limitConcurrentUploads, 
       page: "/api/upload",
       feature: context
     });
-    const localFirstChatMedia = context === "chat" && ["video", "audio"].includes(fileType);
+    const localFirstChatMedia = !objectStorage.isConfigured()
+      && context === "chat" && ["video", "audio"].includes(fileType);
     const localFirstSession = localFirstChatMedia ? {
       id: "legacy_" + fileId,
       fileId,
@@ -4473,6 +4716,8 @@ app.post("/api/upload", uploadLimiter, requireHttpAuth, limitConcurrentUploads, 
       originalName: String(req.file.originalname || "file").slice(0, 180),
       mimeType: storedMimeType,
       fileSize: Number(req.file.size || 0),
+      roomId,
+      context,
       cloudPersisting: false,
       cloudRetryScheduled: false,
       gridFsUploadStream: null,
@@ -4484,13 +4729,18 @@ app.post("/api/upload", uploadLimiter, requireHttpAuth, limitConcurrentUploads, 
     } : null;
     const cloudFile = localFirstSession
       ? localFirstVideoFile(localFirstSession, fileId, keepLocalCache)
-      : await persistUploadedFileToCloud(req.file, fileId, { keepLocalCache });
+      : await persistUploadedFileToCloud(req.file, fileId, {
+        keepLocalCache,
+        context,
+        roomId: roomId || ""
+      });
     db.uploads[fileId] = {
       fileId,
       storedName: cloudFile.storedName,
       cacheStoredName: cloudFile.cacheStoredName || null,
       cacheExpiresAt: cloudFile.cacheExpiresAt || null,
       gridFsId: cloudFile.gridFsId,
+      r2Key: cloudFile.r2Key || null,
       storage: cloudFile.storage,
       originalName: String(req.file.originalname || "file").slice(0, 180),
       mimeType: storedMimeType,
@@ -4683,6 +4933,32 @@ function serveLocalStoredFile(fullPath, record, req, res) {
   return true;
 }
 
+async function redirectR2StoredFile(record, req, res) {
+  if (record?.storage !== "r2" || !record.r2Key || !objectStorage.isConfigured()) return false;
+  try {
+    if (req.method === "HEAD") {
+      const metadata = await objectStorage.headObject({ key: record.r2Key });
+      if (metadata.size > 0) res.setHeader("Content-Length", String(metadata.size));
+      res.status(200).end();
+      return true;
+    }
+    const url = await objectStorage.getSignedDownloadUrl({
+      key: record.r2Key,
+      mimeType: effectiveStoredMimeType(record),
+      fileName: record.originalName,
+      inline: ["image", "gif", "video", "audio", "pdf"].includes(record.fileType)
+    });
+    // The browser follows this short-lived signed URL directly to R2. Media
+    // bytes therefore bypass the Node process and its hosting bandwidth.
+    res.redirect(302, url);
+    return true;
+  } catch (err) {
+    console.warn("R2 media access failed:", err?.message || err);
+    if (!res.headersSent) res.status(404).json({ error: "الملف غير موجود في التخزين الخارجي" });
+    return true;
+  }
+}
+
 function resolveAuthorizedUpload(req, res) {
   const record = db.uploads[req.params.fileId];
   if (!record) {
@@ -4696,18 +4972,19 @@ function resolveAuthorizedUpload(req, res) {
   return record;
 }
 
-app.head("/api/files/:fileId", requireHttpAuth, (req, res) => {
+app.head("/api/files/:fileId", requireHttpAuth, async (req, res) => {
   const record = resolveAuthorizedUpload(req, res);
   if (!record) return;
   if (record.fileType === "video" && !record.playbackStatus) queueVideoCompatibilityJob(record.fileId);
   const playbackRecord = selectVideoPlaybackRecord(record, req);
   setStoredFileResponseHeaders(playbackRecord, res);
   setVideoCompatibilityCachePolicy(record, playbackRecord, req, res);
+  if (await redirectR2StoredFile(playbackRecord, req, res)) return;
   if (Number(playbackRecord.size || 0) > 0) res.setHeader("Content-Length", String(playbackRecord.size));
   res.status(200).end();
 });
 
-app.get("/api/files/:fileId", requireHttpAuth, (req, res) => {
+app.get("/api/files/:fileId", requireHttpAuth, async (req, res) => {
   const record = resolveAuthorizedUpload(req, res);
   if (!record) return;
   if (record.fileType === "video" && !record.playbackStatus) queueVideoCompatibilityJob(record.fileId);
@@ -4717,6 +4994,8 @@ app.get("/api/files/:fileId", requireHttpAuth, (req, res) => {
   setVideoCompatibilityCachePolicy(record, playbackRecord, req, res);
   const etag = `\"${String(playbackRecord.fileId || "file")}-${Number(playbackRecord.size || 0)}\"`;
   if (!req.headers.range && req.headers["if-none-match"] === etag) return res.status(304).end();
+
+  if (await redirectR2StoredFile(playbackRecord, req, res)) return;
 
   // Prefer the bounded ephemeral cache immediately after upload. This avoids a
   // remote GridFS round-trip for every browser byte-range seek while a newly
@@ -8624,7 +8903,7 @@ function cleanupExpiredRuntimeState({ aggressive = false } = {}) {
 
   for (const [sessionId, session] of uploadSessions.entries()) {
     if (!session || (session.status !== "completed" && Number(session.expiresAt || 0) <= now)) {
-      if (session && session.status !== "uploaded") queuePartialResumableGridFsDelete(session);
+      if (session && session.status !== "uploaded") queuePartialResumableUploadDelete(session);
       safeUnlink(session?.tempPath);
       uploadSessions.delete(sessionId);
     } else if (session.status === "completed" && Number(session.expiresAt || 0) <= now) {
@@ -8866,7 +9145,13 @@ async function startServer() {
   server.listen(PORT, () => {
     console.log(`🚀 Server Started on port ${PORT}`);
     console.log(mongoReady ? "☁️ Database: MongoDB Atlas" : `📁 Database: local JSON (${DB_PATH})`);
-    console.log(gridFsBucket ? "☁️ Files: MongoDB GridFS" : `📁 Files: local disk (${UPLOAD_DIR})`);
+    if (objectStorage.isConfigured()) {
+      console.log(`☁️ Files: Cloudflare R2 (direct browser upload, ${objectStorage.getPartSize()} byte parts)`);
+    } else if (gridFsBucket) {
+      console.log("☁️ Files: MongoDB GridFS (legacy fallback; configure R2 for direct media transfer)");
+    } else {
+      console.log(`⚠️ Files: local disk (${UPLOAD_DIR}); configure Cloudflare R2 before production media use`);
+    }
   });
 }
 

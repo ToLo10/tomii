@@ -10,6 +10,22 @@ services:
     envVars:
       - key: MONGODB_URI
         sync: false
+      - key: R2_ACCOUNT_ID
+        sync: false
+      - key: R2_ACCESS_KEY_ID
+        sync: false
+      - key: R2_SECRET_ACCESS_KEY
+        sync: false
+      - key: R2_BUCKET
+        sync: false
+      - key: R2_ENDPOINT
+        sync: false
+      - key: R2_PART_SIZE_BYTES
+        value: "8388608"
+      - key: R2_PRESIGNED_UPLOAD_TTL_SECONDS
+        value: "900"
+      - key: R2_PRESIGNED_DOWNLOAD_TTL_SECONDS
+        value: "900"
       - key: WRITE_LOCAL_JSON_BACKUP
         value: "false"
       - key: MAX_UPLOAD_BYTES
