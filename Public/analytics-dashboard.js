@@ -56,7 +56,7 @@
     setMetric("avgLatencyMetric", `المتوسط ${number(data.averageLatencyMs)}ms`);
     setMetric("errorsCountMetric", `${number(data.apiErrors)} من ${number(data.apiRequests)} طلب`);
     setMetric("uploadsCountMetric", `${number(data.uploadsCompleted)} مكتمل • ${number(data.uploadsFailed)} فاشل`);
-    setMetric("referralsRegistrationsMetric", `${number(data.newUsers ? data.referralClicks : data.referralClicks)} زيارة إحالة`);
+    setMetric("referralsRegistrationsMetric", `${number(data.referralClicks)} زيارة إحالة`);
   }
 
   function renderBars(id, points, valueKey, options = {}) {
@@ -90,6 +90,37 @@
     $("aiSummary").textContent = summary;
     const alerts = Array.isArray(data?.alerts) ? data.alerts : [];
     $("aiAlerts").innerHTML = alerts.map((item, index) => `<span class="ai-alert ${alerts.length === 1 && index === 0 && /لا توجد/.test(item) ? "ok" : ""}"><i class="fa-solid ${index === 0 && alerts.length > 1 ? "fa-triangle-exclamation" : "fa-circle-info"}"></i> ${esc(item)}</span>`).join("");
+  }
+
+  function renderErrors(data) {
+    const rows = Array.isArray(data?.errors) ? data.errors : [];
+    const meta = $("errorsMeta");
+    if (meta) {
+      meta.textContent = rows.length
+        ? `${number(data?.occurrences)} حالة خطأ مسجلة ضمن الفترة • ${number(data?.total)} نوع/مكان مختلف`
+        : "لا توجد أخطاء مسجلة ضمن الفترة المحددة";
+      meta.className = `errors-meta${rows.length ? " has-errors" : ""}`;
+    }
+    const host = $("errorsTable");
+    if (!host) return;
+    if (!rows.length) {
+      host.innerHTML = '<tr><td colspan="6" class="table-empty ok-empty"><i class="fa-solid fa-circle-check"></i> لا توجد أخطاء مسجلة</td></tr>';
+      return;
+    }
+    const sourceLabels = { http: "طلب API", upload: "رفع ملف", client: "المتصفح", system: "النظام" };
+    host.innerHTML = rows.map(row => {
+      const source = sourceLabels[row.source] || row.source || "غير محدد";
+      const status = row.statusCode ? `HTTP ${row.statusCode}` : "—";
+      const place = `${row.method ? `${esc(row.method)} ` : ""}${esc(row.location || "غير محدد")}`;
+      return `<tr>
+        <td><span class="error-source">${esc(source)}</span><small class="error-status">${esc(status)}</small></td>
+        <td><code class="error-location">${place}</code></td>
+        <td><span class="error-phase">${esc(row.phase || "—")}</span></td>
+        <td><div class="error-detail"><strong>${esc(row.message || "خطأ غير معروف")}</strong><small>${esc(row.code || row.kind || "")}</small></div></td>
+        <td><strong class="error-count">${number(row.count)}</strong></td>
+        <td>${esc(date(row.lastAt))}<small class="error-first">أول مرة: ${esc(date(row.firstAt))}</small></td>
+      </tr>`;
+    }).join("");
   }
 
   function renderAiSafety(data) {
@@ -159,8 +190,47 @@
   }
 
   function renderReferrals(data) {
+    const summary = data?.summary || {};
+    const summaryHost = $("referralSummary");
+    if (summaryHost) {
+      const scopeText = data?.metricsScope === "period"
+        ? "الأرقام محسوبة من أحداث الفترة المحددة"
+        : "لا توجد أحداث محفوظة كافية؛ تظهر الأرقام المتاحة من سجل الإحالة";
+      const cards = [
+        ["إجمالي الحسابات الجديدة", summary.totalNewAccounts, "كل حسابات Username التي أُنشئت بالفترة"],
+        ["حسابات من الإحالة", summary.referralAccounts, "حسابات نُسبت إلى رمز فعلي"],
+        ["مباشر / غير منسوب", summary.directOrUnattributedAccounts, "حسابات بدون رمز إحالة"],
+        ["حسابات تحتاج مراجعة", summary.suspiciousAccounts, "تنبيه مشاركة بصمة متصفح/جهاز"]
+      ];
+      summaryHost.innerHTML = cards.map(([label, value, note]) => `<div class="referral-summary-card"><span>${esc(label)}</span><strong>${number(value)}</strong><small>${esc(note)}</small></div>`).join("");
+      summaryHost.insertAdjacentHTML("beforeend", `<div class="referral-summary-scope">${esc(scopeText)}</div>`);
+    }
+
+    const host = $("referralsTable");
+    if (!host) return;
     const rows = Array.isArray(data?.referrals) ? data.referrals : [];
-    $("referralsTable").innerHTML = rows.length ? rows.map(row => `<tr><td><div class="user-name"><strong>${esc(row.ownerUserId || "—")}</strong><small>${esc(row.lastClickAt ? date(row.lastClickAt) : "لا توجد زيارة أخيرة")}</small></div></td><td><span class="role-tag">${esc(row.code)}</span></td><td>${number(row.clicks)}</td><td>${number(row.uniqueClicks)}</td><td>${number(row.registrations)}</td><td>${percent(row.conversionRate)}</td></tr>`).join("") : '<tr><td colspan="6" class="table-empty">لا توجد إحالات بعد</td></tr>';
+    if (!rows.length) {
+      host.innerHTML = '<tr><td colspan="9" class="table-empty">لا توجد إحالات ضمن الفترة المحددة</td></tr>';
+      return;
+    }
+    const statusLabels = { online: "متصل", offline: "غير متصل", away: "غائب", busy: "مشغول" };
+    host.innerHTML = rows.map(row => {
+      const accounts = Array.isArray(row.accounts) ? row.accounts : [];
+      const accountsHtml = accounts.length
+        ? `<details class="referral-details"><summary>${number(accounts.length)} حساب</summary><div class="referral-account-list">${accounts.map(account => `<div class="referral-account${account.suspicious ? " suspicious" : ""}"><strong>@${esc(account.username || "—")}</strong><small>${esc(date(account.registeredAt || account.attributedAt))} • ${esc(statusLabels[account.status] || account.status || "غير معروف")}</small>${account.suspicious ? `<span class="risk"><i class="fa-solid fa-triangle-exclamation"></i> ${esc(account.suspicionReason || "يحتاج مراجعة")}</span>` : ""}</div>`).join("")}</div></details>`
+        : '<span class="referral-muted">لا توجد حسابات مسجلة</span>';
+      return `<tr>
+        <td><div class="user-name"><strong>${esc(row.ownerUserId || "—")}</strong><small>${esc(row.lastClickAt ? date(row.lastClickAt) : "لا توجد زيارة أخيرة")}</small></div></td>
+        <td><span class="role-tag">${esc(row.code)}</span></td>
+        <td>${number(row.clicks)}</td>
+        <td>${number(row.uniqueClicks)}</td>
+        <td>${number(row.repeatClicks)}</td>
+        <td><strong>${number(row.registrations)}</strong></td>
+        <td>${percent(row.clickConversionRate ?? row.conversionRate)}</td>
+        <td>${percent(row.uniqueConversionRate)}</td>
+        <td>${accountsHtml}</td>
+      </tr>`;
+    }).join("");
   }
 
   function renderUsers(data) {
@@ -181,19 +251,21 @@
     const base = { from: r.from, to: r.to };
     const alertStatus = $("aiAlertsStatus")?.value || "pending";
     try {
-      const [overview, timeseries, system, referrals, users, ai, safety] = await Promise.all([
+      const [overview, timeseries, system, referrals, users, ai, safety, errors] = await Promise.all([
         qs("/api/admin/analytics/overview", base),
         qs("/api/admin/analytics/timeseries", base),
         qs("/api/admin/analytics/system", base).catch(() => ({ points: [] })),
-        qs("/api/admin/analytics/referrals").catch(() => ({ referrals: [] })),
+        qs("/api/admin/analytics/referrals", base).catch(() => ({ referrals: [], summary: null })),
         qs("/api/admin/analytics/users", { q: userQuery, limit: 100 }).catch(() => ({ users: [] })),
         qs("/api/admin/analytics/ai-summary", base).catch(() => ({})),
-        qs("/api/admin/ai/alerts", { status: alertStatus, limit: 100 }).catch(error => ({ alerts: [], accessError: error.message }))
+        qs("/api/admin/ai/alerts", { status: alertStatus, limit: 100 }).catch(error => ({ alerts: [], accessError: error.message })),
+        qs("/api/admin/analytics/errors", { ...base, limit: 100 }).catch(error => ({ errors: [], accessError: error.message }))
       ]);
       renderOverview(overview);
       renderBars("activityChart", timeseries.points, "activeUsers", { limit: period === "24h" ? 24 : 36 });
       renderBars("systemChart", system.points, "memory.rssMB", { limit: 36, system: true });
       renderAi(ai);
+      renderErrors(errors);
       renderAiSafety(safety);
       renderReferrals(referrals);
       renderUsers(users);

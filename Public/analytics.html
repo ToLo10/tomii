@@ -6,7 +6,8 @@
   <meta name="theme-color" content="#0d0d16">
   <title>TOMI - تحليلات المنصة</title>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
-  <link rel="stylesheet" href="analytics.css?v=20260915">
+  <link rel="stylesheet" href="analytics.css?v=20260919-referrals1">
+  <link rel="stylesheet" href="analytics-referrals.css?v=20260919-referrals1">
   <link rel="stylesheet" href="/ai-analytics.css?v=20260915-ai1">
   <script src="/analytics-client.js" defer></script>
 </head>
@@ -64,6 +65,12 @@
       <div id="aiAlerts" class="ai-alerts"></div>
     </section>
 
+    <section class="panel table-panel errors-panel">
+      <div class="panel-heading"><div class="errors-icon"><i class="fa-solid fa-bug"></i></div><div><h2>تفاصيل الأخطاء</h2><p>المكان والمرحلة والرسالة وعدد التكرارات حتى تعرف أين تبدأ الإصلاح</p></div></div>
+      <div id="errorsMeta" class="errors-meta">جاري فحص الأخطاء...</div>
+      <div class="table-scroll"><table><thead><tr><th>المصدر</th><th>المكان</th><th>المرحلة</th><th>تفاصيل الخطأ</th><th>التكرار</th><th>آخر حدوث</th></tr></thead><tbody id="errorsTable"><tr><td colspan="6" class="table-empty">جاري التحميل...</td></tr></tbody></table></div>
+    </section>
+
     <section class="panel ai-question-panel">
       <div class="panel-heading"><div class="ai-icon"><i class="fa-solid fa-comments-question-check"></i></div><div><h2>اسأل تحليلات TOMI</h2><p>اسأل عن الضغط والمستخدمين والغرف والإحالات من الأرقام المجمعة</p></div></div>
       <div class="ai-question-form">
@@ -95,8 +102,9 @@
     </section>
 
     <section class="panel table-panel">
-      <div class="panel-heading"><div><i class="fa-solid fa-link"></i></div><div><h2>نظام الإحالة</h2><p>الضغطات، التسجيلات، ونسبة التحويل لكل مستخدم</p></div></div>
-      <div class="table-scroll"><table><thead><tr><th>المستخدم</th><th>الرمز</th><th>الزيارات</th><th>الفريدة</th><th>التسجيلات</th><th>التحويل</th></tr></thead><tbody id="referralsTable"><tr><td colspan="6" class="table-empty">جاري التحميل...</td></tr></tbody></table></div>
+      <div class="panel-heading"><div><i class="fa-solid fa-link"></i></div><div><h2>نظام الإحالة</h2><p>إحصائيات دقيقة لحسابات Username فقط، مع مصدر كل تسجيل وتنبيه الحالات التي تحتاج مراجعة</p></div></div>
+      <div id="referralSummary" class="referral-summary" aria-live="polite"><div class="referral-summary-card"><span>حالة الإحالات</span><strong>—</strong><small>جاري تحميل البيانات...</small></div></div>
+      <div class="table-scroll"><table><thead><tr><th>المستخدم</th><th>الرمز</th><th>الزيارات</th><th>الفريدة</th><th>المكررة</th><th>الحسابات المسجلة</th><th>تحويل الزيارات</th><th>تحويل الفريدة</th><th>تفاصيل الحسابات</th></tr></thead><tbody id="referralsTable"><tr><td colspan="9" class="table-empty">جاري التحميل...</td></tr></tbody></table></div>
     </section>
 
     <section class="panel table-panel">

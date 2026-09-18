@@ -34,7 +34,8 @@ const TRACKABLE_EVENTS = new Set([
   "call_start",
   "referral_click",
   "page_performance",
-  "feature_use"
+  "feature_use",
+  "error"
 ]);
 
 const PERSISTED_EVENT_TYPES = new Set([
@@ -47,7 +48,8 @@ const PERSISTED_EVENT_TYPES = new Set([
   "room_join",
   "call_start",
   "referral_click",
-  "page_performance"
+  "page_performance",
+  "error"
 ]);
 
 function finiteNumber(value, fallback = 0) {
@@ -321,6 +323,8 @@ function createAnalyticsService(options = {}) {
   const connectedSockets = new Map();
   const systemSamples = [];
   const rawEventQueue = [];
+  const recentErrorEvents = [];
+  const errorEventMemoryLimit = Math.max(200, Math.min(5000, finiteNumber(process.env.ANALYTICS_ERROR_MEMORY_LIMIT, 2000)));
   let analyticsModels = null;
   let flushTimer = null;
   let systemTimer = null;
@@ -329,7 +333,7 @@ function createAnalyticsService(options = {}) {
   let started = false;
   let runtimeProvider = () => ({});
 
-  let localSnapshot = { rollups: {}, users: {}, referrals: {} };
+  let localSnapshot = { rollups: {}, users: {}, referrals: {}, errors: [] };
   if (localBackupEnabled) {
     try {
       if (fs.existsSync(localPath)) {
@@ -352,6 +356,9 @@ function createAnalyticsService(options = {}) {
   for (const raw of Object.values(localSnapshot.referrals || {})) {
     const referral = normalizeReferral(raw);
     if (referral.code) referrals.set(referral.code, referral);
+  }
+  if (Array.isArray(localSnapshot.errors)) {
+    recentErrorEvents.push(...localSnapshot.errors.slice(-errorEventMemoryLimit));
   }
 
   function getBucket(type, start) {
@@ -617,7 +624,7 @@ function createAnalyticsService(options = {}) {
     updateUserStats(type, { ...payload, userId, visitorHash }, at);
 
     if (PERSISTED_EVENT_TYPES.has(type)) {
-      rawEventQueue.push({
+      const event = {
         eventType: type,
         userId: userId || null,
         visitorHash: visitorHash || null,
@@ -634,13 +641,20 @@ function createAnalyticsService(options = {}) {
           bytes: payload.bytes
         }),
         createdAt: at
-      });
+      };
+      rawEventQueue.push(event);
+      if (type === "error" || type === "upload_failed") {
+        recentErrorEvents.push(event);
+        if (recentErrorEvents.length > errorEventMemoryLimit) {
+          recentErrorEvents.splice(0, recentErrorEvents.length - errorEventMemoryLimit);
+        }
+      }
       if (rawEventQueue.length > maxRawQueue) rawEventQueue.splice(0, rawEventQueue.length - maxRawQueue);
     }
     return true;
   }
 
-  function recordHttpRequest({ req, statusCode = 200, durationMs = 0, userId = "" } = {}) {
+  function recordHttpRequest({ req, statusCode = 200, durationMs = 0, userId = "", errorMessage = "" } = {}) {
     const at = new Date(nowProvider());
     const pathName = String(req?.path || req?.originalUrl || req?.url || "").split("?")[0].slice(0, 160);
     const hour = getBucket("hour", hourStart(at));
@@ -649,6 +663,23 @@ function createAnalyticsService(options = {}) {
       bucket.apiRequests += 1;
       if (Number(statusCode) >= 500) bucket.apiErrors += 1;
       incrementLatency(bucket, durationMs);
+    }
+    const numericStatus = Number(statusCode) || 0;
+    if (numericStatus >= 500 || (numericStatus >= 400 && numericStatus < 500 && errorMessage && pathName.startsWith("/api/"))) {
+      track("error", {
+        userId,
+        page: pathName,
+        metadata: {
+          source: "http",
+          kind: numericStatus >= 500 ? "server" : "client",
+          statusCode: numericStatus,
+          method: String(req?.method || "GET").slice(0, 12),
+          path: pathName,
+          phase: "request",
+          code: `HTTP_${numericStatus}`,
+          message: String(errorMessage || `HTTP ${numericStatus}`).slice(0, 240)
+        }
+      });
     }
     if (pathName.endsWith(".html") || pathName === "/" || pathName === "/index.html") {
       const page = pathName === "/" ? "/index.html" : pathName;
@@ -697,6 +728,20 @@ function createAnalyticsService(options = {}) {
       device: parseUserAgent(req.headers["user-agent"] || "")
     };
 
+    // Capture the safe error message returned by JSON API handlers so the
+    // admin can see the failing stage, not only a numeric HTTP status.
+    const captureResponseError = original => function captureAnalyticsResponse(body) {
+      if (res.statusCode >= 400 || (body && typeof body === "object" && (body.error || body.message))) {
+        const message = body && typeof body === "object"
+          ? (body.error || body.message)
+          : (typeof body === "string" && !body.trim().startsWith("<") ? body : "");
+        if (message) res.locals.analyticsErrorMessage = String(message).slice(0, 240);
+      }
+      return original(body);
+    };
+    if (typeof res.json === "function") res.json = captureResponseError(res.json.bind(res));
+    if (typeof res.send === "function") res.send = captureResponseError(res.send.bind(res));
+
     let finished = false;
     const finish = () => {
       if (finished) return;
@@ -706,7 +751,13 @@ function createAnalyticsService(options = {}) {
       if (!userId) {
         try { userId = String(resolveUser(req) || ""); } catch (_) { userId = ""; }
       }
-      recordHttpRequest({ req, statusCode: res.statusCode, durationMs, userId });
+      recordHttpRequest({
+        req,
+        statusCode: res.statusCode,
+        durationMs,
+        userId,
+        errorMessage: res.locals?.analyticsErrorMessage || ""
+      });
     };
     res.once("finish", finish);
     res.once("close", finish);
@@ -868,11 +919,16 @@ function createAnalyticsService(options = {}) {
     const end = dateOr(to, new Date());
     const start = dateOr(from, new Date(end.getTime() - DAY));
     const previousStart = new Date(start.getTime() - (end.getTime() - start.getTime()));
-    const [items, previousItems, uniqueVisitors] = await Promise.all([
+    const bucketType = end.getTime() - start.getTime() > 3 * DAY ? "day" : "hour";
+    const [itemsRaw, previousItemsRaw, uniqueVisitors] = await Promise.all([
       queryRollups(start, end),
       queryRollups(previousStart, start),
       countUniqueVisitors(start, end)
     ]);
+    // Each period has both hourly and daily rollups. Sum one resolution only;
+    // otherwise a 24-hour view can count the same registration twice.
+    const items = itemsRaw.filter(item => item.bucketType === bucketType);
+    const previousItems = previousItemsRaw.filter(item => item.bucketType === bucketType);
     const total = sumBuckets(items);
     const previous = sumBuckets(previousItems);
     const registeredUsers = getAllUsers().length;
@@ -987,7 +1043,186 @@ function createAnalyticsService(options = {}) {
     return { total: getAllUsers().length, users: list };
   }
 
-  function buildReferralStats() {
+  async function getErrors({ from, to, limit = 100 } = {}) {
+    const end = dateOr(to, new Date());
+    const start = dateOr(from, new Date(end.getTime() - DAY));
+    const max = clamp(finiteNumber(limit, 100), 1, 250);
+    const events = [];
+
+    if (analyticsModels?.Event) {
+      try {
+        const remote = await analyticsModels.Event.find({
+          eventType: { $in: ["error", "upload_failed"] },
+          createdAt: { $gte: start, $lte: end }
+        }).sort({ createdAt: -1 }).limit(5000).lean().exec();
+        events.push(...(remote || []));
+      } catch (error) {
+        console.warn("Analytics error query failed:", error.message);
+      }
+    }
+
+    // Include events that are still waiting for the next analytics flush.
+    events.push(...recentErrorEvents.filter(event => {
+      const at = dateOr(event.createdAt, null);
+      return at >= start && at <= end;
+    }));
+
+    const groups = new Map();
+    const seenEvents = new Set();
+    for (const event of events) {
+      const at = dateOr(event.createdAt, null);
+      if (!Number.isFinite(at.getTime())) continue;
+      const metadata = event.metadata && typeof event.metadata === "object" ? event.metadata : {};
+      const eventType = String(event.eventType || "error");
+      const source = String(metadata.source || (eventType === "upload_failed" ? "upload" : "http")).slice(0, 30);
+      const kind = String(metadata.kind || (eventType === "upload_failed" ? "upload" : "server")).slice(0, 30);
+      const statusCode = Math.max(0, Math.round(finiteNumber(metadata.statusCode, 0)));
+      const method = String(metadata.method || "").slice(0, 12).toUpperCase();
+      const location = String(metadata.path || event.page || "غير محدد").slice(0, 160);
+      const phase = String(metadata.phase || (eventType === "upload_failed" ? "upload" : "request")).slice(0, 60);
+      const code = String(metadata.code || "").slice(0, 80);
+      const message = String(metadata.message || metadata.error || (eventType === "upload_failed" ? "فشل رفع الملف" : `HTTP ${statusCode || "غير معروف"}`)).slice(0, 240);
+      const eventKey = [at.toISOString(), eventType, source, method, location, phase, code, message].join("|");
+      if (seenEvents.has(eventKey)) continue;
+      seenEvents.add(eventKey);
+
+      const groupKey = [source, kind, statusCode, method, location, phase, code, message].join("|");
+      const current = groups.get(groupKey) || {
+        id: crypto.createHash("sha1").update(groupKey).digest("hex").slice(0, 16),
+        source,
+        kind,
+        statusCode,
+        method,
+        location,
+        phase,
+        code,
+        message,
+        count: 0,
+        firstAt: at.toISOString(),
+        lastAt: at.toISOString()
+      };
+      current.count += 1;
+      if (at < dateOr(current.firstAt)) current.firstAt = at.toISOString();
+      if (at > dateOr(current.lastAt)) current.lastAt = at.toISOString();
+      groups.set(groupKey, current);
+    }
+
+    const errors = [...groups.values()]
+      .sort((a, b) => b.count - a.count || Date.parse(b.lastAt) - Date.parse(a.lastAt))
+      .slice(0, max);
+    return {
+      range: { from: start.toISOString(), to: end.toISOString() },
+      total: groups.size,
+      occurrences: [...groups.values()].reduce((sum, item) => sum + item.count, 0),
+      errors
+    };
+  }
+
+  function isDateInRange(value, start, end) {
+    const at = Date.parse(value || "");
+    return Number.isFinite(at) && at >= start.getTime() && at <= end.getTime();
+  }
+
+  async function getReferralEventData({ from, to } = {}) {
+    const end = dateOr(to, new Date());
+    const start = dateOr(from, new Date(end.getTime() - DAY));
+    const events = [];
+    let persistentSourceAvailable = false;
+
+    if (analyticsModels?.Event) {
+      try {
+        const remote = await analyticsModels.Event.find({
+          eventType: { $in: ["referral_click", "register"] },
+          createdAt: { $gte: start, $lte: end }
+        })
+          .select({ _id: 1, eventType: 1, userId: 1, visitorHash: 1, refCode: 1, createdAt: 1 })
+          .sort({ createdAt: 1 })
+          .limit(Math.max(1000, Math.min(100000, finiteNumber(process.env.ANALYTICS_REFERRAL_EVENT_LIMIT, 50000))))
+          .lean()
+          .exec();
+        events.push(...(remote || []).map(event => ({ ...event, __analyticsSource: "remote" })));
+        persistentSourceAvailable = true;
+      } catch (error) {
+        console.warn("Analytics referral event query failed:", error.message);
+      }
+    }
+
+    // Include events that have not reached the next analytics flush yet.
+    events.push(...rawEventQueue
+      .map((event, index) => ({ ...event, __analyticsSource: "memory", __analyticsIndex: index }))
+      .filter(event =>
+        ["referral_click", "register"].includes(event.eventType)
+        && isDateInRange(event.createdAt, start, end)
+      ));
+
+    const metrics = new Map();
+    const registrationSignals = new Map();
+    const seen = new Set();
+    for (const event of events) {
+      const at = dateOr(event.createdAt, null);
+      const code = normalizeCode(event.refCode || "");
+      if (!code || !Number.isFinite(at.getTime())) continue;
+      const eventKey = event._id
+        ? `id:${String(event._id)}`
+        : event.__analyticsSource === "memory"
+          ? `memory:${event.__analyticsIndex}`
+          : [event.eventType, event.userId || "", event.visitorHash || "", code, at.toISOString()].join("|");
+      if (seen.has(eventKey)) continue;
+      seen.add(eventKey);
+
+      if (!metrics.has(code)) metrics.set(code, { clicks: 0, visitorHashes: new Set(), lastClickAt: null });
+      const metric = metrics.get(code);
+      if (event.eventType === "referral_click") {
+        metric.clicks += 1;
+        if (event.visitorHash) metric.visitorHashes.add(String(event.visitorHash));
+        if (!metric.lastClickAt || at > dateOr(metric.lastClickAt)) metric.lastClickAt = at.toISOString();
+      }
+      if (event.eventType === "register" && event.userId) {
+        if (!registrationSignals.has(code)) registrationSignals.set(code, new Map());
+        const byUser = registrationSignals.get(code);
+        const current = byUser.get(String(event.userId)) || { visitorHashes: new Set(), registeredAt: at.toISOString() };
+        if (event.visitorHash) current.visitorHashes.add(String(event.visitorHash));
+        if (at < dateOr(current.registeredAt)) current.registeredAt = at.toISOString();
+        byUser.set(String(event.userId), current);
+      }
+    }
+    return { start, end, metrics, registrationSignals, persistentSourceAvailable, hasEvents: events.length > 0 };
+  }
+
+  function referralAccountRows(code, start, end, registrationSignals) {
+    const signals = registrationSignals.get(code) || new Map();
+    const visitorOwners = new Map();
+    for (const [username, signal] of signals.entries()) {
+      for (const visitorHash of signal.visitorHashes || []) {
+        if (!visitorOwners.has(visitorHash)) visitorOwners.set(visitorHash, new Set());
+        visitorOwners.get(visitorHash).add(username);
+      }
+    }
+
+    return getAllUsers()
+      .filter(user => normalizeCode(user.referralCodeUsed) === code)
+      .filter(user => isDateInRange(user.referralAttributedAt || user.registeredAt, start, end))
+      .map(user => {
+        const username = String(user.username || "");
+        const signal = signals.get(username);
+        const visitorHashes = [...(signal?.visitorHashes || [])];
+        const sharedVisitor = visitorHashes.some(visitorHash => (visitorOwners.get(visitorHash)?.size || 0) > 1);
+        return {
+          username,
+          displayName: String(user.displayName || username).slice(0, 60),
+          registeredAt: user.registeredAt || null,
+          attributedAt: user.referralAttributedAt || user.registeredAt || null,
+          status: user.status || "offline",
+          suspicious: sharedVisitor,
+          suspicionReason: sharedVisitor ? "أكثر من حساب مرتبط بالمتصفح أو الجهاز نفسه" : "",
+          identityVerified: false
+        };
+      })
+      .sort((a, b) => Date.parse(b.attributedAt || b.registeredAt || 0) - Date.parse(a.attributedAt || a.registeredAt || 0))
+      .slice(0, 100);
+  }
+
+  function buildReferralStats({ start, end, eventData } = {}) {
     ensureAllReferralCodes();
     const byCode = new Map(referrals);
     for (const user of getAllUsers()) {
@@ -997,25 +1232,72 @@ function createAnalyticsService(options = {}) {
       const record = byCode.get(code);
       record.ownerUserId = user.username;
     }
+
+    const rangeStart = start || new Date(Date.now() - DAY);
+    const rangeEnd = end || new Date();
+    const data = eventData || { metrics: new Map(), registrationSignals: new Map(), persistentSourceAvailable: false, hasEvents: false };
     return [...byCode.values()]
-      .map(record => ({
-        code: record.code,
-        ownerUserId: record.ownerUserId,
-        clicks: record.clicks,
-        uniqueClicks: record.uniqueClicks,
-        registrations: record.registrations,
-        activatedUsers: record.activatedUsers,
-        conversionRate: record.clicks ? (record.registrations / record.clicks) * 100 : 0,
-        lastClickAt: record.lastClickAt,
-        link: `/r/${encodeURIComponent(record.code)}`
-      }))
+      .map(record => {
+        const metric = data.metrics.get(record.code);
+        const accounts = referralAccountRows(record.code, rangeStart, rangeEnd, data.registrationSignals);
+        const clicks = metric ? metric.clicks : (data.persistentSourceAvailable ? 0 : record.clicks);
+        const uniqueClicks = metric ? metric.visitorHashes.size : (data.persistentSourceAvailable ? 0 : record.uniqueClicks);
+        const registrations = (data.persistentSourceAvailable || accounts.length > 0)
+          ? accounts.length
+          : record.registrations;
+        const clickConversionRate = clicks ? (registrations / clicks) * 100 : 0;
+        const uniqueConversionRate = uniqueClicks ? (registrations / uniqueClicks) * 100 : 0;
+        return {
+          code: record.code,
+          ownerUserId: record.ownerUserId,
+          clicks,
+          uniqueClicks,
+          repeatClicks: Math.max(0, clicks - uniqueClicks),
+          registrations,
+          activatedUsers: record.activatedUsers,
+          clickConversionRate,
+          uniqueConversionRate,
+          conversionRate: clickConversionRate,
+          lastClickAt: metric?.lastClickAt || record.lastClickAt,
+          metricsScope: data.persistentSourceAvailable || data.hasEvents ? "period" : "fallback",
+          accounts,
+          link: `/r/${encodeURIComponent(record.code)}`
+        };
+      })
       .sort((a, b) => b.registrations - a.registrations || b.clicks - a.clicks);
   }
 
-  async function getReferrals({ query = "" } = {}) {
+  function buildReferralSummary(start, end, rows) {
+    const newAccounts = getAllUsers().filter(user => isDateInRange(user.registeredAt, start, end));
+    const referredAccounts = newAccounts.filter(user => normalizeCode(user.referralCodeUsed));
+    const byCode = new Map();
+    for (const user of referredAccounts) {
+      const code = normalizeCode(user.referralCodeUsed);
+      byCode.set(code, (byCode.get(code) || 0) + 1);
+    }
+    return {
+      totalNewAccounts: newAccounts.length,
+      referralAccounts: referredAccounts.length,
+      directOrUnattributedAccounts: Math.max(0, newAccounts.length - referredAccounts.length),
+      suspiciousAccounts: rows.reduce((sum, row) => sum + row.accounts.filter(account => account.suspicious).length, 0),
+      byCode: [...byCode.entries()].map(([code, count]) => ({ code, registrations: count }))
+    };
+  }
+
+  async function getReferrals({ query = "", from, to } = {}) {
+    const end = dateOr(to, new Date());
+    const start = dateOr(from, new Date(end.getTime() - DAY));
     const cleanQuery = String(query || "").trim().toLowerCase();
-    const rows = buildReferralStats().filter(item => !cleanQuery || item.code.toLowerCase().includes(cleanQuery) || String(item.ownerUserId).toLowerCase().includes(cleanQuery));
-    return { total: rows.length, referrals: rows };
+    const eventData = await getReferralEventData({ from: start, to: end });
+    const allRows = buildReferralStats({ start, end, eventData });
+    const rows = allRows.filter(item => !cleanQuery || item.code.toLowerCase().includes(cleanQuery) || String(item.ownerUserId).toLowerCase().includes(cleanQuery));
+    return {
+      total: rows.length,
+      range: { from: start.toISOString(), to: end.toISOString() },
+      metricsScope: eventData.persistentSourceAvailable || eventData.hasEvents ? "period" : "fallback",
+      summary: buildReferralSummary(start, end, allRows),
+      referrals: rows
+    };
   }
 
   function referralForUser(username) {
@@ -1158,7 +1440,8 @@ function createAnalyticsService(options = {}) {
             updatedAt: new Date(nowProvider()).toISOString(),
             rollups: Object.fromEntries([...buckets.entries()].map(([key, value]) => [key, flattenBucket(value)])),
             users: Object.fromEntries([...users.entries()].map(([key, value]) => [key, value])),
-            referrals: Object.fromEntries([...referrals.entries()].map(([key, value]) => [key, { ...value, uniqueVisitors: value.uniqueVisitors.slice(-5000) }]))
+            referrals: Object.fromEntries([...referrals.entries()].map(([key, value]) => [key, { ...value, uniqueVisitors: value.uniqueVisitors.slice(-5000) }])),
+            errors: recentErrorEvents.slice(-errorEventMemoryLimit)
           };
           await fs.promises.mkdir(path.dirname(localPath), { recursive: true }).catch(() => {});
           await fs.promises.writeFile(localPath, JSON.stringify(snapshot), "utf8").catch(error => {
@@ -1343,6 +1626,7 @@ function createAnalyticsService(options = {}) {
     getTimeseries,
     getSystemSeries,
     getUsersStats,
+    getErrors,
     getReferrals,
     buildAiSummary,
     configureMongo,

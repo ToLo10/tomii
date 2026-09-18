@@ -3223,8 +3223,11 @@ async function buildTomiAiAnalyticsSnapshot({ from, to, actor } = {}) {
     .slice(0, 20);
 
   let referrals = [];
+  let referralSummary = null;
   if (actor && hasPermission(actor, "manage_referrals")) {
-    referrals = (await analyticsService.getReferrals({})).referrals || [];
+    const referralAnalytics = await analyticsService.getReferrals({ from: start, to: end });
+    referrals = referralAnalytics.referrals || [];
+    referralSummary = referralAnalytics.summary || null;
   }
 
   return {
@@ -3233,7 +3236,8 @@ async function buildTomiAiAnalyticsSnapshot({ from, to, actor } = {}) {
     timeseries,
     todayOverview,
     rooms,
-    referrals
+    referrals,
+    referralSummary
   };
 }
 
@@ -3564,6 +3568,16 @@ app.get("/api/admin/analytics/system", requireAnalyticsAdmin, async (req, res) =
   } catch (error) { res.status(500).json({ error: "تعذر تحميل مؤشرات السيرفر" }); }
 });
 
+app.get("/api/admin/analytics/errors", requireAnalyticsAdmin, async (req, res) => {
+  try {
+    if (!hasPermission(req.authUser, "view_system_metrics")) return res.status(403).json({ error: "لا تملك صلاحية عرض تفاصيل أخطاء السيرفر" });
+    res.json({ success: true, ...(await analyticsService.getErrors({ ...analyticsRange(req), limit: req.query?.limit })) });
+  } catch (error) {
+    console.error("Analytics error details failed:", error.message);
+    res.status(500).json({ error: "تعذر تحميل تفاصيل الأخطاء" });
+  }
+});
+
 app.get("/api/admin/analytics/users", requireAnalyticsAdmin, async (req, res) => {
   try {
     if (!hasPermission(req.authUser, "view_user_analytics")) return res.status(403).json({ error: "لا تملك صلاحية عرض إحصائيات المستخدمين" });
@@ -3574,7 +3588,7 @@ app.get("/api/admin/analytics/users", requireAnalyticsAdmin, async (req, res) =>
 app.get("/api/admin/analytics/referrals", requireAnalyticsAdmin, async (req, res) => {
   try {
     if (!hasPermission(req.authUser, "manage_referrals")) return res.status(403).json({ error: "لا تملك صلاحية عرض الإحالات" });
-    res.json({ success: true, ...(await analyticsService.getReferrals({ query: req.query?.q })) });
+    res.json({ success: true, ...(await analyticsService.getReferrals({ query: req.query?.q, ...analyticsRange(req) })) });
   } catch (error) { res.status(500).json({ error: "تعذر تحميل إحصائيات الإحالة" }); }
 });
 
@@ -4969,15 +4983,24 @@ app.post("/api/upload/session/:sessionId/complete", uploadLimiter, requireHttpAu
   } catch (err) {
     session.status = "uploading";
     persistResumableUploadSession(session);
+    const statusCode = Number(err?.statusCode) >= 400 && Number(err?.statusCode) < 500 ? Number(err.statusCode) : 500;
     analyticsService?.track("upload_failed", {
       userId: session.uploader,
       bytes: session.fileSize,
       page: "/api/upload/session/complete",
       feature: session.context,
-      metadata: { statusCode: Number(err?.statusCode) || 500 }
+      metadata: {
+        source: "upload",
+        kind: "upload",
+        statusCode,
+        method: "POST",
+        path: "/api/upload/session/complete",
+        phase: "complete",
+        code: String(err?.code || "UPLOAD_COMPLETE_FAILED").slice(0, 80),
+        message: String(err?.message || "تعذر إكمال رفع الملف").slice(0, 240)
+      }
     });
     console.error("Resumable upload completion failed:", err?.stack || err?.message || err);
-    const statusCode = Number(err?.statusCode) >= 400 && Number(err?.statusCode) < 500 ? Number(err.statusCode) : 500;
     return res.status(statusCode).json({
       error: statusCode === 400 ? err.message : "تعذر حفظ أو إرسال الملف، ويمكن إعادة المحاولة"
     });
@@ -5174,6 +5197,22 @@ app.post("/api/upload", uploadLimiter, requireHttpAuth, limitConcurrentUploads, 
     const statusCode = Number(err?.statusCode) >= 400 && Number(err?.statusCode) < 600
       ? Number(err.statusCode)
       : 500;
+    analyticsService?.track("upload_failed", {
+      userId: req.authUser,
+      bytes: Number(req.file?.size || 0),
+      page: "/api/upload",
+      feature: String(req.body?.context || "chat").slice(0, 40),
+      metadata: {
+        source: "upload",
+        kind: "upload",
+        statusCode,
+        method: "POST",
+        path: "/api/upload",
+        phase: "legacy-upload",
+        code: String(err?.code || "UPLOAD_FAILED").slice(0, 80),
+        message: String(err?.message || "تعذر حفظ أو إرسال الملف").slice(0, 240)
+      }
+    });
     res.status(statusCode).json({
       error: err?.code === "EXTERNAL_MEDIA_STORAGE_REQUIRED"
         ? err.message
@@ -6121,10 +6160,13 @@ io.on("connection", (socket) => {
         status: "online",
         lastSeen: new Date().toISOString()
       };
+      const socketAnalyticsCookies = parseCookies(socket.handshake.headers.cookie || "");
       analyticsService?.track("register", {
         userId: uVal.username,
         refCode: String(refCode || "").slice(0, 40),
-        page: "/index.html"
+        page: "/index.html",
+        visitorId: socketAnalyticsCookies.tomi_vid || "",
+        sessionId: socketAnalyticsCookies.tomi_sid || ""
       });
       saveDB(db);
 
