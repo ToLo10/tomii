@@ -7,9 +7,7 @@
     <title>TOMI - Room Chat</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <link rel="stylesheet" href="room.css">
-    <link rel="stylesheet" href="/ai.css?v=20260915-ai1">
     <script src="/analytics-client.js" defer></script>
-    <script src="/ai-client.js?v=20260915-ai1" defer></script>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #0a0a12; color: #fff; overflow: hidden; height: 100vh; width: 100vw; }
@@ -6103,6 +6101,7 @@
             const ext = name.includes('.') ? name.slice(name.lastIndexOf('.')) : '';
             const videoExts = new Set(['.mp4','.m4v','.mov','.webm','.mkv','.avi','.3gp','.3g2','.mpeg','.mpg','.m2v','.m1v','.ts','.mts','.m2ts','.ogv','.flv','.f4v','.wmv','.asf','.vob','.rm','.rmvb','.mxf','.divx','.xvid']);
             const audioExts = new Set(['.m4a','.mp3','.aac','.wav','.ogg','.opus','.flac','.weba']);
+            const imageExts = new Set(['.jpg','.jpeg','.png','.webp','.bmp','.heic','.heif','.avif','.tif','.tiff','.svg']);
             const mediaPickerVideoMime = pickerKind === 'media'
                 && !/^voice[-_]/.test(name)
                 && !audioExts.has(ext)
@@ -6110,19 +6109,54 @@
             if (pickerKind === 'audio') return 'audio';
             if (mime === 'application/pdf' || ext === '.pdf') return 'pdf';
             if (mime === 'image/gif' || ext === '.gif') return 'gif';
-            if (mime.startsWith('image/')) return 'image';
+            if (mime.startsWith('image/') || imageExts.has(ext)) return 'image';
             if (pickerKind === 'media' && (videoExts.has(ext) || mediaPickerVideoMime)) return 'video';
             if (mime.startsWith('video/')) return 'video';
             if (!/^voice[-_]/.test(name) && videoExts.has(ext) && (mime === 'audio/mp4' || mime === 'audio/quicktime')) return 'video';
             if (mime.startsWith('audio/') || audioExts.has(ext) || /^voice[-_]/.test(name)) return 'audio';
             if (videoExts.has(ext)) return 'video';
-            // The native media picker can return a video with no extension and
-            // application/octet-stream. Treat the remaining non-audio media as
-            // video so its original bytes are delivered instead of hiding it as
-            // a generic document.
-            if (pickerKind === 'media' && !/^voice[-_]/.test(name)
-                && !audioExts.has(ext) && !mime.startsWith('audio/')) return 'video';
             return 'file';
+        }
+
+        // Android/iOS gallery providers sometimes return a selected image as
+        // application/octet-stream with no filename extension. Never guess
+        // that an unknown media file is a video: video uses a different upload
+        // path and that guess was the reason ordinary photos could fail at the
+        // final save step. Inspect only the first bytes when the metadata is
+        // ambiguous, so normal images remain fast and are sent immediately.
+        async function detectClientUploadType(file, pickerKind = 'file') {
+            const basicType = inferClientUploadType(file, pickerKind);
+            const name = String(file?.name || '').toLowerCase();
+            const mime = String(file?.type || '').toLowerCase();
+            const ext = name.includes('.') ? name.slice(name.lastIndexOf('.')) : '';
+            const genericMime = !mime || ['application/octet-stream', 'binary/octet-stream'].includes(mime);
+            const needsSignature = pickerKind === 'media' && (!ext || genericMime);
+            if (!needsSignature) return basicType;
+
+            try {
+                const bytes = new Uint8Array(await file.slice(0, 32).arrayBuffer());
+                const startsWith = (...signature) => signature.every((value, index) => bytes[index] === value);
+                const asciiAt = (offset, length) => {
+                    if (bytes.length < offset + length) return '';
+                    return String.fromCharCode(...bytes.slice(offset, offset + length));
+                };
+                const ftypBrand = asciiAt(8, 4).toLowerCase();
+
+                if (startsWith(0x89, 0x50, 0x4e, 0x47)) return 'image';
+                if (startsWith(0xff, 0xd8, 0xff)) return 'image';
+                if (asciiAt(0, 4) === 'GIF8') return 'gif';
+                if (asciiAt(0, 4) === 'RIFF' && asciiAt(8, 4) === 'WEBP') return 'image';
+                if (asciiAt(4, 4) === 'ftyp') {
+                    if (['heic', 'heix', 'hevc', 'hevx', 'mif1', 'msf1', 'avif'].includes(ftypBrand)) return 'image';
+                    if (['isom', 'iso2', 'mp41', 'mp42', 'avc1', 'hvc1', 'hev1', 'm4v', 'qt  ', '3gp4', '3gp5'].includes(ftypBrand)) return 'video';
+                }
+                if (startsWith(0x1a, 0x45, 0xdf, 0xa3)) return 'video';
+            } catch (_) {}
+
+            // Keep a known extension's classification if signature reading is
+            // unavailable. For a truly nameless generic media file, use the
+            // authenticated ordinary-file route instead of the video/R2 path.
+            return basicType === 'video' && !ext ? 'file' : basicType;
         }
 
         const RESUMABLE_UPLOAD_THRESHOLD = 4 * 1024 * 1024;
@@ -6664,7 +6698,7 @@
             throw lastError || new Error('تعذر رفع الملف');
         }
 
-        async function uploadAndSendChatFile(file, replySnapshot = null, pickerKind = 'file', extraMessageMeta = null) {
+        async function uploadAndSendChatFile(file, replySnapshot = null, pickerKind = 'file', extraMessageMeta = null, detectedFileType = '') {
             if (!roomId || !file) return;
             const uploadRoomId = roomId;
 
@@ -6682,7 +6716,7 @@
                     context: 'chat',
                     targetRoomId: uploadRoomId,
                     progressUI,
-                    clientFileType: inferClientUploadType(file, pickerKind),
+                    clientFileType: detectedFileType || inferClientUploadType(file, pickerKind),
                     messageMeta: {
                         msgId: localMsgId,
                         time: messageTime,
@@ -6793,7 +6827,7 @@
                 const largeJob = isLargeChatUploadJob(job);
                 activeChatUploadJobs += 1;
                 if (largeJob) activeLargeChatUploadJobs += 1;
-                uploadAndSendChatFile(job.file, job.replySnapshot, job.pickerKind, job.extraMessageMeta)
+                uploadAndSendChatFile(job.file, job.replySnapshot, job.pickerKind, job.extraMessageMeta, job.fileType)
                     .then(job.resolve, job.reject)
                     .finally(() => {
                         activeChatUploadJobs = Math.max(0, activeChatUploadJobs - 1);
@@ -6803,11 +6837,12 @@
             }
         }
 
-        function queueChatUpload(file, replySnapshot = null, pickerKind = 'file', extraMessageMeta = null) {
+        async function queueChatUpload(file, replySnapshot = null, pickerKind = 'file', extraMessageMeta = null) {
+            const fileType = await detectClientUploadType(file, pickerKind);
             return new Promise((resolve, reject) => {
                 chatUploadQueue.push({
                     file,
-                    fileType: inferClientUploadType(file, pickerKind),
+                    fileType,
                     replySnapshot,
                     pickerKind,
                     extraMessageMeta,
@@ -7531,7 +7566,8 @@
             const file = backgroundInput.files?.[0];
             backgroundInput.value = '';
             if (!file || !roomId) return;
-            if (!file.type.startsWith('image/') && !file.name.toLowerCase().endsWith('.gif')) {
+            const detectedType = await detectClientUploadType(file, 'media');
+            if (!['image', 'gif'].includes(detectedType)) {
                 alert('اختر صورة أو GIF كخلفية.');
                 return;
             }
@@ -7540,7 +7576,8 @@
             try {
                 const uploaded = await uploadFileToServer(file, {
                     context: 'background',
-                    targetRoomId: roomId
+                    targetRoomId: roomId,
+                    clientFileType: detectedType
                 });
                 socket.emit('set-chat-background', { roomId, fileId: uploaded.fileId });
             } catch (err) {

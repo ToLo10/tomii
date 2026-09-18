@@ -1645,8 +1645,10 @@ function classifyFileType(mimeType, originalName = "", clientHint = "") {
   // explicit video hint from the image/video picker is authoritative here.
   if (hint === "video" && !looksLikeVoiceRecording && !audioExts.has(ext)
     && !imageExts.has(ext) && ext !== ".gif" && ext !== ".pdf") return "video";
-  if (hint === "gif" && (mt === "image/gif" || ext === ".gif")) return "gif";
-  if (hint === "image" && (mt.startsWith("image/") || imageExts.has(ext))) return ext === ".gif" ? "gif" : "image";
+  const genericMime = !mt || ["application/octet-stream", "binary/octet-stream"].includes(mt);
+  if (hint === "gif" && (mt === "image/gif" || ext === ".gif" || (genericMime && !videoExts.has(ext) && !audioExts.has(ext)))) return "gif";
+  if (hint === "image" && (mt.startsWith("image/") || imageExts.has(ext)
+    || (genericMime && !videoExts.has(ext) && !audioExts.has(ext)))) return ext === ".gif" ? "gif" : "image";
   if (hint === "pdf" && (mt === "application/pdf" || ext === ".pdf")) return "pdf";
 
   if (mt === "application/pdf" || ext === ".pdf") return "pdf";
@@ -1758,8 +1760,9 @@ async function persistUploadedFileToCloud(reqFile, fileId, {
   if (!reqFile) throw new Error("الملف غير موجود");
 
   // R2 is the canonical store for new uploads. The source file is removed only
-  // after the object-store write succeeds, so a transient R2 failure can be
-  // retried without losing the upload.
+  // after the object-store write succeeds. If R2 is temporarily unavailable,
+  // keep the source file and fall through to GridFS/local storage so the chat
+  // message is not turned into a generic upload failure.
   if (objectStorage.isConfigured()) {
     const objectKey = objectStorage.buildObjectKey({
       fileId,
@@ -1767,22 +1770,26 @@ async function persistUploadedFileToCloud(reqFile, fileId, {
       context,
       roomId
     });
-    await objectStorage.putFile({
-      key: objectKey,
-      filePath: reqFile.path,
-      contentType: reqFile.mimetype || "application/octet-stream",
-      metadata: { fileId, context }
-    });
-    safeUnlink(reqFile.path);
-    return {
-      storage: "r2",
-      storedName: null,
-      cacheStoredName: null,
-      cacheExpiresAt: null,
-      gridFsId: null,
-      r2Key: objectKey,
-      size: reqFile.size
-    };
+    try {
+      await objectStorage.putFile({
+        key: objectKey,
+        filePath: reqFile.path,
+        contentType: reqFile.mimetype || "application/octet-stream",
+        metadata: { fileId, context }
+      });
+      safeUnlink(reqFile.path);
+      return {
+        storage: "r2",
+        storedName: null,
+        cacheStoredName: null,
+        cacheExpiresAt: null,
+        gridFsId: null,
+        r2Key: objectKey,
+        size: reqFile.size
+      };
+    } catch (error) {
+      console.warn("R2 upload failed; falling back to server storage:", error?.message || error);
+    }
   }
 
   if (!mongoReady || !gridFsBucket) {
