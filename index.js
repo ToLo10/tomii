@@ -98,6 +98,10 @@ function emptyDatabase() {
     notificationPreferences: {},
     pushSubscriptions: {},
     pushConfig: {},
+    // Only small resumable-upload metadata lives here. Media bytes never do;
+    // direct R2 sessions keep their multipart id and ETags so a process restart
+    // can resume the same object instead of starting the video again.
+    resumableUploads: {},
     voiceRooms: {},
     voiceRoomBans: {},
     voiceRoomInvites: {},
@@ -129,6 +133,16 @@ function loadDB() {
 }
 
 let db = loadDB();
+
+// In production a MongoDB outage must stop the service rather than silently
+// booting with an empty local JSON state and making users think their chats
+// disappeared. Local JSON remains available for explicit local development.
+const REQUIRE_MONGODB = String(
+  process.env.REQUIRE_MONGODB || "false"
+).toLowerCase() === "true";
+const ALLOW_LOCAL_JSON_FALLBACK = String(
+  process.env.ALLOW_LOCAL_JSON_FALLBACK || (CLOUD_DATABASE_ENABLED ? "false" : "true")
+).toLowerCase() === "true";
 
 // =========================================================
 // Stability guard: keep chat state bounded on small Render instances.
@@ -485,6 +499,9 @@ function repairLegacyMediaMetadata() {
 
 async function initCloudDatabase() {
   if (!CLOUD_DATABASE_ENABLED) {
+    if (REQUIRE_MONGODB) {
+      throw new Error("MONGODB_URI is required; refusing to start with disposable local chat state");
+    }
     console.log(`📁 Local JSON mode: ${DB_PATH}`);
     return;
   }
@@ -523,7 +540,10 @@ async function initCloudDatabase() {
   } catch (err) {
     mongoReady = false;
     gridFsBucket = null;
-    console.error("⚠️ MongoDB unavailable; using local JSON fallback:", err.message);
+    if (!ALLOW_LOCAL_JSON_FALLBACK || REQUIRE_MONGODB) {
+      throw new Error(`MongoDB is required for durable chat state: ${err.message}`);
+    }
+    console.error("⚠️ MongoDB unavailable; using explicitly allowed local JSON fallback:", err.message);
   }
 }
 
@@ -1547,6 +1567,15 @@ const MAX_UPLOAD_BYTES = Math.max(
   10 * 1024 * 1024,
   Number(process.env.MAX_UPLOAD_BYTES || 512 * 1024 * 1024)
 );
+// Production chat media must not fall back to Render's ephemeral disk. When
+// R2 is missing, reject the upload with a useful configuration error instead
+// of accepting bytes that will disappear on the next restart.
+const REQUIRE_EXTERNAL_MEDIA_STORAGE = String(
+  process.env.REQUIRE_EXTERNAL_MEDIA_STORAGE || "false"
+).toLowerCase() === "true";
+const DIRECT_MEDIA_FILE_TYPES = new Set([
+  "image", "gif", "video", "audio", "file", "pdf"
+]);
 const AUDIO_RECORDING_BITRATE = Math.min(
   256000,
   Math.max(64000, Number(process.env.AUDIO_RECORDING_BITRATE || 160000) || 160000)
@@ -1570,6 +1599,131 @@ const UPLOAD_SESSION_TTL_MS = Math.max(
   Number(process.env.UPLOAD_SESSION_TTL_MS || 12 * 60 * 60 * 1000) || 12 * 60 * 60 * 1000
 );
 const uploadSessions = new Map();
+
+function resumableUploadPartsSnapshot(session) {
+  if (!(session?.r2Parts instanceof Map)) return [];
+  return [...session.r2Parts.entries()]
+    .map(([partNumber, part]) => ({
+      partNumber: Number(partNumber),
+      etag: String(part?.etag || "").slice(0, 512),
+      size: Number(part?.size || 0)
+    }))
+    .filter(part => Number.isInteger(part.partNumber) && part.partNumber > 0 && part.etag && part.size > 0)
+    .sort((a, b) => a.partNumber - b.partNumber);
+}
+
+function resumableUploadRecord(session) {
+  if (!session || session.mode !== "r2-multipart" || !session.id || !session.r2Key) return null;
+  return {
+    id: session.id,
+    uploader: session.uploader,
+    roomId: session.roomId || null,
+    context: session.context || "chat",
+    originalName: session.originalName || "file",
+    mimeType: session.mimeType || "application/octet-stream",
+    clientFileType: session.clientFileType || "",
+    fileType: session.fileType || "file",
+    fileSize: Number(session.fileSize || 0),
+    received: Number(session.received || 0),
+    fileId: session.fileId || null,
+    mode: "r2-multipart",
+    r2Key: session.r2Key,
+    r2UploadId: session.r2UploadId || null,
+    r2Parts: resumableUploadPartsSnapshot(session),
+    r2Completed: Boolean(session.r2Completed),
+    msgId: session.msgId || "",
+    time: session.time || "",
+    replyTo: session.replyTo && typeof session.replyTo === "object" ? session.replyTo : null,
+    voiceDurationMs: Number(session.voiceDurationMs || 0) || 0,
+    voiceWaveform: Array.isArray(session.voiceWaveform) ? session.voiceWaveform.slice(0, 80) : [],
+    status: session.status || "uploading",
+    createdAt: session.createdAt || new Date().toISOString(),
+    expiresAt: Number(session.expiresAt || (Date.now() + UPLOAD_SESSION_TTL_MS))
+  };
+}
+
+function persistResumableUploadSession(session) {
+  const record = resumableUploadRecord(session);
+  if (!record) return;
+  if (!db.resumableUploads || typeof db.resumableUploads !== "object") db.resumableUploads = {};
+  db.resumableUploads[record.id] = record;
+  saveDB(db);
+}
+
+function removePersistedResumableUpload(sessionOrId) {
+  const id = typeof sessionOrId === "string" ? sessionOrId : sessionOrId?.id;
+  if (!id || !db.resumableUploads?.[id]) return;
+  delete db.resumableUploads[id];
+  saveDB(db);
+}
+
+function restorePersistedR2UploadSessions() {
+  if (!objectStorage.isConfigured()) return;
+  const records = db.resumableUploads && typeof db.resumableUploads === "object"
+    ? db.resumableUploads
+    : {};
+  const now = Date.now();
+  let changed = false;
+
+  for (const [sessionId, record] of Object.entries(records)) {
+    if (!record || record.mode !== "r2-multipart" || !record.r2Key
+      || (!record.r2UploadId && record.r2Completed)) {
+      if (record?.r2Completed && record.r2Key) {
+        // A completed object will be recovered by the idempotent /complete call
+        // if the process stopped between R2 completion and Mongo persistence.
+      } else {
+        delete records[sessionId];
+        changed = true;
+        continue;
+      }
+    }
+
+    if (Number(record.expiresAt || 0) <= now) {
+      if (record.r2UploadId) {
+        queuePartialResumableR2Delete({
+          r2Key: record.r2Key,
+          r2UploadId: record.r2UploadId,
+          r2DeleteQueued: false
+        });
+      }
+      delete records[sessionId];
+      changed = true;
+      continue;
+    }
+
+    const parts = Array.isArray(record.r2Parts) ? record.r2Parts : [];
+    const session = {
+      ...record,
+      id: sessionId,
+      status: record.status === "completing" ? "uploading" : (record.status || "uploading"),
+      r2Parts: new Map(parts
+        .map(part => [Number(part?.partNumber), {
+          partNumber: Number(part?.partNumber),
+          etag: String(part?.etag || ""),
+          size: Number(part?.size || 0)
+        }])
+        .filter(([partNumber, part]) => Number.isInteger(partNumber) && partNumber > 0 && part.etag && part.size > 0)),
+      tempName: null,
+      tempPath: null,
+      writing: false,
+      completionPromise: null,
+      r2DeleteQueued: false,
+      gridFsUploadStream: null,
+      gridFsId: null,
+      gridFsUploadFailed: false,
+      gridFsUploadFinished: false,
+      gridFsDeleteQueued: false,
+      gridFsError: null,
+      cloudPersisting: false,
+      cloudRetryScheduled: false
+    };
+    session.received = [...session.r2Parts.values()].reduce((total, part) => total + Number(part.size || 0), 0);
+    uploadSessions.set(sessionId, session);
+  }
+
+  if (changed) saveDB(db);
+}
+
 const UPLOAD_DIR = path.join(__dirname, "uploads");
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
@@ -1589,9 +1743,17 @@ const MEDIA_LOCAL_CACHE_MAX_FILE_BYTES = Math.max(
 // original bytes for download/mobile playback, and prepare one browser-safe
 // H.264/AAC copy in the background. Render's native runtime includes ffmpeg;
 // the command can still be overridden for local deployments.
-const VIDEO_COMPATIBILITY_ENABLED = String(
-  process.env.VIDEO_COMPATIBILITY_ENABLED || "true"
+// Transcoding requires downloading a complete object to the instance and
+// running ffmpeg. Keep it opt-in so direct-R2 uploads never create a second
+// full-size local copy or a memory/CPU spike on a small Render instance.
+const VIDEO_COMPATIBILITY_REQUESTED = String(
+  process.env.VIDEO_COMPATIBILITY_ENABLED || "false"
 ).toLowerCase() !== "false";
+const VIDEO_COMPATIBILITY_SERVER_WORKER_ALLOWED = String(
+  process.env.VIDEO_COMPATIBILITY_ALLOW_SERVER_WORKER || "false"
+).toLowerCase() === "true";
+const VIDEO_COMPATIBILITY_ENABLED = VIDEO_COMPATIBILITY_REQUESTED
+  && (!objectStorage.isConfigured() || VIDEO_COMPATIBILITY_SERVER_WORKER_ALLOWED);
 const VIDEO_COMPATIBILITY_MAX_BYTES = Math.min(
   MAX_UPLOAD_BYTES,
   Math.max(
@@ -1624,7 +1786,10 @@ function classifyFileType(mimeType, originalName = "", clientHint = "") {
     ".vob", ".rm", ".rmvb", ".mxf", ".divx", ".xvid"
   ]);
   const audioExts = new Set([".m4a", ".mp3", ".aac", ".wav", ".ogg", ".opus", ".flac", ".weba"]);
-  const imageExts = new Set([".jpg", ".jpeg", ".png", ".webp", ".bmp", ".heic", ".heif", ".avif"]);
+  const imageExts = new Set([
+    ".jpg", ".jpeg", ".jfif", ".png", ".webp", ".bmp", ".heic", ".heif", ".avif",
+    ".tif", ".tiff", ".svg", ".ico"
+  ]);
   const looksLikeVoiceRecording = /^voice[-_]/i.test(path.basename(name));
   const looksLikeVideoLabel = /^(?:mp4|video|vid)[._-]/i.test(path.basename(name));
   const looksLikeMisreportedVideo = !looksLikeVoiceRecording && videoExts.has(ext)
@@ -1680,6 +1845,26 @@ function normalizeMediaMimeType(fileType, mimeType, originalName = "") {
     ".flac": "audio/flac",
     ".weba": "audio/webm"
   };
+  const imageByExtension = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".jfif": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+    ".bmp": "image/bmp",
+    ".heic": "image/heic",
+    ".heif": "image/heif",
+    ".avif": "image/avif",
+    ".tif": "image/tiff",
+    ".tiff": "image/tiff",
+    ".svg": "image/svg+xml",
+    ".ico": "image/x-icon",
+    ".gif": "image/gif"
+  };
+  if (fileType === "image" || fileType === "gif") {
+    if (mt.startsWith("image/")) return mt;
+    return imageByExtension[ext] || (fileType === "gif" ? "image/gif" : mt || "application/octet-stream");
+  }
   if (fileType === "audio") {
     if (mt.startsWith("audio/")) return mt;
     return audioByExtension[ext] || "audio/webm";
@@ -1760,9 +1945,9 @@ async function persistUploadedFileToCloud(reqFile, fileId, {
   if (!reqFile) throw new Error("الملف غير موجود");
 
   // R2 is the canonical store for new uploads. The source file is removed only
-  // after the object-store write succeeds. If R2 is temporarily unavailable,
-  // keep the source file and fall through to GridFS/local storage so the chat
-  // message is not turned into a generic upload failure.
+  // after the object-store write succeeds. Production chat media must never
+  // fall through to GridFS/local storage when R2 is unavailable: that would
+  // recreate the Render disk/RAM failure this build is designed to prevent.
   if (objectStorage.isConfigured()) {
     const objectKey = objectStorage.buildObjectKey({
       fileId,
@@ -1788,7 +1973,14 @@ async function persistUploadedFileToCloud(reqFile, fileId, {
         size: reqFile.size
       };
     } catch (error) {
-      console.warn("R2 upload failed; falling back to server storage:", error?.message || error);
+      if (REQUIRE_EXTERNAL_MEDIA_STORAGE && context === "chat") {
+        const externalError = new Error("التخزين الخارجي للوسائط غير متاح حالياً؛ لم يتم حفظ الملف على السيرفر");
+        externalError.statusCode = 503;
+        externalError.code = "EXTERNAL_MEDIA_STORAGE_REQUIRED";
+        externalError.cause = error;
+        throw externalError;
+      }
+      console.warn("R2 upload failed; using the explicitly allowed compatibility storage:", error?.message || error);
     }
   }
 
@@ -1961,7 +2153,7 @@ function queuePartialResumableGridFsDelete(session) {
 }
 
 function queuePartialResumableR2Delete(session) {
-  if (!session?.r2UploadId || session.r2DeleteQueued || !session.r2Key) return;
+  if (!session?.r2UploadId || session.r2Completed || session.r2DeleteQueued || !session.r2Key) return;
   session.r2DeleteQueued = true;
   uploadDeletionChain = uploadDeletionChain
     .catch(() => {})
@@ -2469,7 +2661,8 @@ function queueResumableVideoCloudPersistence(session, fileId, record, { keepLoca
 function resumePendingVideoCloudUploads() {
   if (!objectStorage.isConfigured() && (!mongoReady || !gridFsBucket)) return;
   for (const [fileId, record] of Object.entries(db.uploads || {})) {
-    if (!record || !["video", "audio"].includes(record.fileType) || record.cloudPending !== true || record.storage !== "local" || !record.storedName) continue;
+    if (!record || !["image", "gif", "video", "audio"].includes(record.fileType)
+      || record.cloudPending !== true || record.storage !== "local" || !record.storedName) continue;
     const tempName = path.basename(String(record.storedName));
     const tempPath = path.join(UPLOAD_DIR, tempName);
     if (!fs.existsSync(tempPath)) {
@@ -2482,7 +2675,7 @@ function resumePendingVideoCloudUploads() {
       tempName,
       tempPath,
       originalName: record.originalName || tempName,
-      mimeType: record.mimeType || "video/mp4",
+      mimeType: record.mimeType || "application/octet-stream",
       fileSize: Number(record.size || 0),
       gridFsUploadStream: null,
       gridFsId: null,
@@ -3096,6 +3289,8 @@ app.get("/api/health", (_req, res) => {
       ? "cloudflare-r2"
       : (gridFsBucket ? "mongodb-gridfs" : "local-disk"),
     directObjectStorage: objectStorage.isConfigured(),
+    externalMediaStorageRequired: REQUIRE_EXTERNAL_MEDIA_STORAGE,
+    activeResumableUploads: uploadSessions.size,
     turn: CLOUDFLARE_TURN_CONFIGURED ? "cloudflare" : (staticTurnConfigured ? "static" : "stun-only"),
     notifications: webPushReady ? "enabled" : "unavailable",
     analytics: {
@@ -3644,6 +3839,8 @@ app.get("/api/client-config", requireHttpAuth, (_req, res) => {
     uploadChunkSize: UPLOAD_CHUNK_SIZE,
     resumableUploads: true,
     directObjectStorage: objectStorage.isConfigured(),
+    externalMediaStorageRequired: REQUIRE_EXTERNAL_MEDIA_STORAGE,
+    mediaBytesBypassServer: objectStorage.isConfigured(),
     objectStorageProvider: objectStorage.isConfigured() ? "cloudflare-r2" : null,
     objectStoragePartSize: objectStorage.isConfigured() ? objectStorage.getPartSize() : null,
     audioRecording: {
@@ -4067,7 +4264,9 @@ function publishStoredUploadMessage({ actor, roomIdOrCode, fileId, msgId, time, 
     fileType: file.fileType,
     mimeType: file.mimeType,
     fileSize: file.size,
-    playbackStatus: file.fileType === "video" ? (file.playbackStatus || "queued") : null,
+    playbackStatus: file.fileType === "video"
+      ? (file.playbackStatus || (VIDEO_COMPATIBILITY_ENABLED ? "queued" : "disabled"))
+      : null,
     userId: actor,
     username: actor,
     displayName: user.displayName || actor,
@@ -4137,11 +4336,12 @@ function publishStoredUploadMessage({ actor, roomIdOrCode, fileId, msgId, time, 
   return { success: true, messageData };
 }
 
-// 📎 Resumable HTTP uploads.
-// Files are written directly to disk instead of being converted to Base64.
-// A mobile browser can lose focus while the system picker is open; resumable
-// chunks let it continue from the last confirmed byte instead of restarting a
-// large video or leaving a false 100% progress card behind.
+// 📎 Resumable uploads.
+// With R2 configured, media bytes go browser -> R2 and this API handles only
+// multipart authorization/ETags. The disk stream below remains only for local
+// development or an explicitly selected compatibility fallback. A mobile
+// browser can lose focus while the picker is open; resumable parts continue
+// from the last confirmed byte instead of restarting the whole file.
 function validateUploadSessionScope(uploader, roomIdOrCode, context) {
   let roomId = null;
   if (roomIdOrCode) {
@@ -4172,7 +4372,9 @@ function uploadSessionPublicResult(session, record, message = null, extra = {}) 
     mimeType: record?.mimeType || session.mimeType,
     size: Number(record?.size || session.fileSize || 0),
     url: `/api/files/${encodeURIComponent(fileId)}`,
-    playbackStatus: record?.fileType === "video" ? (record.playbackStatus || "queued") : null,
+    playbackStatus: record?.fileType === "video"
+      ? (record.playbackStatus || (VIDEO_COMPATIBILITY_ENABLED ? "queued" : "disabled"))
+      : null,
     playbackUrl: record?.fileType === "video"
       && record.playbackStatus === "ready"
       && record.playbackMode === "compatibility"
@@ -4285,14 +4487,21 @@ app.post("/api/upload/session", uploadLimiter, requireHttpAuth, limitConcurrentU
     }
     const sessionId = "ups_" + crypto.randomBytes(18).toString("hex");
     const fileId = "upl_" + crypto.randomBytes(16).toString("hex");
-    // Keep images and ordinary documents on the authenticated server path.
-    // Multipart browser uploads require bucket CORS/ETag exposure and a CORS
-    // mistake should never make every photo fail. Large video/audio files are
-    // the expensive path, so those alone use direct R2 by default.
+    const chatMedia = context === "chat" && fileSize > 0 && DIRECT_MEDIA_FILE_TYPES.has(fileType);
+    if (chatMedia && REQUIRE_EXTERNAL_MEDIA_STORAGE && !objectStorage.isConfigured()) {
+      return res.status(503).json({
+        error: "التخزين الخارجي للوسائط غير مهيأ على السيرفر. أضف إعدادات Cloudflare R2 ثم أعد المحاولة."
+      });
+    }
+
+    // Every non-empty chat attachment uses browser-to-R2 multipart transfer.
+    // Render receives only small authorization/ETag requests, so media bytes
+    // never occupy its disk, heap, external buffers or upload bandwidth.
+    // `forceServerUpload` is retained only for explicit local/legacy tools; it
+    // cannot bypass the production chat-media storage rule above.
     const directR2 = objectStorage.isConfigured()
       && fileSize > 0
-      && !forceServerUpload
-      && ["video", "audio"].includes(fileType);
+      && (chatMedia || !forceServerUpload);
     let tempName = null;
     let tempPath = null;
     let r2Key = null;
@@ -4355,6 +4564,7 @@ app.post("/api/upload/session", uploadLimiter, requireHttpAuth, limitConcurrentU
       gridFsError: null
     };
     uploadSessions.set(sessionId, session);
+    if (directR2) persistResumableUploadSession(session);
     pendingR2Upload = null;
     // With R2 enabled, the browser sends each part directly to the object store
     // and this service only authorizes parts, records metadata, and publishes
@@ -4384,6 +4594,7 @@ app.get("/api/upload/session/:sessionId", requireHttpAuth, (req, res) => {
   if (session.status !== "completed" && session.expiresAt <= Date.now()) {
     if (session.status !== "uploaded") queuePartialResumableUploadDelete(session);
     safeUnlink(session.tempPath);
+    removePersistedResumableUpload(session);
     uploadSessions.delete(session.id);
     return res.status(410).json({ error: "انتهت صلاحية جلسة الرفع" });
   }
@@ -4398,6 +4609,7 @@ app.get("/api/upload/session/:sessionId/part-url", uploadLimiter, requireHttpAut
   }
   if (session.expiresAt <= Date.now()) {
     queuePartialResumableUploadDelete(session);
+    removePersistedResumableUpload(session);
     uploadSessions.delete(session.id);
     return res.status(410).json({ error: "انتهت صلاحية جلسة الرفع" });
   }
@@ -4449,6 +4661,7 @@ app.post("/api/upload/session/:sessionId/part", uploadLimiter, requireHttpAuth, 
   session.r2Parts.set(partNumber, { etag: etag.slice(0, 512), size });
   session.received = [...session.r2Parts.values()].reduce((total, part) => total + Number(part.size || 0), 0);
   session.expiresAt = Date.now() + UPLOAD_SESSION_TTL_MS;
+  persistResumableUploadSession(session);
   res.json({ success: true, ...uploadSessionState(session) });
 });
 
@@ -4458,6 +4671,7 @@ app.put("/api/upload/session/:sessionId/chunk", uploadLimiter, requireHttpAuth, 
   if (session.expiresAt <= Date.now()) {
     if (session.status !== "uploaded") queuePartialResumableUploadDelete(session);
     safeUnlink(session.tempPath);
+    removePersistedResumableUpload(session);
     uploadSessions.delete(session.id);
     return res.status(410).json({ error: "انتهت صلاحية جلسة الرفع" });
   }
@@ -4563,6 +4777,7 @@ app.post("/api/upload/session/:sessionId/complete", uploadLimiter, requireHttpAu
   if (session.expiresAt <= Date.now()) {
     if (session.status !== "uploaded") queuePartialResumableUploadDelete(session);
     safeUnlink(session.tempPath);
+    removePersistedResumableUpload(session);
     uploadSessions.delete(session.id);
     return res.status(410).json({ error: "انتهت صلاحية جلسة الرفع" });
   }
@@ -4573,6 +4788,7 @@ app.post("/api/upload/session/:sessionId/complete", uploadLimiter, requireHttpAu
 
   const completionPromise = (async () => {
     session.status = "completing";
+    persistResumableUploadSession(session);
     const fileId = session.fileId || ("upl_" + crypto.randomBytes(16).toString("hex"));
     let record = db.uploads?.[fileId] || null;
     const sessionFileType = classifyFileType(session.mimeType, session.originalName, session.clientFileType);
@@ -4600,16 +4816,35 @@ app.post("/api/upload/session/:sessionId/complete", uploadLimiter, requireHttpAu
           throw error;
         }
         if (!session.r2Completed) {
-          await objectStorage.completeMultipartUpload({
-            key: session.r2Key,
-            uploadId: session.r2UploadId,
-            parts
-          });
+          if (!session.r2UploadId) {
+            const error = new Error("جلسة التخزين الخارجي غير مكتملة؛ أعد المحاولة");
+            error.statusCode = 409;
+            throw error;
+          }
+          try {
+            await objectStorage.completeMultipartUpload({
+              key: session.r2Key,
+              uploadId: session.r2UploadId,
+              parts
+            });
+          } catch (completeError) {
+            // If Render restarted just after R2 accepted CompleteMultipart,
+            // retrying the old UploadId can return NoSuchUpload even though the
+            // final object is already safe. Confirm the object before failing.
+            try {
+              const remote = await objectStorage.headObject({ key: session.r2Key });
+              if (Number(remote?.size || 0) !== Number(session.fileSize || 0)) throw completeError;
+            } catch (_) {
+              throw completeError;
+            }
+          }
           session.r2Completed = true;
+          persistResumableUploadSession(session);
         }
         // The multipart upload is now a completed object; never abort it as a
         // partial upload if a later chat-publish retry takes a moment.
         session.r2UploadId = null;
+        persistResumableUploadSession(session);
         cloudFile = {
           storage: "r2",
           storedName: null,
@@ -4628,8 +4863,11 @@ app.post("/api/upload/session/:sessionId/complete", uploadLimiter, requireHttpAu
           mimetype: session.mimeType,
           size: session.fileSize
         };
-        // Old deployments without R2 keep the existing local/GridFS path.
-        const localFirstChatMedia = session.context === "chat" && ["video", "audio"].includes(sessionFileType);
+        // Chat media is published from the completed local spool first. This
+        // includes images: waiting for R2/GridFS here was the reason photos
+        // reached 99% and then failed or stayed pending on mobile.
+        const localFirstChatMedia = session.context === "chat"
+          && ["image", "gif", "video", "audio"].includes(sessionFileType);
         cloudFile = localFirstChatMedia
           ? localFirstVideoFile(session, fileId, keepLocalCache)
           : await persistUploadedFileToCloud(reqFile, fileId, {
@@ -4669,7 +4907,8 @@ app.post("/api/upload/session/:sessionId/complete", uploadLimiter, requireHttpAu
       session.fileId = fileId;
     }
 
-    if (["video", "audio"].includes(sessionFileType) && record.storage === "local" && record.cloudPending) {
+    if (["image", "gif", "video", "audio"].includes(sessionFileType)
+      && record.storage === "local" && record.cloudPending) {
       queueResumableVideoCloudPersistence(session, fileId, record, { keepLocalCache });
     }
     if (sessionFileType === "video") queueVideoCompatibilityJob(fileId);
@@ -4695,6 +4934,7 @@ app.post("/api/upload/session/:sessionId/complete", uploadLimiter, requireHttpAu
           uploaded: true,
           publishError: publishResult.error || "تم رفع الملف لكن تعذر إرساله للمحادثة"
         });
+        persistResumableUploadSession(session);
         analyticsService?.track("upload_complete", {
           userId: session.uploader,
           bytes: session.fileSize,
@@ -4704,10 +4944,15 @@ app.post("/api/upload/session/:sessionId/complete", uploadLimiter, requireHttpAu
         return session.result;
       }
       publishedMessage = publishResult.messageData;
+      // A successful upload must survive an immediate Render restart. The
+      // media bytes are already in R2; this short Mongo flush commits only the
+      // small upload record and chat message before acknowledging the client.
+      await flushCloudDatabase();
     }
 
     session.status = "completed";
     session.result = uploadSessionPublicResult(session, record, publishedMessage);
+    removePersistedResumableUpload(session);
     analyticsService?.track("upload_complete", {
       userId: session.uploader,
       bytes: session.fileSize,
@@ -4723,6 +4968,7 @@ app.post("/api/upload/session/:sessionId/complete", uploadLimiter, requireHttpAu
     return res.json(result);
   } catch (err) {
     session.status = "uploading";
+    persistResumableUploadSession(session);
     analyticsService?.track("upload_failed", {
       userId: session.uploader,
       bytes: session.fileSize,
@@ -4745,6 +4991,7 @@ app.delete("/api/upload/session/:sessionId", requireHttpAuth, (req, res) => {
   if (!session || session.uploader !== req.authUser) return res.status(404).json({ error: "جلسة الرفع غير موجودة" });
   if (session.status !== "completed" && session.status !== "uploaded") queuePartialResumableUploadDelete(session);
   safeUnlink(session.tempPath);
+  removePersistedResumableUpload(session);
   uploadSessions.delete(session.id);
   res.json({ success: true });
 });
@@ -4783,6 +5030,15 @@ app.post("/api/upload", uploadLimiter, requireHttpAuth, limitConcurrentUploads, 
     const clientFileType = String(req.body.clientFileType || "").trim().toLowerCase();
     const fileType = classifyFileType(req.file.mimetype, req.file.originalname, clientFileType);
     const storedMimeType = normalizeMediaMimeType(fileType, req.file.mimetype, req.file.originalname);
+    const chatMedia = context === "chat"
+      && Number(req.file.size || 0) > 0
+      && DIRECT_MEDIA_FILE_TYPES.has(fileType);
+    if (chatMedia && REQUIRE_EXTERNAL_MEDIA_STORAGE && !objectStorage.isConfigured()) {
+      safeUnlink(req.file.path);
+      return res.status(503).json({
+        error: "التخزين الخارجي للوسائط غير مهيأ على السيرفر. أضف إعدادات Cloudflare R2 ثم أعد المحاولة."
+      });
+    }
     if (["background", "avatar", "frame", "voice-room-image"].includes(context) && !["image", "gif"].includes(fileType)) {
       safeUnlink(req.file.path);
       return res.status(400).json({ error: "خلفية المحادثة يجب أن تكون صورة" });
@@ -4797,8 +5053,10 @@ app.post("/api/upload", uploadLimiter, requireHttpAuth, limitConcurrentUploads, 
       page: "/api/upload",
       feature: context
     });
-    const localFirstChatMedia = !objectStorage.isConfigured()
-      && context === "chat" && ["video", "audio"].includes(fileType);
+    // This endpoint is retained for older clients only. When R2 is configured,
+    // persistUploadedFileToCloud streams the temporary compatibility file to
+    // R2 and removes it; the current browser never uses this path for chat media.
+    const localFirstChatMedia = chatMedia && !objectStorage.isConfigured();
     const localFirstSession = localFirstChatMedia ? {
       id: "legacy_" + fileId,
       fileId,
@@ -4894,6 +5152,7 @@ app.post("/api/upload", uploadLimiter, requireHttpAuth, limitConcurrentUploads, 
         });
       }
       publishedMessage = publishResult.messageData;
+      await flushCloudDatabase();
     }
 
     res.json({
@@ -4904,13 +5163,22 @@ app.post("/api/upload", uploadLimiter, requireHttpAuth, limitConcurrentUploads, 
       mimeType: db.uploads[fileId].mimeType,
       size: req.file.size,
       url: `/api/files/${encodeURIComponent(fileId)}`,
-      playbackStatus: fileType === "video" ? (db.uploads[fileId].playbackStatus || "queued") : null,
+      playbackStatus: fileType === "video"
+        ? (db.uploads[fileId].playbackStatus || (VIDEO_COMPATIBILITY_ENABLED ? "queued" : "disabled"))
+        : null,
       message: publishedMessage
     });
   } catch (err) {
     safeUnlink(req.file?.path);
     console.error("Upload/publish failed:", err?.stack || err?.message || err);
-    res.status(500).json({ error: "تعذر حفظ أو إرسال الملف" });
+    const statusCode = Number(err?.statusCode) >= 400 && Number(err?.statusCode) < 600
+      ? Number(err.statusCode)
+      : 500;
+    res.status(statusCode).json({
+      error: err?.code === "EXTERNAL_MEDIA_STORAGE_REQUIRED"
+        ? err.message
+        : "تعذر حفظ أو إرسال الملف"
+    });
   }
 });
 
@@ -4932,6 +5200,22 @@ function effectiveStoredMimeType(record) {
   const isVoice = /^voice[-_]/i.test(path.basename(name));
   const looksLikeVideoLabel = /^(?:mp4|video|vid)[._-]/i.test(path.basename(name));
   const audioExts = new Set([".m4a", ".mp3", ".aac", ".wav", ".ogg", ".opus", ".flac", ".weba"]);
+  const imageByExtension = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".jfif": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+    ".bmp": "image/bmp",
+    ".heic": "image/heic",
+    ".heif": "image/heif",
+    ".avif": "image/avif",
+    ".tif": "image/tiff",
+    ".tiff": "image/tiff",
+    ".svg": "image/svg+xml",
+    ".ico": "image/x-icon",
+    ".gif": "image/gif"
+  };
   const audioByExtension = {
     ".m4a": "audio/mp4",
     ".mp3": "audio/mpeg",
@@ -4942,6 +5226,11 @@ function effectiveStoredMimeType(record) {
     ".flac": "audio/flac",
     ".weba": "audio/webm"
   };
+  if (record?.fileType === "image" || record?.fileType === "gif") {
+    return mimeType.startsWith("image/")
+      ? mimeType
+      : (imageByExtension[ext] || (record.fileType === "gif" ? "image/gif" : mimeType));
+  }
   if (record?.fileType === "audio") {
     return mimeType.startsWith("audio/") ? mimeType : (audioByExtension[ext] || "audio/webm");
   }
@@ -7151,7 +7440,7 @@ io.on("connection", (socket) => {
   // Compatibility path for older clients that upload first and publish over Socket.IO.
   // New clients publish in the same HTTP /api/upload request, but keeping this
   // handler makes rolling deploys and already-open browser tabs safe.
-  socket.on("send-uploaded-file", ({
+  socket.on("send-uploaded-file", async ({
     roomId: roomIdOrCode,
     fileId,
     msgId,
@@ -7178,6 +7467,11 @@ io.on("connection", (socket) => {
         if (typeof ack === "function") ack({ success: false, error: result.error || "تعذر إرسال الملف." });
         return;
       }
+
+      // Older browser tabs publish after the legacy upload request. Wait for
+      // the small Mongo state write before acknowledging, so an immediate
+      // Render restart cannot make the just-sent message appear to disappear.
+      await flushCloudDatabase();
 
       socket.emit("upload-message-sent", {
         success: true,
@@ -8996,6 +9290,7 @@ function cleanupExpiredRuntimeState({ aggressive = false } = {}) {
     if (!session || (session.status !== "completed" && Number(session.expiresAt || 0) <= now)) {
       if (session && session.status !== "uploaded") queuePartialResumableUploadDelete(session);
       safeUnlink(session?.tempPath);
+      removePersistedResumableUpload(session);
       uploadSessions.delete(sessionId);
     } else if (session.status === "completed" && Number(session.expiresAt || 0) <= now) {
       uploadSessions.delete(sessionId);
@@ -9218,6 +9513,9 @@ async function startServer() {
   analyticsService?.start?.();
   consolidatePlatformInboxes();
   trimAllRoomHistories();
+  // Rebuild direct-R2 upload sessions from MongoDB. No media bytes are
+  // restored to Render; only multipart ids and confirmed ETags are loaded.
+  restorePersistedR2UploadSessions();
   cleanupExpiredRuntimeState({ aggressive: true });
   // If a previous instance restarted while a video was being copied from the
   // fast local source to GridFS, continue that copy without making the user

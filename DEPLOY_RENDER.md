@@ -3,7 +3,7 @@
 ## What this build does
 - Runs the Node.js + Socket.IO server on Render without keeping a laptop on.
 - Loads/saves the Chatify application state in MongoDB Atlas when `MONGODB_URI` is configured.
-- Stores new large video/audio uploads in Cloudflare R2 with direct browser-to-bucket multipart transfer when the `R2_*` variables are configured. Images and ordinary attachments use the authenticated upload path for reliable delivery. Existing MongoDB GridFS files remain readable, with the local `uploads/` directory as a development fallback.
+- Stores every new non-empty chat attachment (images, GIFs, videos, audio and files) in Cloudflare R2 with direct browser-to-bucket multipart transfer. Render receives only authorization, multipart ETags and small MongoDB metadata; it does not spool chat media to disk or RAM. Existing MongoDB GridFS files remain readable for old messages.
 - Persists login sessions in the same cloud state so normal Render restarts do not automatically sign everybody out.
 - Adds `/api/health` for Render health checks.
 - Adds account Settings for display name, password and avatar.
@@ -37,8 +37,10 @@ short-lived signed R2 URL, so large media does not consume the Node host's
 upload/download bandwidth. Older GridFS files continue to work through the
 authorized `/api/files/:fileId` route.
 
-If R2 is not configured, the existing GridFS/local-disk fallback remains active;
-configure R2 before using large production media.
+`REQUIRE_EXTERNAL_MEDIA_STORAGE=true` is enabled in `render.yaml`. If R2 is not
+configured, new chat media is rejected with a clear setup error instead of
+being written to Render's disposable disk. This prevents a restart or a full
+disk from turning a successful-looking upload into a missing message.
 
 ## Calls
 For basic WebRTC calls, STUN is included. For reliable cloud-hosted calls add a TURN service:
@@ -84,27 +86,23 @@ the Render logs show sustained Heap/external-buffer pressure and the thresholds
 have been adjusted for the selected plan. The service also limits concurrent
   upload requests with `MAX_CONCURRENT_UPLOAD_REQUESTS` (default `6`).
 
-Large chat videos use resumable 8MB chunks by default (`UPLOAD_CHUNK_SIZE`),
-so a mobile reconnect resumes from the last confirmed byte. The browser keeps
-only one large media upload active at a time; additional videos wait in a
-bounded queue. If direct R2 upload is unavailable, the client automatically
-falls back to the authenticated resumable server path. Images use the
-authenticated path by design, so they do not depend on R2 multipart CORS/ETag
-settings. The completed video is served immediately from the exact local byte
-copy while GridFS persistence finishes in the background; GridFS remains the
-durable source after migration.
+Large chat media uses resumable 8MB R2 multipart parts by default
+(`R2_PART_SIZE_BYTES`), so a mobile reconnect resumes from the last confirmed
+ETag. The browser keeps only one large media upload active at a time; additional
+videos wait in a bounded queue. Render only signs the next part and records its
+ETag, so sending several videos does not create complete local copies or a
+second GridFS copy. The same R2 multipart session is restored from MongoDB after
+a process restart.
 
-To make phone-camera HEVC/H.265, MKV and other desktop-incompatible videos play
-with both picture and sound, the server checks the uploaded file with `ffprobe`
-and prepares an H.264/AAC MP4 compatibility copy with `ffmpeg` in a single
-background queue. The original file is kept intact, and the upload response is
-not held open for conversion. Render's native Node runtime includes both tools.
-The relevant controls are `VIDEO_COMPATIBILITY_ENABLED`,
-`VIDEO_COMPATIBILITY_MAX_BYTES`, `VIDEO_COMPATIBILITY_MAX_QUEUE` and
-`VIDEO_COMPATIBILITY_TIMEOUT_MS`. Set the first one to `false` only if a local
-deployment intentionally has no ffmpeg installation.
+Video compatibility transcoding is disabled by default in this stability build:
+it would require downloading a complete R2 object and creating another local
+file on Render. If it is deliberately enabled with
+`VIDEO_COMPATIBILITY_ENABLED=true` **and**
+`VIDEO_COMPATIBILITY_ALLOW_SERVER_WORKER=true`, it consumes server CPU/disk and
+should be used only on a larger instance.
 
 When MongoDB is configured, the local JSON backup is disabled by default to
-avoid synchronous full-state serialization on every message. Set
-`WRITE_LOCAL_JSON_BACKUP=true` only when that local backup is deliberately
-required.
+avoid synchronous full-state serialization on every message. Production also
+sets `REQUIRE_MONGODB=true` and `ALLOW_LOCAL_JSON_FALLBACK=false`; a temporary
+MongoDB outage stops the process and lets Render retry instead of booting with
+an empty disposable database that looks like deleted chats.
