@@ -3,7 +3,7 @@
 ## What this build does
 - Runs the Node.js + Socket.IO server on Render without keeping a laptop on.
 - Loads/saves the Chatify application state in MongoDB Atlas when `MONGODB_URI` is configured.
-- Stores new uploads in Cloudflare R2 with direct browser-to-bucket multipart transfer when the `R2_*` variables are configured. Existing MongoDB GridFS files remain readable, with the local `uploads/` directory as a development fallback.
+- Stores new large video/audio uploads in Cloudflare R2 with direct browser-to-bucket multipart transfer when the `R2_*` variables are configured. Images and ordinary attachments use the authenticated upload path for reliable delivery. Existing MongoDB GridFS files remain readable, with the local `uploads/` directory as a development fallback.
 - Persists login sessions in the same cloud state so normal Render restarts do not automatically sign everybody out.
 - Adds `/api/health` for Render health checks.
 - Adds account Settings for display name, password and avatar.
@@ -85,9 +85,14 @@ have been adjusted for the selected plan. The service also limits concurrent
   upload requests with `MAX_CONCURRENT_UPLOAD_REQUESTS` (default `6`).
 
 Large chat videos use resumable 8MB chunks by default (`UPLOAD_CHUNK_SIZE`),
-so a mobile reconnect resumes from the last confirmed byte. The completed video
-is served immediately from the exact local byte copy while GridFS persistence
-finishes in the background; GridFS remains the durable source after migration.
+so a mobile reconnect resumes from the last confirmed byte. The browser keeps
+only one large media upload active at a time; additional videos wait in a
+bounded queue. If direct R2 upload is unavailable, the client automatically
+falls back to the authenticated resumable server path. Images use the
+authenticated path by design, so they do not depend on R2 multipart CORS/ETag
+settings. The completed video is served immediately from the exact local byte
+copy while GridFS persistence finishes in the background; GridFS remains the
+durable source after migration.
 
 To make phone-camera HEVC/H.265, MKV and other desktop-incompatible videos play
 with both picture and sound, the server checks the uploaded file with `ffprobe`

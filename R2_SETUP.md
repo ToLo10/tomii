@@ -1,9 +1,10 @@
 # Cloudflare R2 setup for TOMI
 
-This build sends new images, videos, audio and other uploads directly from the
-browser to Cloudflare R2. Northflank handles login, permissions, chat metadata
-and Socket.IO only. MongoDB/GridFS remains available for older files already in
-the database.
+This build sends large videos and audio directly from the browser to Cloudflare
+R2. Images and ordinary attachments use the authenticated app upload path so a
+missing bucket CORS/ETag rule cannot make photos fail. Northflank handles login,
+permissions, chat metadata and Socket.IO; MongoDB/GridFS remains available for
+older files already in the database.
 
 Keep `MONGODB_URI` configured as well for durable users, rooms, messages and R2
 file metadata. R2 stores the media bytes; MongoDB stores the small record that
@@ -67,9 +68,12 @@ log should say:
 Files: Cloudflare R2 (direct browser upload, 8388608 byte parts)
 ```
 
-Upload a test image or short video from a new browser session. New records have
-`storage: "r2"`; their `r2Key` is metadata only. The actual bytes do not pass
-through Northflank during normal upload or playback.
+Upload a test image and short video from a new browser session. Images are
+expected to use the authenticated server path. New direct video/audio records
+have `storage: "r2"`; their `r2Key` is metadata only. The actual bytes do not
+pass through Northflank during normal direct upload or playback. If the browser
+cannot use the direct R2 path, the client automatically retries the video via
+the resumable server path instead of leaving a failed message.
 
 The service keeps the old `/api/upload` and GridFS paths for compatibility. New
 browser uploads use the direct R2 path automatically when the variables above

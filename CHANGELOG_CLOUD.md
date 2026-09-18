@@ -1,7 +1,7 @@
 # Chatify Cloud Update
 
 ## 2026-09-17 — Direct Cloudflare R2 media storage
-- أضيف رفع Multipart مباشر من المتصفح إلى Cloudflare R2 للصور والفيديو والصوت والملفات، بدل تمرير البايتات الكبيرة عبر خادم Node.
+- أضيف رفع Multipart مباشر من المتصفح إلى Cloudflare R2 للفيديو والصوت الكبيرين، بدل تمرير البايتات الكبيرة عبر خادم Node. الصور والمرفقات العادية تستخدم مساراً موثقاً عبر السيرفر حتى لا تتأثر بإعداد CORS.
 - أضيفت روابط R2 موقعة قصيرة العمر للعرض والتنزيل، مع بقاء صلاحيات الغرف خلف `/api/files/:fileId`.
 - تبقى ملفات GridFS القديمة قابلة للقراءة، ويعمل المسار القديم كـ fallback عند عدم إعداد R2.
 - أضيف `R2_SETUP.md` و`.env.example` مع إعداد CORS ومتغيرات Northflank المطلوبة.
@@ -196,3 +196,12 @@ The account's internal username remains stable in this build because current pri
 - Screen sharing now uses contain/full-frame rendering and signals screen-share state to the other peer so desktop/phone screens are not cropped.
 - Audio calls can use an in-page floating mini window and, on browsers that support it, a synthetic Picture-in-Picture audio-call card for background browsing/apps.
 - Preserved the existing 50-message retention, Memory Guard, GridFS media delivery, Cloudflare TURN, voice rooms and moderation features.
+# Upload stability patch
+
+- Images and ordinary attachments use the authenticated server upload path;
+  they no longer depend on R2 multipart CORS/ETag exposure.
+- Large video/audio uploads are limited to one active browser transfer per
+  client, with additional files queued instead of overloading the service.
+- Direct R2 failures automatically fall back to the resumable server path.
+- Server upload requests now wait in a bounded queue before returning a busy
+  response.

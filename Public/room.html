@@ -6177,7 +6177,9 @@
             });
             const urlData = await urlResponse.json().catch(() => ({}));
             if (!urlResponse.ok || !urlData?.success || !urlData.url) {
-                throw new Error(urlData?.error || 'تعذر تجهيز رابط التخزين الخارجي');
+                const error = new Error(urlData?.error || 'تعذر تجهيز رابط التخزين الخارجي');
+                error.status = urlResponse.status;
+                throw error;
             }
 
             return new Promise((resolve, reject) => {
@@ -6199,7 +6201,9 @@
                     }
                     const etag = String(xhr.getResponseHeader('ETag') || xhr.getResponseHeader('etag') || '').trim();
                     if (!etag) {
-                        reject(new Error('لم يُرجع التخزين الخارجي ETag للمقطع؛ طبّق إعداد CORS المرفق مع المشروع'));
+                        const error = new Error('لم يُرجع التخزين الخارجي ETag للمقطع؛ سيتم التحويل تلقائياً لمسار السيرفر');
+                        error.status = 502;
+                        reject(error);
                         return;
                     }
                     try {
@@ -6210,16 +6214,30 @@
                         });
                         const registerData = await registerResponse.json().catch(() => ({}));
                         if (!registerResponse.ok || !registerData?.success) {
-                            throw new Error(registerData?.error || 'تعذر تأكيد مقطع التخزين الخارجي');
+                            const error = new Error(registerData?.error || 'تعذر تأكيد مقطع التخزين الخارجي');
+                            error.status = registerResponse.status;
+                            throw error;
                         }
                         resolve({ ...registerData, partNumber, etag, size: blob.size });
                     } catch (error) {
                         reject(error);
                     }
                 };
-                xhr.onerror = () => reject(new Error('انقطع الاتصال أثناء رفع المقطع إلى التخزين الخارجي'));
-                xhr.ontimeout = () => reject(new Error('انتهت مهلة رفع مقطع الملف ويمكن إعادة المحاولة'));
-                xhr.onabort = () => reject(new Error('تم إلغاء رفع الملف'));
+                xhr.onerror = () => {
+                    const error = new Error('انقطع الاتصال أثناء رفع المقطع إلى التخزين الخارجي');
+                    error.status = xhr.status || 0;
+                    reject(error);
+                };
+                xhr.ontimeout = () => {
+                    const error = new Error('انتهت مهلة رفع مقطع الملف ويمكن إعادة المحاولة');
+                    error.status = 408;
+                    reject(error);
+                };
+                xhr.onabort = () => {
+                    const error = new Error('تم إلغاء رفع الملف');
+                    error.status = 499;
+                    reject(error);
+                };
                 xhr.send(blob);
             });
         }
@@ -6254,6 +6272,23 @@
             });
         }
 
+        async function restartUploadThroughServer(file, options, sessionId) {
+            // A missing/incorrect R2 CORS policy should not turn into a failed
+            // video message. Abort the unused multipart upload, then resume the
+            // same authenticated resumable protocol through the app server.
+            try {
+                await fetch('/api/upload/session/' + encodeURIComponent(sessionId), {
+                    method: 'DELETE', credentials: 'same-origin', cache: 'no-store'
+                });
+            } catch (_) {}
+            delete options.resumeSessionId;
+            options.forceServerUpload = true;
+            if (options.progressUI?.meta) {
+                options.progressUI.meta.textContent = 'تعذر النقل المباشر • استئناف آمن عبر السيرفر...';
+            }
+            return uploadFileChunkedToServer(file, options);
+        }
+
         async function uploadFileChunkedToServer(file, options = {}) {
             // Keep the options object alive across the caller's retry. If the
             // browser loses the response after a chunk was accepted, the next
@@ -6272,6 +6307,7 @@
                 fileSize: Number(file.size || 0),
                 mimeType: file.type || 'application/octet-stream',
                 clientFileType,
+                forceServerUpload: Boolean(options.forceServerUpload),
                 ...uploadMessageMetadata(messageMeta)
             };
             let session = null;
@@ -6306,7 +6342,11 @@
                         body: JSON.stringify(metadata)
                     });
                     const data = await response.json().catch(() => ({}));
-                    if (!response.ok || !data?.success) throw new Error(data?.error || 'تعذر بدء رفع الملف');
+                    if (!response.ok || !data?.success) {
+                        const error = new Error(data?.error || 'تعذر بدء رفع الملف');
+                        error.status = response.status;
+                        throw error;
+                    }
                     session = data;
                 } catch (error) {
                     initError = error;
@@ -6375,7 +6415,12 @@
                                 break;
                             }
                         } catch (_) {}
-                        if (attempt >= 3) throw error;
+                        if (attempt >= 3) {
+                            if (directR2 && !options.forceServerUpload) {
+                                return restartUploadThroughServer(file, options, sessionId);
+                            }
+                            throw error;
+                        }
                         if (progressUI?.meta) progressUI.meta.textContent = 'انقطع الاتصال مؤقتاً • إعادة محاولة المقطع ' + (attempt + 1);
                         await new Promise(resolve => setTimeout(resolve, Math.min(2400, 500 * (attempt + 1))));
                     }
@@ -6424,7 +6469,12 @@
                             const status = await getUploadSessionStatus(sessionId);
                             if (['completed', 'uploaded'].includes(status?.status) && status.result) result = status.result;
                             else throw error;
-                        } catch (_) { throw error; }
+                        } catch (_) {
+                            if (directR2 && !options.forceServerUpload) {
+                                return restartUploadThroughServer(file, options, sessionId);
+                            }
+                            throw error;
+                        }
                     }
                     await new Promise(resolve => setTimeout(resolve, 700 * (attempt + 1)));
                 }
@@ -6455,11 +6505,10 @@
             }
 
             const uploadType = String(clientFileType || inferClientUploadType(file, 'file')).toLowerCase();
-            if (clientConfig.directObjectStorage || (context === 'chat' && clientConfig.resumableUploads !== false
-                && (file.size >= RESUMABLE_UPLOAD_THRESHOLD || uploadType === 'video' || uploadType === 'audio'))) {
-                return uploadFileChunkedToServer(file, options);
-            }
-
+            // Images/documents deliberately use the authenticated app upload
+            // path (or a server-side resumable session for large files). This
+            // avoids making photo delivery depend on R2 bucket CORS exposing
+            // multipart ETags. Video/audio still use direct R2 when available.
             if (context === 'chat' && clientConfig.resumableUploads !== false
                 && (file.size >= RESUMABLE_UPLOAD_THRESHOLD || uploadType === 'video' || uploadType === 'audio')) {
                 return uploadFileChunkedToServer(file, options);
@@ -6541,13 +6590,27 @@
                         }
                         resolve(data);
                     } else {
-                        reject(new Error(data?.error || 'تعذر رفع الملف'));
+                        const error = new Error(data?.error || 'تعذر رفع الملف');
+                        error.status = xhr.status;
+                        reject(error);
                     }
                 };
 
-                xhr.onerror = () => reject(new Error('انقطع الاتصال أثناء رفع الملف'));
-                xhr.ontimeout = () => reject(new Error('انتهت مهلة رفع الملف ويمكن إعادة المحاولة'));
-                xhr.onabort = () => reject(new Error('تم إلغاء رفع الملف'));
+                xhr.onerror = () => {
+                    const error = new Error('انقطع الاتصال أثناء رفع الملف');
+                    error.status = xhr.status || 0;
+                    reject(error);
+                };
+                xhr.ontimeout = () => {
+                    const error = new Error('انتهت مهلة رفع الملف ويمكن إعادة المحاولة');
+                    error.status = 408;
+                    reject(error);
+                };
+                xhr.onabort = () => {
+                    const error = new Error('تم إلغاء رفع الملف');
+                    error.status = 499;
+                    reject(error);
+                };
                 xhr.send(form);
             });
         }
@@ -6704,16 +6767,37 @@
 
         const chatUploadQueue = [];
         let activeChatUploadJobs = 0;
+        let activeLargeChatUploadJobs = 0;
         const MAX_CLIENT_CONCURRENT_UPLOADS = 2;
+        const MAX_CLIENT_CONCURRENT_LARGE_UPLOADS = 1;
+
+        function isLargeChatUploadJob(job) {
+            const type = String(job?.fileType || inferClientUploadType(job?.file, job?.pickerKind || 'file')).toLowerCase();
+            return Number(job?.file?.size || 0) >= RESUMABLE_UPLOAD_THRESHOLD
+                || type === 'video'
+                || type === 'audio';
+        }
 
         function pumpChatUploadQueue() {
             while (activeChatUploadJobs < MAX_CLIENT_CONCURRENT_UPLOADS && chatUploadQueue.length) {
-                const job = chatUploadQueue.shift();
+                // Keep only one large media stream active per browser. Small
+                // images can still use the second slot, so a video never blocks
+                // ordinary chat attachments and several selected videos become
+                // a safe queue instead of a server overload.
+                const jobIndex = chatUploadQueue.findIndex(job =>
+                    !isLargeChatUploadJob(job)
+                    || activeLargeChatUploadJobs < MAX_CLIENT_CONCURRENT_LARGE_UPLOADS
+                );
+                if (jobIndex < 0) break;
+                const [job] = chatUploadQueue.splice(jobIndex, 1);
+                const largeJob = isLargeChatUploadJob(job);
                 activeChatUploadJobs += 1;
+                if (largeJob) activeLargeChatUploadJobs += 1;
                 uploadAndSendChatFile(job.file, job.replySnapshot, job.pickerKind, job.extraMessageMeta)
                     .then(job.resolve, job.reject)
                     .finally(() => {
                         activeChatUploadJobs = Math.max(0, activeChatUploadJobs - 1);
+                        if (largeJob) activeLargeChatUploadJobs = Math.max(0, activeLargeChatUploadJobs - 1);
                         pumpChatUploadQueue();
                     });
             }
@@ -6721,7 +6805,15 @@
 
         function queueChatUpload(file, replySnapshot = null, pickerKind = 'file', extraMessageMeta = null) {
             return new Promise((resolve, reject) => {
-                chatUploadQueue.push({ file, replySnapshot, pickerKind, extraMessageMeta, resolve, reject });
+                chatUploadQueue.push({
+                    file,
+                    fileType: inferClientUploadType(file, pickerKind),
+                    replySnapshot,
+                    pickerKind,
+                    extraMessageMeta,
+                    resolve,
+                    reject
+                });
                 pumpChatUploadQueue();
             });
         }

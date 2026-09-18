@@ -3146,36 +3146,110 @@ const MAX_CONCURRENT_UPLOAD_REQUESTS = Math.max(
   2,
   Math.min(16, Number(process.env.MAX_CONCURRENT_UPLOAD_REQUESTS || 6) || 6)
 );
+// Do not reject a third file just because two chunks are currently being
+// written. A bounded wait queue applies backpressure at the HTTP boundary and
+// lets the browser continue with the next file when a slot is released.
+const MAX_UPLOAD_WAITERS = Math.max(
+  8,
+  Math.min(128, Number(process.env.MAX_UPLOAD_WAITERS || 64) || 64)
+);
+const UPLOAD_QUEUE_WAIT_MS = Math.max(
+  10_000,
+  Math.min(5 * 60 * 1000, Number(process.env.UPLOAD_QUEUE_WAIT_MS || 90_000) || 90_000)
+);
 const activeUploadsByUser = new Map();
 let activeUploadRequests = 0;
+const uploadWaitQueue = [];
+
+function canAcquireUploadSlot(username) {
+  const current = Number(activeUploadsByUser.get(username) || 0);
+  return current < MAX_CONCURRENT_UPLOADS_PER_USER
+    && activeUploadRequests < MAX_CONCURRENT_UPLOAD_REQUESTS;
+}
+
+function reserveUploadSlot(username) {
+  const current = Number(activeUploadsByUser.get(username) || 0);
+  activeUploadsByUser.set(username, current + 1);
+  activeUploadRequests += 1;
+}
+
+function releaseUploadSlot(username) {
+  activeUploadRequests = Math.max(0, activeUploadRequests - 1);
+  const count = Number(activeUploadsByUser.get(username) || 1) - 1;
+  if (count <= 0) activeUploadsByUser.delete(username);
+  else activeUploadsByUser.set(username, count);
+  pumpUploadWaitQueue();
+}
+
+function pumpUploadWaitQueue() {
+  for (;;) {
+    const index = uploadWaitQueue.findIndex(waiter => canAcquireUploadSlot(waiter.username));
+    if (index < 0) return;
+    const [waiter] = uploadWaitQueue.splice(index, 1);
+    waiter.start();
+  }
+}
+
 function limitConcurrentUploads(req, res, next) {
   const username = req.authUser;
   if (!username) return next();
-  const current = Number(activeUploadsByUser.get(username) || 0);
-  if (current >= MAX_CONCURRENT_UPLOADS_PER_USER) {
-    return res.status(429).json({
-      error: `للحفاظ على استقرار السيرفر يمكنك رفع ${MAX_CONCURRENT_UPLOADS_PER_USER} ملف/ملفات في نفس الوقت. انتظر اكتمال الرفع الحالي.`
-    });
-  }
-  if (activeUploadRequests >= MAX_CONCURRENT_UPLOAD_REQUESTS) {
-    return res.status(429).json({
-      error: "السيرفر مشغول حالياً بعمليات رفع أخرى. انتظر قليلاً ثم أعد المحاولة."
-    });
-  }
-  activeUploadsByUser.set(username, current + 1);
-  activeUploadRequests += 1;
-  let released = false;
-  const release = () => {
-    if (released) return;
-    released = true;
-    activeUploadRequests = Math.max(0, activeUploadRequests - 1);
-    const count = Number(activeUploadsByUser.get(username) || 1) - 1;
-    if (count <= 0) activeUploadsByUser.delete(username);
-    else activeUploadsByUser.set(username, count);
+  const attachRelease = () => {
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      releaseUploadSlot(username);
+    };
+    res.once("finish", release);
+    res.once("close", release);
   };
-  res.once("finish", release);
-  res.once("close", release);
-  next();
+
+  if (canAcquireUploadSlot(username)) {
+    reserveUploadSlot(username);
+    attachRelease();
+    return next();
+  }
+
+  if (uploadWaitQueue.length >= MAX_UPLOAD_WAITERS) {
+    return res.status(429).json({
+      error: "السيرفر مشغول حالياً. تم تجاوز طابور الرفع المؤقت، انتظر قليلاً ثم أعد المحاولة."
+    });
+  }
+
+  let settled = false;
+  const waiter = {
+    username,
+    start: () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(waiter.timer);
+      res.off("close", cancel);
+      reserveUploadSlot(username);
+      attachRelease();
+      next();
+    },
+    timer: null
+  };
+  const cancel = () => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(waiter.timer);
+    const index = uploadWaitQueue.indexOf(waiter);
+    if (index >= 0) uploadWaitQueue.splice(index, 1);
+  };
+  waiter.timer = setTimeout(() => {
+    if (settled) return;
+    settled = true;
+    const index = uploadWaitQueue.indexOf(waiter);
+    if (index >= 0) uploadWaitQueue.splice(index, 1);
+    res.off("close", cancel);
+    res.status(429).json({
+      error: "السيرفر ما زال مشغولاً. أعد المحاولة بعد لحظة وسيُستأنف الرفع من آخر مقطع محفوظ."
+    });
+  }, UPLOAD_QUEUE_WAIT_MS);
+  waiter.timer.unref?.();
+  res.once("close", cancel);
+  uploadWaitQueue.push(waiter);
 }
 
 const turnCredentialLimiter = rateLimit({
@@ -4152,6 +4226,8 @@ app.post("/api/upload/session", uploadLimiter, requireHttpAuth, limitConcurrentU
     const fileType = classifyFileType(mimeType, originalName, clientFileType);
     const storedMimeType = normalizeMediaMimeType(fileType, mimeType, originalName);
     const requestedMsgId = String(body.msgId || "").trim().slice(0, 180);
+    const forceServerUpload = body.forceServerUpload === true
+      || String(body.forceServerUpload || "").toLowerCase() === "true";
 
     // The POST response itself can be lost when Android backgrounds the page
     // immediately after the picker closes. Reusing the same message id makes a
@@ -4166,6 +4242,7 @@ app.post("/api/upload/session", uploadLimiter, requireHttpAuth, limitConcurrentU
           || existing.msgId !== requestedMsgId
           || Number(existing.fileSize) !== fileSize
           || existing.originalName !== originalName
+          || (forceServerUpload && existing.mode === "r2-multipart")
           || !["uploading", "completing", "completed", "uploaded"].includes(existing.status)) continue;
         existing.expiresAt = Date.now() + UPLOAD_SESSION_TTL_MS;
         return res.status(200).json(uploadSessionState(existing));
@@ -4201,7 +4278,14 @@ app.post("/api/upload/session", uploadLimiter, requireHttpAuth, limitConcurrentU
     }
     const sessionId = "ups_" + crypto.randomBytes(18).toString("hex");
     const fileId = "upl_" + crypto.randomBytes(16).toString("hex");
-    const directR2 = objectStorage.isConfigured() && fileSize > 0;
+    // Keep images and ordinary documents on the authenticated server path.
+    // Multipart browser uploads require bucket CORS/ETag exposure and a CORS
+    // mistake should never make every photo fail. Large video/audio files are
+    // the expensive path, so those alone use direct R2 by default.
+    const directR2 = objectStorage.isConfigured()
+      && fileSize > 0
+      && !forceServerUpload
+      && ["video", "audio"].includes(fileType);
     let tempName = null;
     let tempPath = null;
     let r2Key = null;
