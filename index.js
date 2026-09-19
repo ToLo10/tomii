@@ -9275,7 +9275,10 @@ function broadcastOnlineUsers() {
 // =========================================================
 // 7. تشغيل الخادم
 // =========================================================
-const PORT = process.env.PORT || 9000;
+// Northflank exposes the web service on port 8080. Keep honoring the
+// platform-provided PORT (Render and local deployments can provide their own)
+// and use 8080 only as the safe fallback for Northflank.
+const PORT = Number(process.env.PORT || 8080) || 8080;
 // Allow large mobile uploads on slow networks while still bounding hung requests.
 server.requestTimeout = Math.max(5 * 60 * 1000, Number(process.env.HTTP_REQUEST_TIMEOUT_MS || 15 * 60 * 1000) || 15 * 60 * 1000);
 server.headersTimeout = 65_000;
@@ -9573,7 +9576,7 @@ async function startServer() {
   initializeWebPush();
   saveDB(db);
 
-  server.listen(PORT, () => {
+  server.listen(PORT, "0.0.0.0", () => {
     console.log(`🚀 Server Started on port ${PORT}`);
     console.log(mongoReady ? "☁️ Database: MongoDB Atlas" : `📁 Database: local JSON (${DB_PATH})`);
     if (objectStorage.isConfigured()) {
