@@ -33,7 +33,15 @@ R2_PRESIGNED_DOWNLOAD_TTL_SECONDS=900
 REQUIRE_EXTERNAL_MEDIA_STORAGE=true
 REQUIRE_MONGODB=true
 ALLOW_LOCAL_JSON_FALLBACK=false
+# Optional: leave false unless the R2 bucket has browser CORS exposing ETag.
+R2_DIRECT_BROWSER_UPLOAD=false
 ```
+
+With `R2_DIRECT_BROWSER_UPLOAD=false`, images, videos, files, and voice notes
+use the server's resumable upload route and are then streamed to R2. This is
+the recommended setting for mobile clients because it avoids browser CORS and
+multipart `ETag` failures. Set it to `true` only after configuring and testing
+R2 bucket CORS.
 
 `R2_ENDPOINT` is optional. Leave it unset unless you use a custom S3-compatible
 endpoint; the app derives the normal endpoint from `R2_ACCOUNT_ID`.

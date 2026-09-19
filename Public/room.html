@@ -6307,16 +6307,28 @@
         }
 
         async function restartUploadThroughServer(file, options, sessionId) {
-            // Never copy the complete media file through Render as a fallback:
-            // that recreates the disk/RAM pressure and loses the main benefit of
-            // R2. Keep the multipart session alive so the next retry resumes the
-            // same object after CORS/network recovery.
-            const error = new Error('تعذر الرفع المباشر إلى التخزين الخارجي. تحقق من إعداد CORS في Cloudflare R2 ثم أعد المحاولة.');
-            error.status = 503;
-            if (options?.progressUI?.meta) {
-                options.progressUI.meta.textContent = 'تعذر النقل المباشر • سيتم استئناف نفس الملف بعد المحاولة';
+            // If direct browser-to-R2 mode was explicitly enabled and fails,
+            // abandon that multipart session and restart through the server.
+            // This is resumable at the HTTP-chunk level and does not require
+            // the user's browser to have R2 CORS/ETag access.
+            if (sessionId) {
+                try {
+                    await fetch('/api/upload/session/' + encodeURIComponent(sessionId), {
+                        method: 'DELETE',
+                        credentials: 'same-origin',
+                        cache: 'no-store'
+                    });
+                } catch (_) {}
             }
-            throw error;
+            if (options?.progressUI?.meta) {
+                options.progressUI.meta.textContent = 'تعذر النقل المباشر • جارٍ التحويل إلى رفع آمن عبر السيرفر';
+            }
+            const serverOptions = {
+                ...options,
+                forceServerUpload: true,
+                resumeSessionId: ''
+            };
+            return uploadFileChunkedToServer(file, serverOptions);
         }
 
         async function uploadFileChunkedToServer(file, options = {}) {
@@ -8197,10 +8209,12 @@
                     // Keep STUN fallback so calls can still work on permissive networks.
                     clientConfig.webrtc = {
                         ...clientConfig.webrtc,
-                        turnConfigured: false
+                        turnConfigured: false,
+                        turnProvider: 'stun-fallback',
+                        iceTransportPolicy: 'all'
                     };
                     turnCredentialsExpiresAt = 0;
-                    throw error;
+                    return clientConfig.webrtc;
                 } finally {
                     turnCredentialFetchPromise = null;
                 }

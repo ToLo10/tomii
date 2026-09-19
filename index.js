@@ -1610,6 +1610,14 @@ const MAX_UPLOAD_BYTES = Math.max(
 const REQUIRE_EXTERNAL_MEDIA_STORAGE = String(
   process.env.REQUIRE_EXTERNAL_MEDIA_STORAGE || "false"
 ).toLowerCase() === "true";
+// Keep browser-to-R2 uploads opt-in. They require bucket CORS to expose the
+// multipart ETag header, and a missing/incorrect CORS rule makes uploads fail
+// on phones even though the server-side R2 credentials are valid. The normal
+// path therefore sends resumable chunks to this service, which streams the
+// completed file to R2 without depending on browser CORS.
+const DIRECT_BROWSER_R2_UPLOAD = String(
+  process.env.R2_DIRECT_BROWSER_UPLOAD || "false"
+).toLowerCase() === "true";
 const DIRECT_MEDIA_FILE_TYPES = new Set([
   "image", "gif", "video", "audio", "file", "pdf"
 ]);
@@ -3330,6 +3338,7 @@ app.get("/api/health", (_req, res) => {
       ? "cloudflare-r2"
       : (gridFsBucket ? "mongodb-gridfs" : "local-disk"),
     directObjectStorage: objectStorage.isConfigured(),
+    directBrowserR2Upload: DIRECT_BROWSER_R2_UPLOAD && objectStorage.isConfigured(),
     externalMediaStorageRequired: REQUIRE_EXTERNAL_MEDIA_STORAGE,
     activeResumableUploads: uploadSessions.size,
     turn: CLOUDFLARE_TURN_CONFIGURED ? "cloudflare" : (staticTurnConfigured ? "static" : "stun-only"),
@@ -3889,9 +3898,10 @@ app.get("/api/client-config", requireHttpAuth, (_req, res) => {
     maxUploadBytes: MAX_UPLOAD_BYTES,
     uploadChunkSize: UPLOAD_CHUNK_SIZE,
     resumableUploads: true,
-    directObjectStorage: objectStorage.isConfigured(),
+    directObjectStorage: DIRECT_BROWSER_R2_UPLOAD && objectStorage.isConfigured(),
     externalMediaStorageRequired: REQUIRE_EXTERNAL_MEDIA_STORAGE,
-    mediaBytesBypassServer: objectStorage.isConfigured(),
+    mediaBytesBypassServer: DIRECT_BROWSER_R2_UPLOAD && objectStorage.isConfigured(),
+    serverUploadFallback: true,
     objectStorageProvider: objectStorage.isConfigured() ? "cloudflare-r2" : null,
     objectStoragePartSize: objectStorage.isConfigured() ? objectStorage.getPartSize() : null,
     audioRecording: {
@@ -4545,14 +4555,14 @@ app.post("/api/upload/session", uploadLimiter, requireHttpAuth, limitConcurrentU
       });
     }
 
-    // Every non-empty chat attachment uses browser-to-R2 multipart transfer.
-    // Render receives only small authorization/ETag requests, so media bytes
-    // never occupy its disk, heap, external buffers or upload bandwidth.
-    // `forceServerUpload` is retained only for explicit local/legacy tools; it
-    // cannot bypass the production chat-media storage rule above.
-    const directR2 = objectStorage.isConfigured()
+    // Browser-to-R2 multipart transfer is opt-in. The reliable default is the
+    // resumable server route, which avoids R2 CORS/ETag failures on mobile.
+    // `forceServerUpload` remains supported so the client can fall back from
+    // an explicitly enabled direct upload without starting a loop.
+    const directR2 = DIRECT_BROWSER_R2_UPLOAD
+      && objectStorage.isConfigured()
       && fileSize > 0
-      && (chatMedia || !forceServerUpload);
+      && !forceServerUpload;
     let tempName = null;
     let tempPath = null;
     let r2Key = null;
