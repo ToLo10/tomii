@@ -39,7 +39,44 @@ const io = new Server(server, {
 // 1. Persistence: MongoDB Atlas + local JSON development fallback
 // =========================================================
 const DB_PATH = path.join(__dirname, "chat_database.json");
-const MONGODB_URI = String(process.env.MONGODB_URI || "").trim();
+
+// Northflank can import dotenv values with surrounding quotes, and MongoDB
+// passwords commonly contain URI-reserved characters such as @ or $. Clean
+// and canonicalize the connection string before passing it to Mongoose so a
+// harmless ENV formatting difference cannot crash the whole web process.
+function normalizeMongoUri(value) {
+  let uri = String(value || "").trim();
+  if (
+    uri.length >= 2
+    && ((uri.startsWith('"') && uri.endsWith('"'))
+      || (uri.startsWith("'") && uri.endsWith("'")))
+  ) {
+    uri = uri.slice(1, -1).trim();
+  }
+  if (!uri) return "";
+
+  const schemeEnd = uri.indexOf("://");
+  if (schemeEnd < 0) return uri;
+  const authorityStart = schemeEnd + 3;
+  const separator = uri.lastIndexOf("@");
+  if (separator <= authorityStart) return uri;
+
+  const userInfo = uri.slice(authorityStart, separator);
+  const colon = userInfo.indexOf(":");
+  if (colon < 0) return uri;
+
+  const username = userInfo.slice(0, colon);
+  let password = userInfo.slice(colon + 1);
+  try {
+    password = decodeURIComponent(password);
+  } catch (_) {
+    // Keep raw text when an operator supplied a literal percent character.
+  }
+
+  return `${uri.slice(0, authorityStart)}${encodeURIComponent(username)}:${encodeURIComponent(password)}@${uri.slice(separator + 1)}`;
+}
+
+const MONGODB_URI = normalizeMongoUri(process.env.MONGODB_URI);
 const CLOUD_DATABASE_ENABLED = Boolean(MONGODB_URI);
 // A JSON backup is useful in local development, but serializing the complete
 // state synchronously on every message is unnecessary (and expensive) when
