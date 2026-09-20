@@ -3962,6 +3962,7 @@ body.image-lightbox-open { overflow: hidden; }
 .message.received .voice-note-meta { color: #aaa7bb; }
 .voice-note-audio { display: none; }
 .voice-note-error::after { content:'تعذر التشغيل'; display:block; color:#ff9c9c; font-size:.68rem; direction:rtl; }
+.voice-note-fallback-link { display:inline-block; margin-inline-start:8px; color:#c9c2ff; font-size:.72rem; text-decoration:underline; direction:rtl; }
 
 /* Never crop a shared desktop/phone screen. Keep its true aspect ratio and adapt on rotation. */
 .call-videos.screen-share-layout {

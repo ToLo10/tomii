@@ -3121,6 +3121,8 @@
         let selectedAudioOutputLabel = 'تلقائي';
         let callPrimaryView = 'remote';
         let callRenegotiating = false;
+        let callIceRecoveryPromise = null;
+        let callIceRecoveryAttempts = 0;
         let callMinimized = false;
         const MINI_CALL_GEOMETRY_KEY = 'tomi_mini_call_geometry_v2';
         let miniCallGeometry = null;
@@ -7215,10 +7217,32 @@
             center.appendChild(meta);
 
             const audio = document.createElement('audio');
-            audio.src = sourceUrl;
             audio.preload = 'metadata';
             audio.playsInline = true;
             audio.className = 'voice-note-audio';
+            const audioSource = document.createElement('source');
+            audioSource.src = sourceUrl;
+            const declaredMime = String(data.mimeType || '').trim();
+            if (declaredMime) audioSource.type = declaredMime;
+            audio.appendChild(audioSource);
+
+            const showVoicePlaybackFallback = () => {
+                wrap.classList.add('voice-note-error');
+                // Keep a native player available on mobile browsers that reject
+                // the custom WebM/MP4 source until the user explicitly retries.
+                audio.controls = true;
+                audio.preload = 'auto';
+                audio.style.display = 'block';
+                if (!wrap.querySelector('.voice-note-fallback-link')) {
+                    const fallback = document.createElement('a');
+                    fallback.href = sourceUrl;
+                    fallback.target = '_blank';
+                    fallback.rel = 'noopener';
+                    fallback.className = 'voice-note-fallback-link';
+                    fallback.textContent = 'فتح الصوت في مشغل الهاتف';
+                    wrap.appendChild(fallback);
+                }
+            };
 
             const setProgress = () => {
                 const total = Number(audio.duration || 0) || Math.max(0, Number(data.voiceDurationMs || 0) / 1000);
@@ -7235,10 +7259,16 @@
             audio.addEventListener('play', () => { playBtn.innerHTML = '<i class="fa-solid fa-pause"></i>'; });
             audio.addEventListener('pause', () => { playBtn.innerHTML = '<i class="fa-solid fa-play"></i>'; });
             audio.addEventListener('ended', () => { audio.currentTime = 0; setProgress(); });
-            audio.addEventListener('error', () => wrap.classList.add('voice-note-error'));
+            audio.addEventListener('loadeddata', () => wrap.classList.remove('voice-note-error'));
+            audio.addEventListener('canplay', () => wrap.classList.remove('voice-note-error'));
+            audio.addEventListener('error', showVoicePlaybackFallback);
             playBtn.addEventListener('click', async event => {
                 event.stopPropagation();
                 try {
+                    if (audio.readyState === 0) {
+                        audio.load();
+                        await new Promise(resolve => setTimeout(resolve, 0));
+                    }
                     if (audio.paused) await audio.play(); else audio.pause();
                 } catch (_) {
                     window.open(sourceUrl, '_blank', 'noopener');
@@ -7256,6 +7286,7 @@
             wrap.appendChild(playBtn);
             wrap.appendChild(center);
             wrap.appendChild(audio);
+            audio.load();
             return wrap;
         }
 
@@ -8235,6 +8266,49 @@
             };
         }
 
+        // A transient TURN API failure used to leave the call permanently on
+        // STUN-only ICE. That works on the same Wi-Fi, but fails behind CGNAT,
+        // carrier NAT or restrictive firewalls. Refresh the short-lived TURN
+        // credentials and restart ICE once the browser reports a real failure.
+        // Only the caller performs the restart to avoid offer/offer glare; the
+        // other peer answers through the existing renegotiation handlers.
+        async function recoverFailedCallConnection(pc) {
+            if (!activeCall || !activeCall.outgoing || peerConnection !== pc) return;
+            if (callIceRecoveryPromise || callIceRecoveryAttempts >= 2) return;
+
+            callIceRecoveryAttempts += 1;
+            const attempt = callIceRecoveryAttempts;
+            callIceRecoveryPromise = (async () => {
+                try {
+                    callStatus.textContent = clientConfig.webrtc?.cloudflareTurnConfigured
+                        ? 'جارٍ إعادة الربط عبر TURN...'
+                        : 'جارٍ إعادة محاولة اتصال الوسائط...';
+
+                    if (clientConfig.webrtc?.cloudflareTurnConfigured) {
+                        await refreshTurnCredentialsForCall(true);
+                    }
+                    if (!activeCall || peerConnection !== pc) return;
+
+                    if (typeof pc.setConfiguration === 'function') {
+                        pc.setConfiguration(getPeerConfig());
+                    }
+                    try { pc.restartIce(); } catch (_) {}
+                    await renegotiateActiveCall({ iceRestart: true });
+                } catch (error) {
+                    console.warn('ICE recovery attempt failed:', error);
+                    if (attempt >= 2 && activeCall && peerConnection === pc) {
+                        callStatus.textContent = clientConfig.webrtc?.turnConfigured
+                            ? 'تعذر استمرار الاتصال. أعد المحاولة.'
+                            : 'تعذر ربط الوسائط. تأكد من إعداد Cloudflare TURN.';
+                    }
+                } finally {
+                    callIceRecoveryPromise = null;
+                }
+            })();
+
+            return callIceRecoveryPromise;
+        }
+
         function safePlayMedia(element) {
             if (!element) return;
             const result = element.play?.();
@@ -8941,6 +9015,7 @@
                 if (!activeCall) return;
                 if (pc.connectionState === 'connected') {
                     callStatus.textContent = 'المكالمة متصلة';
+                    callIceRecoveryAttempts = 0;
                     attachRemoteMedia();
                 } else if (pc.connectionState === 'connecting') {
                     callStatus.textContent = 'جاري توصيل الوسائط...';
@@ -8948,15 +9023,18 @@
                     const hasTurn = Boolean(clientConfig.webrtc?.turnConfigured);
                     callStatus.textContent = hasTurn
                         ? 'تعذر استمرار الاتصال. جارٍ محاولة إعادة الربط...'
-                        : 'تعذر ربط الوسائط. يلزم TURN لبعض الشبكات.';
+                        : 'تعذر ربط الوسائط. جارٍ تجهيز TURN...';
+                    recoverFailedCallConnection(pc).catch(() => {});
                 }
             };
 
             pc.oniceconnectionstatechange = function() {
                 if (!activeCall) return;
+                if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
+                    callIceRecoveryAttempts = 0;
+                }
                 if (pc.iceConnectionState === 'failed' && activeCall.outgoing && !callRenegotiating) {
-                    try { pc.restartIce(); } catch (_) {}
-                    renegotiateActiveCall({ iceRestart: true }).catch(() => {});
+                    recoverFailedCallConnection(pc).catch(() => {});
                 }
             };
 
@@ -9192,6 +9270,8 @@
 
             try {
                 const callId = 'call_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+                callIceRecoveryAttempts = 0;
+                callIceRecoveryPromise = null;
                 if (clientConfig.webrtc?.cloudflareTurnConfigured) {
                     callStatus.textContent = 'جاري تجهيز خادم الاتصال الآمن...';
                     await refreshTurnCredentialsForCall();
@@ -9275,6 +9355,8 @@
                     callId:data.callId, roomId:data.roomId, targetUser:data.fromUser,
                     callType:data.callType, outgoing:false, upgradePending:false
                 };
+                callIceRecoveryAttempts = 0;
+                callIceRecoveryPromise = null;
                 microphoneMuted = false;
                 cameraEnabled = data.callType === 'video';
                 peerConnection = createPeerConnection(data.roomId, data.fromUser, data.callId);
@@ -9611,6 +9693,8 @@
             selectedAudioOutputDeviceId = '';
             selectedAudioOutputLabel = 'تلقائي';
             callRenegotiating = false;
+            callIceRecoveryPromise = null;
+            callIceRecoveryAttempts = 0;
             callUpgradePrompt.style.display = 'none';
             callModal.style.display = 'none';
             acceptCallBtn.style.display = 'none';
