@@ -11,7 +11,7 @@
     <script src="/notifications.js"></script>
     <script src="/socket.io/socket.io.js"></script>
     <script src="/analytics-client.js" defer></script>
-    <script src="/ai-client.js?v=20260915-ai1" defer></script>
+    <script src="/ai-client.js?v=20260922-ai2" defer></script>
     <style>
         :root {
             --bg-primary: #0f0f1a;
@@ -1022,6 +1022,20 @@
             color: #fcd34d;
             border: 1px solid rgba(245,158,11,.25);
         }
+        .charisma-inline-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 3px;
+            padding: 2px 7px;
+            border-radius: 999px;
+            background: rgba(250,204,21,.12);
+            color: #ffe291;
+            border: 1px solid rgba(250,204,21,.28);
+            font-size: 10px;
+            font-weight: 800;
+            vertical-align: middle;
+            white-space: nowrap;
+        }
         .user-name-line {
             display: flex;
             align-items: center;
@@ -1068,6 +1082,10 @@
             padding: 20px;
             margin-bottom: 20px;
         }
+        .platform-broadcast-copy-list { display: grid; gap: 10px; margin-top: 12px; }
+        .platform-broadcast-copy { padding: 13px 14px; border: 1px solid var(--border); border-radius: 12px; background: rgba(255,255,255,.035); }
+        .platform-broadcast-copy p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.75; }
+        .platform-broadcast-copy small { display: block; margin-top: 8px; color: var(--text-secondary); font-size: 12px; }
         .admin-card-title {
             display: flex;
             align-items: center;
@@ -1353,9 +1371,21 @@
                     <i class="fa-solid fa-comment-dots"></i>
                     <span>نافذة الدردشة</span>
                 </a>
+                <a href="explore.html" id="navExplore" class="nav-item">
+                    <i class="fa-solid fa-compass"></i>
+                    <span>اكسبلور</span>
+                </a>
                 <a href="voice-rooms.html" id="navVoiceRooms" class="nav-item">
                     <i class="fa-solid fa-microphone-lines"></i>
                     <span>الغرف الصوتية</span>
+                </a>
+                <a href="games.html" id="navGames" class="nav-item">
+                    <i class="fa-solid fa-gamepad"></i>
+                    <span>الألعاب</span>
+                </a>
+                <a href="wallet.html" id="navWallet" class="nav-item">
+                    <i class="fa-solid fa-wallet"></i>
+                    <span>المحفظة والمتجر</span>
                 </a>
                 <a href="#" id="navFriends" class="nav-item">
                     <i class="fa-solid fa-user-group"></i>
@@ -1406,6 +1436,7 @@
                         <h1>
                             مرحباً بك، <span id="displayUsername">مستخدم</span>
                             <span id="myPlatformBadge"></span>
+                            <span id="myCharismaBadge"></span>
                         </h1>
                         <p id="welcomeSubtitle">تواصل مع أصدقائك وشارِك لحظاتك بكل سهولة.</p>
                     </div>
@@ -1610,6 +1641,13 @@
                     <button id="sendPlatformBroadcastBtn" class="btn-primary" type="button" style="margin-top:10px;">
                         <i class="fa-solid fa-paper-plane"></i> إرسال للجميع
                     </button>
+                </div>
+
+                <div id="adminBroadcastCopies" class="admin-panel-card" style="display:none;">
+                    <div class="admin-card-title"><i class="fa-solid fa-inbox"></i> نسخ رسائل المنصة للمالك</div>
+                    <p class="section-desc">تُحفظ هنا نسخة من كل رسالة منصة، حتى إذا كنت غير متصل وقت الإرسال.</p>
+                    <button id="refreshPlatformBroadcastCopies" class="btn-action btn-secondary" type="button"><i class="fa-solid fa-rotate"></i> تحديث النسخ</button>
+                    <div id="platformBroadcastCopiesList" class="platform-broadcast-copy-list"><p class="empty-msg">جاري تحميل النسخ...</p></div>
                 </div>
 
                 <div class="admin-tabs">
@@ -1824,6 +1862,11 @@
             return '';
         }
 
+        function charismaHTML(charisma) {
+            if (!charisma) return '';
+            return `<span class="charisma-inline-badge" title="${escapeHTML(charisma.points || 0)} كارزما">${escapeHTML(charisma.icon || '✨')} ${Number(charisma.level || 0)}</span>`;
+        }
+
         function hasPermission(permission) {
             return savedUsername === 'tomi' || myRole === 'owner' || myPermissions.includes(permission);
         }
@@ -2007,12 +2050,14 @@
 
             const displayUsername = document.getElementById('displayUsername');
             const badge = document.getElementById('myPlatformBadge');
+            const charismaBadge = document.getElementById('myCharismaBadge');
             const avatar = document.getElementById('userAvatar');
             const avatarFrame = document.getElementById('userAvatarFrame');
             const welcomeSubtitle = document.getElementById('welcomeSubtitle');
 
             if (displayUsername) displayUsername.textContent = data.displayName || savedUsername;
             if (badge) badge.innerHTML = badgeHTML(myBadge || myRole);
+            if (charismaBadge) charismaBadge.innerHTML = charismaHTML(data.charisma);
             if (avatar) {
                 setAvatarWithFrame(avatar, avatarFrame, {
                     username: savedUsername,
@@ -2121,6 +2166,11 @@
             const broadcastBox = document.getElementById('adminBroadcastBox');
             if (broadcastBox) broadcastBox.style.display = hasPermission('send_platform_broadcast') ? 'block' : 'none';
 
+            const broadcastCopiesBox = document.getElementById('adminBroadcastCopies');
+            const isPlatformOwner = savedUsername === 'tomi';
+            if (broadcastCopiesBox) broadcastCopiesBox.style.display = isPlatformOwner ? 'block' : 'none';
+            if (isPlatformOwner) loadPlatformBroadcastCopies();
+
             const usersTab = document.getElementById('adminUsersTabBtn');
             const reportsTab = document.getElementById('adminReportsTabBtn');
             const bansTab = document.getElementById('adminBansTabBtn');
@@ -2193,7 +2243,12 @@
             else if (requested === 'requests') navRequests?.click();
             else if (requested === 'friends') navFriends?.click();
             else if (requested === 'chats') navChatMenu?.click();
-            else if (requested === 'admin' && canOpenAdmin()) navAdmin?.click();
+            else if (requested === 'admin' && canOpenAdmin()) {
+                navAdmin?.click();
+                if (window.location.hash === '#adminBroadcastCopies') {
+                    setTimeout(() => document.getElementById('adminBroadcastCopies')?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 80);
+                }
+            }
             else navHome?.click();
         }
 
@@ -2329,6 +2384,7 @@
                 if (user.role && user.role !== 'user') {
                     title.insertAdjacentHTML('beforeend', badgeHTML(user.badge || user.role));
                 }
+                title.insertAdjacentHTML('beforeend', charismaHTML(user.charisma));
 
                 const handle = document.createElement('div');
                 handle.className = 'user-handle';
@@ -2489,6 +2545,7 @@
                 h4.textContent = f.displayName || f.username;
                 title.appendChild(h4);
                 if (f.role && f.role !== 'user') title.insertAdjacentHTML('beforeend', badgeHTML(f.badge || f.role));
+                title.insertAdjacentHTML('beforeend', charismaHTML(f.charisma));
 
                 const handle = document.createElement('div');
                 handle.className = 'user-handle';
@@ -2906,6 +2963,54 @@
         });
 
         // ===== Official platform broadcast =====
+        function renderPlatformBroadcastCopies(copies) {
+            const host = document.getElementById('platformBroadcastCopiesList');
+            if (!host) return;
+            host.replaceChildren();
+            if (!Array.isArray(copies) || !copies.length) {
+                const empty = document.createElement('p');
+                empty.className = 'empty-msg';
+                empty.textContent = 'ماكو نسخ محفوظة لحد الآن.';
+                host.appendChild(empty);
+                return;
+            }
+            copies.slice(0, 100).forEach(copy => {
+                const row = document.createElement('article');
+                row.className = 'platform-broadcast-copy';
+                const message = document.createElement('p');
+                message.textContent = copy?.message || '';
+                const meta = document.createElement('small');
+                const sentAt = new Date(copy?.createdAt || '');
+                const time = Number.isFinite(sentAt.getTime()) ? sentAt.toLocaleString('ar-IQ') : '';
+                const sender = copy?.sentByDisplayName || copy?.sentBy || 'TOMI';
+                meta.textContent = [sender, time].filter(Boolean).join(' • ');
+                row.append(message, meta);
+                host.appendChild(row);
+            });
+        }
+
+        async function loadPlatformBroadcastCopies() {
+            if (savedUsername !== 'tomi' || loadPlatformBroadcastCopies.inProgress) return;
+            const host = document.getElementById('platformBroadcastCopiesList');
+            if (!host) return;
+            loadPlatformBroadcastCopies.inProgress = true;
+            try {
+                const response = await fetch('/api/platform-broadcast/copies', { credentials: 'same-origin', cache: 'no-store' });
+                if (!response.ok) throw new Error('تعذر تحميل نسخ رسائل المنصة');
+                const data = await response.json();
+                renderPlatformBroadcastCopies(data.copies || []);
+            } catch (error) {
+                const message = document.createElement('p');
+                message.className = 'empty-msg';
+                message.textContent = error.message || 'تعذر تحميل النسخ';
+                host.replaceChildren(message);
+            } finally {
+                loadPlatformBroadcastCopies.inProgress = false;
+            }
+        }
+
+        document.getElementById('refreshPlatformBroadcastCopies')?.addEventListener('click', loadPlatformBroadcastCopies);
+
         document.getElementById('sendPlatformBroadcastBtn')?.addEventListener('click', () => {
             if (!hasPermission('send_platform_broadcast')) return;
             const input = document.getElementById('platformBroadcastInput');
@@ -2929,7 +3034,14 @@
             }
             const input = document.getElementById('platformBroadcastInput');
             if (input) input.value = '';
-            showToast(`تم إرسال رسالة TOMI إلى ${Number(data.delivered || 0)} مستخدم.`);
+            showToast(`تم إرسال رسالة TOMI إلى ${Number(data.delivered || 0)} مستخدم وحُفظت نسخة للمالك.`);
+            if (data.ownerCopySaved) loadPlatformBroadcastCopies();
+        });
+
+        socket.on('platform-broadcast-owner-copy', () => {
+            if (savedUsername !== 'tomi') return;
+            showToast('وصلت نسخة رسالة المنصة إلى سجل المالك.');
+            loadPlatformBroadcastCopies();
         });
 
         socket.on('platform-broadcast', data => {

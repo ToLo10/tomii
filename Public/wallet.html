@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#0b0b14">
+  <title>TOMI - المحفظة والمتجر</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
+  <link rel="stylesheet" href="economy.css?v=20260922-shared-roulette1">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar" id="sidebar">
+      <div class="brand"><i class="fa-solid fa-comments"></i><strong>TOMI</strong></div>
+      <nav>
+        <a href="index.html"><i class="fa-solid fa-house"></i><span>الرئيسية</span></a>
+        <a href="explore.html"><i class="fa-solid fa-compass"></i><span>اكسبلور</span></a>
+        <a href="room.html"><i class="fa-solid fa-comment-dots"></i><span>المحادثات</span></a>
+        <a href="voice-rooms.html"><i class="fa-solid fa-microphone-lines"></i><span>الغرف الصوتية</span></a>
+        <a href="games.html"><i class="fa-solid fa-gamepad"></i><span>الألعاب</span></a>
+        <a href="wallet.html" class="active"><i class="fa-solid fa-wallet"></i><span>المحفظة والمتجر</span></a>
+        <a href="settings.html"><i class="fa-solid fa-gear"></i><span>الإعدادات</span></a>
+      </nav>
+      <button id="logoutBtn" class="logout" type="button"><i class="fa-solid fa-right-from-bracket"></i> تسجيل خروج</button>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <button id="menuBtn" class="icon-btn menu-btn" type="button" aria-label="القائمة"><i class="fa-solid fa-bars"></i></button>
+        <div class="heading"><span class="eyebrow"><i class="fa-solid fa-coins"></i> TOMI ECONOMY</span><h1>المحفظة والمتجر</h1><p>اشترِ الإطارات والهدايا، واحفظ كل مقتنياتك بحسابك.</p></div>
+        <div class="balance-pill"><i class="fa-solid fa-coins coin"></i><span id="topCoins">0</span> كوينز</div>
+      </header>
+
+      <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+      <section class="hero-grid">
+        <article class="card balance-card">
+          <div class="card-kicker"><i class="fa-solid fa-wallet"></i> رصيدك المحفوظ</div>
+          <div class="big-balance"><span id="coinBalance">0</span> <small>كوينز</small></div>
+          <div class="muted">الكوينز الافتراضية خاصة بمنصة TOMI وليست عملة نقدية.</div>
+          <div class="daily-row"><div><strong id="dailyStatus">جاري التحقق...</strong><div class="muted" id="dailyHint">تحصل على 500 كوينز كل يوم جديد.</div></div><button id="claimDailyBtn" class="primary" type="button">استلام اليوم</button></div>
+        </article>
+        <article class="card roulette-card">
+          <div class="card-kicker"><i class="fa-solid fa-spinner"></i> لعبة العجلة</div>
+          <h2>عجلة الفواكه واللحوم</h2>
+          <p>الجولة مشتركة بين الجميع. لديك 30 ثانية لتضع رقائقك، ثم تدور العجلة بنفس النتيجة عند كل المستخدمين.</p>
+          <div id="rouletteRoundStatus" class="roulette-round-status">جاري تحميل الجولة...</div>
+          <div class="roulette-stage" aria-label="عجلة TOMI">
+            <div id="rouletteWheel" class="roulette-wheel"><div id="rouletteWheelLabels" class="roulette-wheel-labels"></div><div class="roulette-wheel-center"><i class="fa-solid fa-coins"></i></div></div>
+          </div>
+          <div class="roulette-list-heading"><strong>خانات العجلة</strong><span>اختَر خانة ثم أضف قيمة الرهان</span></div>
+          <div id="rouletteSlots" class="roulette-slots" aria-label="خانات العجلة"></div>
+          <div id="rouletteSelected" class="roulette-selected">الخانة المختارة: 🍉 بطيخ</div>
+          <div id="rouletteBetSummary" class="roulette-bet-summary">لم تضع أي رهان في الجولة الحالية.</div>
+          <div id="rouletteDenominations" class="roulette-denominations" aria-label="قيم الرهان"></div>
+          <button id="rouletteRepeatBtn" class="roulette-repeat secondary" type="button"><i class="fa-solid fa-repeat"></i> تكرار آخر رهان</button>
+          <div id="rouletteResult" class="roulette-result">اختَر خانة ثم ضع رقائقك قبل انتهاء الوقت.</div>
+          <div id="rouletteSpecialOverlay" class="roulette-special-overlay hidden" role="dialog" aria-live="polite">
+            <div class="roulette-special-box"><button id="rouletteSpecialClose" class="roulette-special-close" type="button" aria-label="إغلاق">×</button><div id="rouletteSpecialIcon" class="roulette-special-icon">🥗</div><h3 id="rouletteSpecialTitle">سلطة فواكه</h3><p id="rouletteSpecialText">تفوز كل رهانات الفواكه في هذه الجولة.</p></div>
+          </div>
+          <div class="roulette-history-columns">
+            <div><h3>سجل النتائج</h3><div id="rouletteResultsHistory" class="roulette-history-list"></div></div>
+            <div><h3>سجل الفائزين</h3><div id="rouletteWinnersHistory" class="roulette-history-list"></div></div>
+          </div>
+          <div class="roulette-personal-history"><h3>سجل رهاناتي — آخر 8 جولات</h3><div id="roulettePersonalHistory" class="roulette-history-list"></div></div>
+          <div class="roulette-leaderboard"><h3>ترتيب اليوم والجوائز</h3><div id="rouletteLeaderboard"></div><small class="muted">جوائز نهاية اليوم: الأول 100,000 • الثاني 50,000 • الثالث 25,000 كوينز.</small></div>
+        </article>
+      </section>
+
+      <section class="section card charisma-card">
+        <div class="section-title"><div><h2><span id="charismaIcon" class="charisma-big-icon">⭐</span> مستوى الكارزما</h2><p>تزداد كارزمتك عند استلام الهدايا. يمكنك إرسال الهدية لنفسك أو لأي مستخدم.</p></div><span id="charismaLevelLabel" class="charisma-level-label">المستوى 0</span></div>
+        <div class="charisma-summary"><div><strong id="charismaPoints">0</strong><small>نقطة كارزما</small></div><div id="charismaNextText" class="muted">أرسل أو استلم هدايا لرفع المستوى.</div></div>
+        <div class="charisma-progress"><span id="charismaProgressFill"></span></div>
+        <div class="charisma-progress-meta"><span>المستوى الحالي</span><span id="charismaProgressValue">0%</span><span id="charismaNextLevel">المستوى القادم</span></div>
+        <div id="charismaLevels" class="charisma-levels"></div>
+      </section>
+
+      <section class="section">
+        <div class="section-title"><div><h2>متجر TOMI</h2><p>الإطارات التي يضيفها المالك تظهر هنا تلقائيًا، ويمكن إضافة أنواع أخرى لاحقًا.</p></div><button id="refreshBtn" class="secondary" type="button"><i class="fa-solid fa-rotate"></i> تحديث</button></div>
+        <div id="shopGrid" class="shop-grid"><div class="empty-box">جاري تحميل المتجر...</div></div>
+      </section>
+
+      <section class="section">
+        <div class="section-title"><div><h2>محفظتي</h2><p>كل ما تشتريه يبقى مرتبطًا بحسابك وتستطيع استخدامه من هنا.</p></div></div>
+        <div id="inventoryGrid" class="inventory-grid"><div class="empty-box">جاري تحميل المقتنيات...</div></div>
+      </section>
+
+      <section id="giftTransferCard" class="section card gift-transfer-card">
+        <div class="section-title"><div><h2><i class="fa-solid fa-gift"></i> إرسال هدية</h2><p>اختر هدية مشتراة واكتب اسم المستخدم. الإرسال متاح لنفسك أو لأي حساب موجود.</p></div></div>
+        <form id="sendGiftForm" class="gift-send-form">
+          <label>الهدية<select id="giftInventorySelect" class="select" required><option value="">لا توجد هدايا قابلة للإرسال</option></select></label>
+          <label>اسم المستلم<input id="giftRecipient" class="input" list="giftRecipientOptions" autocomplete="off" placeholder="اكتب username" required></label>
+          <datalist id="giftRecipientOptions"></datalist>
+          <button id="sendGiftBtn" class="primary" type="submit"><i class="fa-solid fa-paper-plane"></i> إرسال الهدية</button>
+        </form>
+        <div id="giftSendHint" class="muted gift-send-hint">اشترِ هدية من المتجر أولاً.</div>
+      </section>
+
+      <section class="section card">
+        <div class="section-title"><div><h2>الهدايا المستلمة</h2><p>الهدايا التي رفعت كارزمتك.</p></div></div>
+        <div id="receivedGiftsList" class="received-gifts-list"><div class="empty-box">لا توجد هدايا مستلمة بعد.</div></div>
+      </section>
+
+      <section class="section card">
+        <div class="section-title"><div><h2>سجل الكوينز</h2><p>آخر العمليات على رصيدك.</p></div></div>
+        <div id="historyList" class="history-list"><div class="empty-box">لا توجد عمليات بعد.</div></div>
+      </section>
+
+      <section id="ownerPanel" class="section card owner-panel hidden">
+        <div class="section-title"><div><h2><i class="fa-solid fa-crown"></i> أدوات المالك</h2><p>إدارة الرصيد، العناصر، واستعادة حسابات المستخدمين.</p></div></div>
+        <div class="owner-grid">
+          <form id="grantForm" class="form-stack">
+            <h3>إهداء كوينز</h3>
+            <label>اسم المستخدم<input id="grantUser" class="input" required></label>
+            <label>العدد<input id="grantAmount" class="input" type="number" min="1" required></label>
+            <label>السبب<input id="grantReason" class="input" value="هدية من مالك TOMI"></label>
+            <button class="primary" type="submit">إرسال الكوينز</button>
+          </form>
+          <form id="grantCharismaForm" class="form-stack">
+            <h3>إهداء كارزما</h3>
+            <label>اسم المستخدم<input id="grantCharismaUser" class="input" required></label>
+            <label>عدد الكارزما<input id="grantCharismaAmount" class="input" type="number" min="1" max="100000000" required></label>
+            <label>السبب<input id="grantCharismaReason" class="input" value="كارزما من مالك TOMI"></label>
+            <button class="primary" type="submit">إرسال الكارزما</button>
+          </form>
+          <form id="rouletteControlForm" class="form-stack">
+            <h3>تحكم المالك بالعجلة</h3>
+            <label>نوع النتيجة<select id="rouletteControlMode" class="select"><option value="random">عشوائي</option><option value="slot">فاكهة أو لحم محدد</option><option value="fruit_salad">سلطة فواكه</option><option value="meat_salad">سلطة لحوم</option></select></label>
+            <label id="rouletteControlSlotLabel">الخانة<select id="rouletteControlSlot" class="select"></select></label>
+            <button class="primary" type="submit">تطبيق بالجولة القادمة</button>
+            <small id="rouletteControlStatus" class="muted">التحكم لا يغيّر الجولة التي بدأت.</small>
+          </form>
+          <form id="resetForm" class="form-stack">
+            <h3>استعادة حساب</h3>
+            <label>اسم المستخدم<input id="resetUser" class="input" required></label>
+            <label>كلمة المرور الجديدة<input id="resetPassword" class="input" type="password" minlength="6" required></label>
+            <button class="secondary" type="submit">تغيير كلمة المرور</button>
+            <small class="muted">سيتم إخراج الجلسات القديمة للمستخدم.</small>
+          </form>
+          <form id="itemForm" class="form-stack">
+            <h3>إضافة عنصر للمتجر</h3>
+            <label>اسم العنصر<input id="itemName" class="input" required></label>
+            <label>النوع<select id="itemType" class="select"><option value="gift">هدية</option><option value="custom">عنصر عام</option><option value="username">يوزر</option><option value="badge">شارة</option><option value="frame">إطار موجود</option></select></label>
+            <label>السعر<input id="itemPrice" class="input" type="number" min="0" required></label>
+            <label>كارزما الهدية<input id="itemCharisma" class="input" type="number" min="1" value="1"><small class="muted">تُضاف للمستلم عند إرسال الهدية.</small></label>
+            <label>Frame ID عند إضافة إطار<input id="itemFrameId" class="input" placeholder="اختياري"></label>
+            <label>أيقونة FontAwesome<input id="itemIcon" class="input" value="fa-gift" placeholder="fa-gift"></label>
+            <label>رابط صورة/شكل الهدية<input id="itemImageUrl" class="input" type="url" placeholder="https://..."></label>
+            <label class="checkbox-label"><input id="itemAnimated" type="checkbox"> الهدية متحركة</label>
+            <label>الوصف<textarea id="itemDescription" class="textarea" rows="2"></textarea></label>
+            <button class="primary" type="submit">إضافة للمتجر</button>
+          </form>
+        </div>
+        <div class="section-title" style="margin-top:20px"><div><h2>عناصر المتجر</h2></div></div>
+        <div id="adminItems" class="admin-items"><div class="empty-box">لا توجد عناصر إضافية.</div></div>
+      </section>
+    </main>
+  </div>
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="wallet.js?v=20260922-shared-roulette1"></script>
+</body>
+</html>

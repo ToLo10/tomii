@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#0b0b14">
+  <title>TOMI - الألعاب</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
+  <link rel="stylesheet" href="economy.css?v=20260922-shared-roulette1">
+  <script src="/socket.io/socket.io.js"></script>
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar" id="sidebar">
+      <div class="brand"><i class="fa-solid fa-comments"></i><strong>TOMI</strong></div>
+      <nav>
+        <a href="index.html"><i class="fa-solid fa-house"></i><span>الرئيسية</span></a>
+        <a href="room.html"><i class="fa-solid fa-comment-dots"></i><span>المحادثات</span></a>
+        <a href="explore.html"><i class="fa-solid fa-compass"></i><span>اكسبلور</span></a>
+        <a href="voice-rooms.html"><i class="fa-solid fa-microphone-lines"></i><span>الغرف الصوتية</span></a>
+        <a href="games.html" class="active"><i class="fa-solid fa-gamepad"></i><span>الألعاب</span></a>
+        <a href="wallet.html"><i class="fa-solid fa-wallet"></i><span>المحفظة والمتجر</span></a>
+        <a href="settings.html"><i class="fa-solid fa-gear"></i><span>الإعدادات</span></a>
+      </nav>
+      <button id="logoutBtn" class="logout" type="button"><i class="fa-solid fa-right-from-bracket"></i> تسجيل خروج</button>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <button id="menuBtn" class="icon-btn menu-btn" type="button"><i class="fa-solid fa-bars"></i></button>
+        <div class="heading"><span class="eyebrow"><i class="fa-solid fa-gamepad"></i> TOMI PLAY</span><h1>خانة الألعاب</h1><p>أنشئ غرفة، ادعُ صديقك، والعبوا معًا بشكل مباشر.</p></div>
+        <div class="balance-pill"><i class="fa-solid fa-circle-user coin"></i><span id="meName">...</span></div>
+      </header>
+      <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+      <div class="games-layout">
+        <aside>
+          <section class="card">
+            <div class="section-title"><div><h2>الألعاب</h2><p>المالك يحدد عدد اللاعبين حسب نوع اللعبة.</p></div></div>
+            <div id="catalogList" class="catalog-list"><div class="empty-box">جاري التحميل...</div></div>
+            <form id="createGameForm" class="create-game form-stack">
+              <h3>إنشاء غرفة لعب</h3>
+              <label>اسم الغرفة<input id="gameRoomName" class="input" maxlength="70" placeholder="مثلاً: تحدي الأصدقاء"></label>
+              <label>عدد اللاعبين<select id="maxPlayers" class="select"><option value="2">لاعبان</option><option value="4">أربعة لاعبين</option></select></label>
+              <button class="primary" type="submit"><i class="fa-solid fa-plus"></i> إنشاء الغرفة</button>
+            </form>
+          </section>
+          <section class="card section">
+            <div class="section-title"><div><h2>دعوات اللعب</h2></div></div>
+            <div id="invitesList" class="rooms-list"><div class="empty-box">لا توجد دعوات.</div></div>
+          </section>
+        </aside>
+
+        <section>
+          <article id="currentGame" class="card current-game">
+            <div class="game-help"><i class="fa-solid fa-dice" style="font-size:44px;color:#bfa9ff"></i><h2>اختَر لعبة أو انضم إلى غرفة</h2><p>اللعب مجاني، والتحكم بالغرفة يكون عند منشئها. يمكنك طرد لاعب أو إرسال بلاغ عند الإساءة.</p></div>
+          </article>
+          <article class="card section">
+            <div class="section-title"><div><h2>الغرف المفتوحة</h2><p>الغرف التي أنشأها المستخدمون الآن.</p></div><button id="refreshRoomsBtn" class="secondary" type="button"><i class="fa-solid fa-rotate"></i> تحديث</button></div>
+            <div id="roomsList" class="rooms-list"><div class="empty-box">جاري تحميل الغرف...</div></div>
+          </article>
+        </section>
+      </div>
+    </main>
+  </div>
+  <script src="games.js?v=20260922-shared-games1"></script>
+</body>
+</html>

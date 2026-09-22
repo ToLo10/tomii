@@ -22,6 +22,7 @@ const mongoose = require("mongoose");
 const { createObjectStorage } = require("./object-storage");
 const { createAnalyticsService } = require("./analytics");
 const { createTomiAiService } = require("./ai-service");
+const { registerEconomyGames, publicCharisma } = require("./economy-games");
 let webpush = null; // Loaded lazily so a missing optional push dependency never blocks chat.
 
 // Chat media uses direct browser-to-R2 multipart uploads when these variables
@@ -142,8 +143,15 @@ function emptyDatabase() {
     voiceRooms: {},
     voiceRoomBans: {},
     voiceRoomInvites: {},
+    shopItems: {},
+    gameRooms: {},
+    gameInvites: {},
     aiPreferences: {},
-    aiModerationAlerts: {}
+    aiModerationAlerts: {},
+    explorePosts: [],
+    exploreQueue: {},
+    exploreReviews: [],
+    platformBroadcastCopies: []
   };
 }
 
@@ -155,6 +163,12 @@ function normalizeDatabaseState(source) {
       state[key] = value;
     }
   }
+  if (!Array.isArray(state.explorePosts)) state.explorePosts = [];
+  if (!state.exploreQueue || Array.isArray(state.exploreQueue)) state.exploreQueue = {};
+  if (!Array.isArray(state.exploreReviews)) state.exploreReviews = [];
+  if (!Array.isArray(state.platformBroadcastCopies)) state.platformBroadcastCopies = [];
+  state.explorePosts = state.explorePosts.slice(-50);
+  state.platformBroadcastCopies = state.platformBroadcastCopies.slice(-100);
   return state;
 }
 
@@ -327,6 +341,22 @@ function pruneChatUploadIfUnreferenced(fileId) {
   if (!id || isChatUploadReferenced(id)) return false;
   const record = db.uploads?.[id];
   if (!record || record.context !== "chat") return false;
+  delete db.uploads[id];
+  queuePhysicalUploadDelete(record);
+  return true;
+}
+
+function isExploreUploadReferenced(fileId) {
+  const id = String(fileId || "");
+  if (!id) return false;
+  return Object.values(db.exploreQueue || {}).some(post => post?.fileId === id)
+    || (Array.isArray(db.explorePosts) && db.explorePosts.some(post => post?.fileId === id));
+}
+
+function pruneExploreUploadIfUnreferenced(fileId) {
+  const id = String(fileId || "");
+  const record = db.uploads?.[id];
+  if (!id || !record || record.context !== "explore-video" || isExploreUploadReferenced(id)) return false;
   delete db.uploads[id];
   queuePhysicalUploadDelete(record);
   return true;
@@ -1148,7 +1178,8 @@ const ALL_PERMISSIONS = Object.freeze([
   "view_system_metrics",
   "view_user_analytics",
   "manage_referrals",
-  "manage_ai_safety"
+  "manage_ai_safety",
+  "manage_explore"
 ]);
 
 function normalizePermissions(list) {
@@ -1240,7 +1271,8 @@ function publicUserProfile(username) {
     avatar: user.avatar || "",
     role: getPublicRole(username),
     badge: getPlatformBadge(username),
-    frame: getActiveFrame(username)
+    frame: getActiveFrame(username),
+    charisma: publicCharisma(user)
   };
 }
 
@@ -3275,6 +3307,13 @@ async function buildTomiAiAnalyticsSnapshot({ from, to, actor } = {}) {
     referralSummary = referralAnalytics.summary || null;
   }
 
+  const publishedExplore = (Array.isArray(db.explorePosts) ? db.explorePosts : [])
+    .filter(post => Date.parse(post?.publishedAt || post?.createdAt || "") >= start.getTime());
+  const moderationAlerts = Object.values(db.aiModerationAlerts || {})
+    .filter(alert => Date.parse(alert?.createdAt || "") >= start.getTime());
+  const flaggedExplorePending = Object.values(db.exploreQueue || {})
+    .filter(post => post?.moderation?.flagged).length;
+
   return {
     period: { from: start.toISOString(), to: end.toISOString() },
     overview,
@@ -3282,7 +3321,17 @@ async function buildTomiAiAnalyticsSnapshot({ from, to, actor } = {}) {
     todayOverview,
     rooms,
     referrals,
-    referralSummary
+    referralSummary,
+    explore: {
+      published: publishedExplore.length,
+      pending: Object.keys(db.exploreQueue || {}).length,
+      rejected: (db.exploreReviews || []).filter(item => item?.status === "rejected" && Date.parse(item.decidedAt || "") >= start.getTime()).length,
+      flaggedPending: flaggedExplorePending
+    },
+    moderation: {
+      pendingAlerts: moderationAlerts.filter(item => item?.status === "pending").length,
+      sexualContentAlerts: moderationAlerts.filter(item => Array.isArray(item?.categories) && item.categories.includes("sexual-content")).length
+    }
   };
 }
 
@@ -3295,13 +3344,13 @@ aiService = createTomiAiService({
   emitStaff: (permission, eventName, payload) => emitToStaffWithPermission(permission, eventName, payload),
   notifyStaff: async alert => {
     const targets = [];
-    for (const username of activeOnlineUsers.keys()) {
+    for (const username of Object.keys(db.users || {})) {
       if (username === PLATFORM_OWNER_USERNAME || hasPermission(username, "manage_ai_safety")) targets.push(username);
     }
     await Promise.allSettled(targets.map(username => sendPushToUser(username, "ai-safety", {
-      title: "TOMI • تنبيه أمان ذكي",
+      title: alert.source === "explore" ? "TOMI • محتوى اكسبلور يحتاج مراجعة" : "TOMI • تنبيه أمان ذكي",
       body: `${alert.senderDisplayName || alert.sender || "مستخدم"}: ${alert.categories?.join("، ") || "محتوى يحتاج مراجعة"}`,
-      url: "/analytics.html",
+      url: alert.source === "explore" ? "/explore.html?tab=review" : "/analytics.html",
       tag: alert.alertId,
       type: "moderation",
       requireInteraction: true
@@ -3386,6 +3435,13 @@ const authLimiter = rateLimit({
 const uploadLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
   limit: 300,
+  standardHeaders: "draft-8",
+  legacyHeaders: false
+});
+
+const exploreWriteLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000,
+  limit: 20,
   standardHeaders: "draft-8",
   legacyHeaders: false
 });
@@ -3766,6 +3822,7 @@ app.post("/api/register", authLimiter, (req, res) => {
       status: "online",
       lastSeen: new Date().toISOString()
     };
+    economyGameHandlers?.claimDailyForUser?.(uVal.username);
     analyticsService?.track("register", {
       userId: uVal.username,
       refCode: referralCode,
@@ -3791,6 +3848,7 @@ app.post("/api/register", authLimiter, (req, res) => {
       permissions: [],
       avatar: db.users[uVal.username].avatar || "",
       frame: getActiveFrame(uVal.username),
+      charisma: publicCharisma(db.users[uVal.username]),
       referralCode: db.users[uVal.username].referralCode || "",
       sessionToken,
       message: "تم إنشاء الحساب بنجاح"
@@ -3820,6 +3878,7 @@ app.post("/api/login", authLimiter, (req, res) => {
     }
 
     upgradePasswordHashIfNeeded(user, password);
+    economyGameHandlers?.claimDailyForUser?.(cleanUsername);
     user.lastSeen = new Date().toISOString();
     user.status = "online";
     analyticsService?.track("login", {
@@ -3845,6 +3904,7 @@ app.post("/api/login", authLimiter, (req, res) => {
       permissions: getUserPermissions(user.username),
       avatar: user.avatar || "",
       frame: getActiveFrame(user.username),
+      charisma: publicCharisma(user),
       referralCode: user.referralCode || "",
       sessionToken
     });
@@ -3865,8 +3925,239 @@ app.get("/api/session", requireHttpAuth, (req, res) => {
     permissions: getUserPermissions(user.username),
     avatar: user.avatar || "",
     frame: getActiveFrame(user.username),
+    charisma: publicCharisma(user),
     referralCode: user.referralCode || ""
   });
+});
+
+app.get("/api/platform-broadcast/copies", requireHttpAuth, (req, res) => {
+  if (req.authUser !== PLATFORM_OWNER_USERNAME) {
+    return res.status(403).json({ error: "نسخ رسائل المنصة متاحة للمالك فقط" });
+  }
+  const copies = Array.isArray(db.platformBroadcastCopies) ? db.platformBroadcastCopies.slice(-100).reverse() : [];
+  return res.json({ success: true, copies });
+});
+
+function isExploreReviewer(username) {
+  return username === PLATFORM_OWNER_USERNAME || hasPermission(username, "manage_explore");
+}
+
+function formatExplorePost(post, { includeReview = false } = {}) {
+  const author = db.users?.[post.authorUsername] || {};
+  const formatted = {
+    id: post.id,
+    type: post.type,
+    text: post.text || "",
+    caption: post.caption || "",
+    fileId: post.fileId || null,
+    fileUrl: post.fileId ? `/api/files/${encodeURIComponent(post.fileId)}` : null,
+    createdAt: post.createdAt,
+    pinned: Boolean(post.pinned),
+    pinnedAt: post.pinnedAt || null,
+    pinnedBy: post.pinnedBy || null,
+    author: {
+      username: post.authorUsername,
+      displayName: post.authorDisplayName || author.displayName || post.authorUsername,
+      avatar: post.authorAvatar || author.avatar || "",
+      charisma: publicCharisma(author),
+      frame: getActiveFrame(post.authorUsername)
+    }
+  };
+  if (includeReview) {
+    formatted.moderation = post.moderation || { flagged: false, categories: [], reasons: [] };
+  }
+  return formatted;
+}
+
+function notifyExploreReviewers(post) {
+  const summary = { id: post.id, createdAt: post.createdAt, flagged: Boolean(post.moderation?.flagged) };
+  emitToStaffWithPermission("manage_explore", "explore:review-new", summary);
+  const targets = Object.keys(db.users || {}).filter(username => isExploreReviewer(username));
+  return Promise.allSettled(targets.map(username => sendPushToUser(username, "explore", {
+    title: "TOMI • منشور اكسبلور جديد",
+    body: `${post.authorDisplayName || post.authorUsername} أرسل ${post.type === "video" ? "فيديو" : "ملاحظة"} للمراجعة`,
+    url: "/explore.html?tab=review",
+    tag: `explore-${post.id}`,
+    type: "moderation",
+    requireInteraction: true
+  })));
+}
+
+function saveExploreReview(review) {
+  db.exploreReviews.unshift(review);
+  db.exploreReviews = db.exploreReviews.slice(0, 300);
+}
+
+app.get("/api/explore", requireHttpAuth, (req, res) => {
+  const posts = Array.isArray(db.explorePosts) ? [...db.explorePosts].sort((a, b) => {
+    const pinnedDifference = Number(Boolean(b?.pinned)) - Number(Boolean(a?.pinned));
+    if (pinnedDifference) return pinnedDifference;
+    return (Date.parse(b?.publishedAt || b?.createdAt || "") || 0) - (Date.parse(a?.publishedAt || a?.createdAt || "") || 0);
+  }).slice(0, 50) : [];
+  const ownPending = Object.values(db.exploreQueue || {})
+    .filter(post => post?.authorUsername === req.authUser)
+    .sort((a, b) => Date.parse(b.createdAt || 0) - Date.parse(a.createdAt || 0))
+    .slice(0, 20)
+    .map(post => ({ ...formatExplorePost(post, { includeReview: true }), status: "pending" }));
+  const ownRecentReviews = (db.exploreReviews || [])
+    .filter(item => item?.authorUsername === req.authUser)
+    .slice(0, 20)
+    .map(item => ({ id: item.id, type: item.type || "note", status: item.status, decidedAt: item.decidedAt, reason: item.reason || "" }));
+  res.json({
+    success: true,
+    username: req.authUser,
+    posts: posts.map(post => formatExplorePost(post)),
+    isOwner: req.authUser === PLATFORM_OWNER_USERNAME,
+    canReview: isExploreReviewer(req.authUser),
+    pendingCount: isExploreReviewer(req.authUser) ? Object.keys(db.exploreQueue || {}).length : 0,
+    mySubmissions: [...ownPending, ...ownRecentReviews].slice(0, 20)
+  });
+});
+
+app.get("/api/explore/review", requireHttpAuth, (req, res) => {
+  if (!isExploreReviewer(req.authUser)) return res.status(403).json({ error: "لا تملك صلاحية مراجعة منشورات اكسبلور" });
+  const queue = Object.values(db.exploreQueue || {})
+    .sort((a, b) => Date.parse(a.createdAt || 0) - Date.parse(b.createdAt || 0));
+  return res.json({ success: true, queue: queue.map(post => formatExplorePost(post, { includeReview: true })) });
+});
+
+app.post("/api/explore/posts", exploreWriteLimiter, requireHttpAuth, async (req, res) => {
+  const actor = req.authUser;
+  const isOwner = actor === PLATFORM_OWNER_USERNAME;
+  if (checkPlatformBan(actor).banned) return res.status(403).json({ error: "الحساب محظور على المنصة" });
+  if (!isOwner && Object.values(db.exploreQueue || {}).filter(post => post?.authorUsername === actor).length >= 5) {
+    return res.status(429).json({ error: "لديك خمسة طلبات بانتظار المراجعة. انتظر القرار قبل إرسال المزيد." });
+  }
+
+  const type = String(req.body?.type || "").trim();
+  const text = String(req.body?.text || "").trim().slice(0, 500);
+  const caption = String(req.body?.caption || "").trim().slice(0, 180);
+  const fileId = String(req.body?.fileId || "").trim().slice(0, 100);
+  if (!["note", "video"].includes(type)) return res.status(400).json({ error: "نوع المنشور غير صالح" });
+  if (type === "note" && !text) return res.status(400).json({ error: "اكتب ملاحظة قصيرة أولاً" });
+
+  let uploadRecord = null;
+  if (type === "video") {
+    uploadRecord = db.uploads?.[fileId];
+    if (!fileId || !uploadRecord || uploadRecord.uploader !== actor || uploadRecord.context !== "explore-video" || uploadRecord.fileType !== "video") {
+      return res.status(400).json({ error: "ارفع فيديو صالحاً قبل إرسال المنشور" });
+    }
+    if (uploadRecord.explorePostId) return res.status(409).json({ error: "هذا الفيديو أُرسل للمراجعة من قبل" });
+  }
+
+  const postId = `exp_${Date.now()}_${crypto.randomBytes(7).toString("hex")}`;
+  const user = db.users?.[actor] || {};
+  const post = {
+    id: postId,
+    type,
+    text: type === "note" ? text : "",
+    caption: type === "video" ? caption : "",
+    fileId: type === "video" ? fileId : null,
+    authorUsername: actor,
+    authorDisplayName: user.displayName || actor,
+    authorAvatar: user.avatar || "",
+    createdAt: new Date().toISOString(),
+    moderation: await aiService?.reviewPublicContent?.({
+      postId,
+      username: actor,
+      displayName: user.displayName || actor,
+      text: type === "note" ? text : caption,
+      type
+    }) || { flagged: false, score: 0, categories: [], reasons: [], engine: "unavailable" }
+  };
+  if (uploadRecord) uploadRecord.explorePostId = postId;
+
+  if (isOwner) {
+    const publishedAt = new Date().toISOString();
+    const allPosts = [...(Array.isArray(db.explorePosts) ? db.explorePosts : []), { ...post, publishedAt, publishedBy: actor }];
+    const removedPosts = allPosts.slice(0, Math.max(0, allPosts.length - 50));
+    db.explorePosts = allPosts.slice(-50);
+    for (const removed of removedPosts) {
+      if (removed?.fileId) pruneExploreUploadIfUnreferenced(removed.fileId);
+    }
+    saveDB(db);
+    analyticsService?.track("explore_published", { userId: actor, page: "/explore.html", feature: post.type });
+    io.emit("explore:posts-updated", { postId, decision: "publish", count: db.explorePosts.length });
+    return res.status(201).json({
+      success: true,
+      published: true,
+      message: "تم نشر منشورك مباشرة في اكسبلور",
+      post: formatExplorePost({ ...post, publishedAt, publishedBy: actor }, { includeReview: true })
+    });
+  }
+
+  db.exploreQueue[postId] = post;
+  saveDB(db);
+  analyticsService?.track("explore_submission", { userId: actor, page: "/explore.html", feature: type });
+  void notifyExploreReviewers(post);
+  emitToStaffWithPermission("manage_explore", "explore:review-count-updated", { count: Object.keys(db.exploreQueue).length });
+  return res.status(201).json({ success: true, message: "وصل منشورك للمراجعة. راح يظهر للكل بعد الموافقة.", post: formatExplorePost(post, { includeReview: true }) });
+});
+
+app.post("/api/explore/posts/:postId/review", exploreWriteLimiter, requireHttpAuth, (req, res) => {
+  const actor = req.authUser;
+  if (!isExploreReviewer(actor)) return res.status(403).json({ error: "لا تملك صلاحية مراجعة منشورات اكسبلور" });
+  const postId = String(req.params.postId || "").slice(0, 140);
+  const decision = String(req.body?.decision || "").toLowerCase();
+  const reason = String(req.body?.reason || "").trim().slice(0, 300);
+  const post = db.exploreQueue?.[postId];
+  if (!post) return res.status(404).json({ error: "المنشور غير موجود في قائمة الانتظار" });
+  if (!["approve", "reject"].includes(decision)) return res.status(400).json({ error: "اختر موافقة أو رفض" });
+
+  const status = decision === "approve" ? "published" : "rejected";
+  const review = {
+    id: post.id,
+    type: post.type,
+    authorUsername: post.authorUsername,
+    status,
+    reviewer: actor,
+    reason,
+    decidedAt: new Date().toISOString()
+  };
+  if (decision === "approve") {
+    const allPosts = [...db.explorePosts, { ...post, publishedAt: review.decidedAt, publishedBy: actor }];
+    const removedPosts = allPosts.slice(0, Math.max(0, allPosts.length - 50));
+    db.explorePosts = allPosts.slice(-50);
+    for (const removed of removedPosts) {
+      if (removed?.fileId) pruneExploreUploadIfUnreferenced(removed.fileId);
+    }
+    analyticsService?.track("explore_published", { userId: actor, page: "/explore.html", feature: post.type });
+    if (post.moderation?.flagged) {
+      io.to(`user_${PLATFORM_OWNER_USERNAME}`).emit("explore:high-risk-published", { postId, categories: post.moderation.categories || [] });
+      void sendPushToUser(PLATFORM_OWNER_USERNAME, "explore", {
+        title: "TOMI • منشور عليه تنبيه آلي نُشر",
+        body: `${post.authorDisplayName || post.authorUsername}: ${post.moderation.categories?.join("، ") || "محتوى يحتاج مراجعة"}`,
+        url: "/explore.html",
+        tag: `explore-risk-${postId}`,
+        type: "moderation",
+        requireInteraction: true
+      });
+    }
+  }
+  saveExploreReview(review);
+  delete db.exploreQueue[postId];
+  if (decision === "reject" && post.fileId) pruneExploreUploadIfUnreferenced(post.fileId);
+  saveDB(db);
+  io.emit("explore:posts-updated", { postId, decision, count: db.explorePosts.length });
+  emitToStaffWithPermission("manage_explore", "explore:review-count-updated", { count: Object.keys(db.exploreQueue).length });
+  return res.json({ success: true, decision, message: decision === "approve" ? "تم نشر المنشور للجميع" : "تم رفض المنشور ولن يظهر للآخرين" });
+});
+
+app.post("/api/explore/posts/:postId/pin", exploreWriteLimiter, requireHttpAuth, (req, res) => {
+  const actor = req.authUser;
+  if (!isExploreReviewer(actor)) return res.status(403).json({ error: "تثبيت منشورات اكسبلور متاح للمالك والمشرفين المخولين فقط" });
+
+  const postId = String(req.params.postId || "").slice(0, 140);
+  const post = (Array.isArray(db.explorePosts) ? db.explorePosts : []).find(item => item?.id === postId);
+  if (!post) return res.status(404).json({ error: "المنشور غير موجود أو لم تتم الموافقة عليه" });
+
+  const pinned = typeof req.body?.pinned === "boolean" ? req.body.pinned : !post.pinned;
+  post.pinned = pinned;
+  post.pinnedBy = pinned ? actor : null;
+  post.pinnedAt = pinned ? new Date().toISOString() : null;
+  saveDB(db);
+  io.emit("explore:posts-updated", { postId, pinned, count: db.explorePosts.length });
+  return res.json({ success: true, pinned, message: pinned ? "تم تثبيت المنشور في أعلى اكسبلور" : "تم إلغاء تثبيت المنشور" });
 });
 
 app.post("/api/logout", (req, res) => {
@@ -3939,6 +4230,24 @@ app.get("/api/client-config", requireHttpAuth, (_req, res) => {
       rating: "r"
     }
   });
+});
+
+// TOMI economy, wallet and multiplayer games are registered after the shared
+// session/auth helpers exist. Their state is stored through the same MongoDB
+// snapshot as chats, friends, rooms and media metadata.
+const economyGameHandlers = registerEconomyGames({
+  app,
+  io,
+  requireHttpAuth,
+  authLimiter,
+  getDb: () => db,
+  saveDb: data => saveDB(data),
+  hashPassword,
+  validatePassword,
+  publicUserProfile,
+  hasPermission,
+  activeOnlineUsers,
+  emitToStaffWithPermission
 });
 
 // GIPHY sticker search. The previous UI called GIPHY directly from the
@@ -4099,12 +4408,9 @@ app.get("/api/user/:username", (req, res) => {
   try {
     const user = db.users[req.params.username];
     if (!user) return res.status(404).json({ error: "المستخدم غير موجود" });
-    const { password, ...safeUser } = user;
     res.json({
-      ...safeUser,
-      role: getPublicRole(req.params.username),
-      badge: getPlatformBadge(req.params.username),
-      frame: getActiveFrame(req.params.username)
+      ...publicUserProfile(req.params.username),
+      isOnline: activeOnlineUsers.has(req.params.username)
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -5087,7 +5393,7 @@ app.post("/api/upload", uploadLimiter, requireHttpAuth, limitConcurrentUploads, 
         safeUnlink(req.file.path);
         return res.status(403).json({ error: "حساب المنصة مخصص لاستقبال الرسائل الرسمية فقط" });
       }
-    } else if (!["report", "avatar", "frame", "voice-room-image"].includes(context)) {
+    } else if (!["report", "avatar", "frame", "voice-room-image", "explore-video"].includes(context)) {
       safeUnlink(req.file.path);
       return res.status(400).json({ error: "معرّف المحادثة مطلوب" });
     }
@@ -5100,10 +5406,19 @@ app.post("/api/upload", uploadLimiter, requireHttpAuth, limitConcurrentUploads, 
     const clientFileType = String(req.body.clientFileType || "").trim().toLowerCase();
     const fileType = classifyFileType(req.file.mimetype, req.file.originalname, clientFileType);
     const storedMimeType = normalizeMediaMimeType(fileType, req.file.mimetype, req.file.originalname);
+    if (context === "explore-video" && fileType !== "video") {
+      safeUnlink(req.file.path);
+      return res.status(400).json({ error: "اكسبلور يقبل ملفات الفيديو فقط هنا" });
+    }
+    if (context === "explore-video" && Number(req.file.size || 0) > Math.min(MAX_UPLOAD_BYTES, 150 * 1024 * 1024)) {
+      safeUnlink(req.file.path);
+      return res.status(413).json({ error: "الحد الأعلى لفيديو اكسبلور هو 150 ميغابايت" });
+    }
     const chatMedia = context === "chat"
       && Number(req.file.size || 0) > 0
       && DIRECT_MEDIA_FILE_TYPES.has(fileType);
-    if (chatMedia && REQUIRE_EXTERNAL_MEDIA_STORAGE && !objectStorage.isConfigured()) {
+    const exploreMedia = context === "explore-video" && Number(req.file.size || 0) > 0 && fileType === "video";
+    if ((chatMedia || exploreMedia) && REQUIRE_EXTERNAL_MEDIA_STORAGE && !objectStorage.isConfigured()) {
       safeUnlink(req.file.path);
       return res.status(503).json({
         error: "التخزين الخارجي للوسائط غير مهيأ على السيرفر. أضف إعدادات Cloudflare R2 ثم أعد المحاولة."
@@ -5273,6 +5588,10 @@ function canViewerOpenUpload(record, viewer) {
   let allowed = record.uploader === viewer;
   if (!allowed && record.roomId) allowed = canUserAccessRoom(record.roomId, viewer);
   if (!allowed && ["avatar", "frame", "voice-room-image"].includes(record.context)) allowed = true;
+  if (!allowed && record.context === "explore-video") {
+    allowed = isExploreReviewer(viewer)
+      || (Array.isArray(db.explorePosts) && db.explorePosts.some(post => post?.fileId === record.fileId));
+  }
   if (!allowed && record.context === "report") {
     allowed = viewer === PLATFORM_OWNER_USERNAME || hasPermission(viewer, "manage_reports");
   }
@@ -5582,6 +5901,7 @@ app.post("/api/admin/frames", requireHttpAuth, (req, res) => {
   }
   const fileId = String(req.body.fileId || "");
   const name = String(req.body.name || "إطار جديد").trim().slice(0, 60);
+  const price = Math.max(0, Math.min(10_000_000, Number.parseInt(req.body.price, 10) || 500));
   const file = db.uploads[fileId];
   if (!file || file.context !== "frame" || file.uploader !== req.authUser) {
     return res.status(400).json({ error: "ملف الإطار غير صالح" });
@@ -5593,6 +5913,7 @@ app.post("/api/admin/frames", requireHttpAuth, (req, res) => {
     fileId,
     url: `/api/files/${encodeURIComponent(fileId)}`,
     animated: file.fileType === "gif",
+    price,
     createdBy: req.authUser,
     createdAt: new Date().toISOString()
   };
@@ -5977,10 +6298,13 @@ function getActiveVoiceRoomBan(roomId, username) {
 
 function voiceRoomMemberProfile(room, username) {
   const user = db.users?.[username] || {};
+  const profile = publicUserProfile(username);
   return {
     username,
     displayName: user.displayName || username,
     avatar: user.avatar || "",
+    frame: profile.frame,
+    charisma: profile.charisma,
     role: username === room.owner ? "owner" :
       (Array.isArray(room.moderators) && room.moderators.includes(username) ? "moderator" : "listener"),
     platformRole: getPublicRole(username),
@@ -6004,6 +6328,7 @@ function voiceRoomPublic(roomId) {
       displayName: username ? (user?.displayName || username) : "",
       avatar: username ? (user?.avatar || "") : "",
       frame: username ? getActiveFrame(username) : null,
+      charisma: username ? publicCharisma(user) : null,
       muted: username ? runtime.mutedUsers.has(username) : false,
       role: username ? (
         username === room.owner ? "owner" :
@@ -6156,6 +6481,8 @@ app.get("/api/voice-rooms", requireHttpAuth, (_req, res) => {
 });
 
 io.on("connection", (socket) => {
+  economyGameHandlers.registerGameSocketHandlers(socket);
+
   // Lightweight server-side activity counters. Payload contents are ignored;
   // only the event category and room id are sent to the analytics service.
   socket.onAny((eventName, payload = {}) => {
@@ -6207,6 +6534,7 @@ io.on("connection", (socket) => {
         status: "online",
         lastSeen: new Date().toISOString()
       };
+      economyGameHandlers?.claimDailyForUser?.(uVal.username);
       const socketAnalyticsCookies = parseCookies(socket.handshake.headers.cookie || "");
       analyticsService?.track("register", {
         userId: uVal.username,
@@ -6229,6 +6557,7 @@ io.on("connection", (socket) => {
         permissions: [],
         avatar: db.users[uVal.username].avatar || "",
         frame: getActiveFrame(uVal.username),
+        charisma: publicCharisma(db.users[uVal.username]),
         referralCode: db.users[uVal.username].referralCode || "",
         sessionToken,
         message: "تم إنشاء الحساب بنجاح"
@@ -6282,6 +6611,8 @@ io.on("connection", (socket) => {
         return;
       }
 
+      economyGameHandlers?.claimDailyForUser?.(cleanUsername);
+
       bindSocketUser(socket, cleanUsername);
       analyticsService?.track("login", { userId: cleanUsername, page: "/index.html" });
 
@@ -6295,6 +6626,7 @@ io.on("connection", (socket) => {
         permissions: getUserPermissions(user.username),
         avatar: user.avatar || "",
         frame: getActiveFrame(user.username),
+        charisma: publicCharisma(user),
         referralCode: user.referralCode || "",
         sessionToken: socket.sessionToken || null,
         stats
@@ -6332,6 +6664,7 @@ io.on("connection", (socket) => {
             badge: getPlatformBadge(username),
             avatar: user.avatar || "",
             frame: getActiveFrame(username),
+            charisma: publicCharisma(user),
             isOnline: activeOnlineUsers.has(user.username),
             isModerator: ["owner", "admin", "moderator"].includes(role)
           });
@@ -6610,6 +6943,7 @@ io.on("connection", (socket) => {
             badge: getPlatformBadge(fname),
             avatar: u.avatar || "",
             frame: getActiveFrame(fname),
+            charisma: publicCharisma(u),
             isOnline: activeOnlineUsers.has(fname)
           });
         }
@@ -6649,12 +6983,9 @@ io.on("connection", (socket) => {
     try {
       const user = db.users[username];
       if (user) {
-        const { password, ...safeUser } = user;
-        socket.emit("user_profile", {
-          ...safeUser,
-          role: getPublicRole(username),
-          badge: getPlatformBadge(username)
-        });
+        // Never expose coins, inventory, password hashes, or private history
+        // through the public profile event. Charisma is intentionally public.
+        socket.emit("user_profile", publicUserProfile(username));
       } else {
         socket.emit("user_profile", null);
       }
@@ -8314,7 +8645,8 @@ io.on("connection", (socket) => {
         { id: "view_system_metrics", label: "عرض مؤشرات السيرفر والذاكرة" },
         { id: "view_user_analytics", label: "عرض إحصائيات المستخدمين" },
         { id: "manage_referrals", label: "عرض وإدارة إحصائيات الإحالة" },
-        { id: "manage_ai_safety", label: "مراجعة تنبيهات الأمان والسبام الذكية" }
+        { id: "manage_ai_safety", label: "مراجعة تنبيهات الأمان والسبام الذكية" },
+        { id: "manage_explore", label: "مراجعة منشورات اكسبلور وقبولها أو رفضها" }
       ]
     });
   });
@@ -8337,6 +8669,7 @@ io.on("connection", (socket) => {
     try {
       const createdAt = new Date().toISOString();
       const displayTime = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      const broadcastId = `pb_${Date.now()}_${crypto.randomBytes(7).toString("hex")}`;
       let delivered = 0;
 
       for (const username of Object.keys(db.users)) {
@@ -8354,6 +8687,7 @@ io.on("connection", (socket) => {
           displayName: "TOMI",
           platformAccount: true,
           systemBroadcast: true,
+          platformBroadcastId: broadcastId,
           sentBy: actor,
           time: displayTime,
           createdAt,
@@ -8382,8 +8716,28 @@ io.on("connection", (socket) => {
         }).catch(() => {});
       }
 
+      const ownerCopy = {
+        id: broadcastId,
+        message: cleanMessage,
+        sentBy: actor,
+        sentByDisplayName: db.users?.[actor]?.displayName || actor,
+        createdAt
+      };
+      if (!Array.isArray(db.platformBroadcastCopies)) db.platformBroadcastCopies = [];
+      db.platformBroadcastCopies.push(ownerCopy);
+      db.platformBroadcastCopies = db.platformBroadcastCopies.slice(-100);
+      io.to(`user_${PLATFORM_OWNER_USERNAME}`).emit("platform-broadcast-owner-copy", ownerCopy);
+      sendPushToUser(PLATFORM_OWNER_USERNAME, "platform-broadcast-copies", {
+        title: "TOMI • نسخة من رسالة المنصة",
+        body: cleanMessage.slice(0, 180),
+        url: "/index.html?section=admin#adminBroadcastCopies",
+        tag: `platform-copy-${broadcastId}`,
+        type: "message",
+        requireInteraction: true
+      }).catch(() => {});
+
       saveDB(db);
-      socket.emit("platform-broadcast-result", { success: true, delivered, message: "تم إرسال رسالة المنصة" });
+      socket.emit("platform-broadcast-result", { success: true, delivered, ownerCopySaved: true, message: "تم إرسال رسالة المنصة" });
     } catch (error) {
       console.error("platform broadcast:", error);
       socket.emit("platform-broadcast-result", { success: false, error: "تعذر إرسال رسالة المنصة" });
@@ -9494,12 +9848,15 @@ function cleanupExpiredRuntimeState({ aggressive = false } = {}) {
     }
   }
 
-  // Uploaded-to-chat files that were never published are temporary. Clean them
-  // after a grace period so abandoned mobile uploads cannot grow state forever.
+  // Uploaded chat and Explore files that were never published are temporary.
+  // Clean them after a grace period so abandoned uploads cannot grow state forever.
   for (const [fileId, record] of Object.entries(db.uploads || {})) {
-    if (!record || record.context !== "chat" || record.messageId) continue;
+    if (!record) continue;
+    const abandonedChatUpload = record.context === "chat" && !record.messageId && !isChatUploadReferenced(fileId);
+    const abandonedExploreUpload = record.context === "explore-video" && !isExploreUploadReferenced(fileId);
+    if (!abandonedChatUpload && !abandonedExploreUpload) continue;
     const created = Date.parse(record.createdAt || "");
-    if (Number.isFinite(created) && now - created >= UNSENT_CHAT_UPLOAD_TTL_MS && !isChatUploadReferenced(fileId)) {
+    if (Number.isFinite(created) && now - created >= UNSENT_CHAT_UPLOAD_TTL_MS) {
       delete db.uploads[fileId];
       queuePhysicalUploadDelete(record);
       changed = true;

@@ -101,6 +101,8 @@
           <h3>رفع إطار جديد</h3>
           <label for="frameName">اسم الإطار</label>
           <input id="frameName" type="text" maxlength="60" placeholder="مثال: Royal Purple" required>
+          <label for="framePrice">سعر الإطار بالكوينز</label>
+          <input id="framePrice" type="number" min="0" max="10000000" value="500" required>
           <label class="secondary-btn file-label" for="frameFile"><i class="fa-solid fa-upload"></i> اختيار PNG / WebP / GIF</label>
           <input id="frameFile" type="file" accept="image/*,.gif" hidden required>
           <div id="frameFileName" class="muted">لم يتم اختيار ملف</div>
@@ -470,7 +472,7 @@
       const upload = await request('/api/upload', { method:'POST', body:form });
       await request('/api/admin/frames', {
         method:'POST', headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({ fileId:upload.fileId, name:$('frameName').value.trim() })
+        body:JSON.stringify({ fileId:upload.fileId, name:$('frameName').value.trim(), price:Number($('framePrice').value || 500) })
       });
       e.target.reset();
       $('frameFileName').textContent = 'لم يتم اختيار ملف';

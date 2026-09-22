@@ -61,7 +61,8 @@
               <button class="tomi-ai-quick" type="button" data-ai-prompt="شلون أنشئ غرفة عامة؟">إنشاء غرفة</button>
               <button class="tomi-ai-quick" type="button" data-ai-prompt="شلون أدعو صديقي؟">دعوة صديق</button>
               <button class="tomi-ai-quick" type="button" data-ai-prompt="شلون أوقف الإشعارات؟">الإشعارات</button>
-              <button class="tomi-ai-quick" type="button" data-ai-prompt="شلون أرفع فيديو؟">رفع فيديو</button>
+              <button class="tomi-ai-quick" type="button" data-ai-prompt="أول مرة أستخدم TOMI، شلون أبدأ؟">ابدأ هنا</button>
+              <button class="tomi-ai-quick" type="button" data-ai-prompt="شلون أنشر ملاحظة أو فيديو في اكسبلور؟">اكسبلور</button>
             </div>
             <form id="tomiAiAskForm" class="tomi-ai-form">
               <input id="tomiAiAskInput" class="tomi-ai-input" type="text" maxlength="800" autocomplete="off" placeholder="اكتب سؤالك هنا...">

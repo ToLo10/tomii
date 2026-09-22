@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#0b0b14">
+  <title>TOMI - اكسبلور</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
+  <link rel="stylesheet" href="/explore.css?v=20260922-owner2">
+  <script src="/socket.io/socket.io.js"></script>
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar" id="sidebar">
+      <div class="brand"><i class="fa-solid fa-comments"></i><strong>TOMI</strong></div>
+      <nav>
+        <a href="index.html"><i class="fa-solid fa-house"></i><span>الرئيسية</span></a>
+        <a href="room.html"><i class="fa-solid fa-comment-dots"></i><span>المحادثات</span></a>
+        <a href="voice-rooms.html"><i class="fa-solid fa-microphone-lines"></i><span>الغرف الصوتية</span></a>
+        <a href="games.html"><i class="fa-solid fa-gamepad"></i><span>الألعاب</span></a>
+        <a href="wallet.html"><i class="fa-solid fa-wallet"></i><span>المحفظة والمتجر</span></a>
+        <a href="explore.html" class="active"><i class="fa-solid fa-compass"></i><span>اكسبلور</span></a>
+        <a href="settings.html"><i class="fa-solid fa-gear"></i><span>الإعدادات</span></a>
+      </nav>
+      <button id="logoutBtn" class="logout" type="button"><i class="fa-solid fa-right-from-bracket"></i> تسجيل خروج</button>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <button id="menuBtn" class="icon-btn menu-btn" type="button" aria-label="القائمة"><i class="fa-solid fa-bars"></i></button>
+        <div class="heading">
+          <span class="eyebrow"><i class="fa-solid fa-compass"></i> TOMI • DISCOVER</span>
+          <h1>اكسبلور</h1>
+          <p>منشورات قصيرة من مستخدمي TOMI. منشورات المستخدمين تنتظر الموافقة، والمالك ينشر مباشرة.</p>
+        </div>
+        <div class="user-pill"><span class="status-dot"></span><span id="meName">...</span></div>
+      </header>
+
+      <div id="toast" class="toast" role="status" aria-live="polite"></div>
+      <div class="tabs" role="tablist">
+        <button class="tab active" id="feedTab" type="button"><i class="fa-solid fa-earth-americas"></i> المنشورات</button>
+        <button class="tab" id="reviewTab" type="button" hidden><i class="fa-solid fa-shield-halved"></i> مراجعة الطلبات <span id="pendingCount" class="count-badge">0</span></button>
+      </div>
+
+      <section class="explore-layout" id="feedPane">
+        <div class="feed-column">
+          <section class="card composer">
+            <div class="section-title"><div><h2>شارك اكسبلور</h2><p id="composerDescription">اختر ملاحظة قصيرة أو فيديو حتى 150 ميغابايت.</p></div><i class="fa-solid fa-wand-magic-sparkles title-icon"></i></div>
+            <form id="postForm">
+              <div class="type-switch" role="group" aria-label="نوع المنشور">
+                <button type="button" class="type-option active" data-type="note"><i class="fa-solid fa-pen"></i> ملاحظة</button>
+                <button type="button" class="type-option" data-type="video"><i class="fa-solid fa-video"></i> فيديو</button>
+              </div>
+              <div id="noteFields">
+                <label class="field-label" for="noteText">ملاحظتك</label>
+                <textarea id="noteText" maxlength="500" placeholder="اكتب شيئاً قصيراً ولطيفاً..." required></textarea>
+                <div class="field-meta"><span id="noteHint">النص يظهر بعد موافقة المراجع</span><span id="noteCount">0 / 500</span></div>
+              </div>
+              <div id="videoFields" hidden>
+                <label class="field-label" for="videoFile">اختر فيديو</label>
+                <input id="videoFile" type="file" accept="video/*">
+                <p id="videoName" class="field-hint">MP4 أو صيغة فيديو مدعومة • الحد 150 ميغابايت</p>
+                <label class="field-label" for="videoCaption">وصف قصير (اختياري)</label>
+                <input id="videoCaption" class="text-input" maxlength="180" placeholder="اكتب وصفاً للفيديو">
+                <p class="field-hint">سيشاهد المراجع الفيديو قبل نشره.</p>
+              </div>
+              <div class="review-note"><i class="fa-solid fa-circle-info"></i><span id="reviewNoteText">إرسال المنشور يضعه في قائمة المراجعة. لن يظهر في الخلاصة إلا بعد الموافقة.</span></div>
+              <button id="submitPost" class="primary" type="submit"><i class="fa-solid fa-paper-plane"></i> إرسال للمراجعة</button>
+            </form>
+          </section>
+
+          <section class="card my-submissions">
+            <div class="section-title"><div><h2>طلباتي الأخيرة</h2><p>تابع حالة المنشورات التي أرسلتها.</p></div><button id="refreshBtn" class="icon-btn" type="button" aria-label="تحديث"><i class="fa-solid fa-rotate"></i></button></div>
+            <div id="mySubmissions" class="submission-list"><p class="muted">ما عندك طلبات حديثة.</p></div>
+          </section>
+        </div>
+
+        <section class="feed-column">
+          <div class="section-title feed-heading"><div><h2>آخر المنشورات</h2><p>تظهر أحدث 50 منشوراً موافقاً عليه.</p></div><span class="feed-limit"><i class="fa-solid fa-layer-group"></i> 50 منشور</span></div>
+          <div id="feedList" class="feed-list"><div class="empty-box"><i class="fa-solid fa-spinner fa-spin"></i> جاري تحميل اكسبلور...</div></div>
+        </section>
+      </section>
+
+      <section id="reviewPane" class="card review-pane" hidden>
+        <div class="section-title"><div><h2>طلبات اكسبلور</h2><p>راجع النص والفيديو قبل الموافقة أو الرفض.</p></div><button id="refreshReviewBtn" class="secondary" type="button"><i class="fa-solid fa-rotate"></i> تحديث</button></div>
+        <div class="review-guidance"><i class="fa-solid fa-eye"></i><span>تحليل الذكاء الاصطناعي يساعد في تنبيهك إلى النصوص المشتبه بها. افحص محتوى الفيديو بنفسك قبل الموافقة.</span></div>
+        <div id="reviewList" class="review-list"><div class="empty-box">جاري تحميل الطلبات...</div></div>
+      </section>
+    </main>
+  </div>
+  <script src="/explore.js?v=20260922-owner2"></script>
+</body>
+</html>

@@ -462,6 +462,7 @@
         .platform-badge.owner { background:linear-gradient(135deg,#f1c40f,#e67e22); color:#1a1300; }
         .platform-badge.admin { background:#9b59b6; color:#fff; }
         .platform-badge.moderator { background:#f39c12; color:#fff; }
+        .charisma-inline-badge { display:inline-flex; align-items:center; gap:3px; margin-right:5px; padding:2px 6px; border-radius:999px; background:rgba(250,204,21,.12); border:1px solid rgba(250,204,21,.28); color:#ffe291; font-size:.62rem; font-weight:800; white-space:nowrap; vertical-align:middle; }
         .report-btn { background:#34495e; color:#fff; border:0; border-radius:6px; padding:4px 8px; font-size:.72rem; cursor:pointer; }
         .call-modal-box { max-width:760px; }
         .call-videos { display:grid; grid-template-columns:1fr 180px; gap:10px; min-height:260px; }
@@ -2121,6 +2122,9 @@
                 <a href="index.html?section=requests" class="nav-item"><i class="fa-solid fa-clock-rotate-left"></i> <span>طلبات المراسلة</span></a>
                 <a href="#" class="nav-item active" id="navConversations"><i class="fa-solid fa-comment-dots"></i> <span>المحادثات</span></a>
                 <a href="voice-rooms.html" class="nav-item"><i class="fa-solid fa-microphone-lines"></i> <span>الغرف الصوتية</span></a>
+                <a href="explore.html" class="nav-item"><i class="fa-solid fa-compass"></i> <span>اكسبلور</span></a>
+                <a href="games.html" class="nav-item"><i class="fa-solid fa-gamepad"></i> <span>الألعاب</span></a>
+                <a href="wallet.html" class="nav-item"><i class="fa-solid fa-wallet"></i> <span>المحفظة والمتجر</span></a>
                 <a href="index.html?section=friends" class="nav-item"><i class="fa-solid fa-user-group"></i> <span>الأصدقاء</span></a>
                 <a href="#" class="nav-item" id="searchModeratorsBtn"><i class="fa-solid fa-shield-halved"></i> <span>المشرفين</span></a>
                 <a href="#" class="nav-item" id="platformAdminBtn" style="display:none;"><i class="fa-solid fa-user-shield"></i> <span>إدارة المنصة</span></a>
@@ -2788,6 +2792,11 @@
             return '<span class="platform-badge ' + escapeHTML(type) + '">' + icon + ' ' + escapeHTML(label) + '</span>';
         }
 
+        function getCharismaHTML(charisma) {
+            if (!charisma) return '';
+            return '<span class="charisma-inline-badge" title="' + escapeHTML(charisma.points || 0) + ' كارزما">' + escapeHTML(charisma.icon || '✨') + ' ' + Number(charisma.level || 0) + '</span>';
+        }
+
         function getMsgBadgeHTML(badge) {
             const type = typeof badge === 'object' && badge ? badge.type : badge;
             if (!type) return '';
@@ -2873,6 +2882,7 @@
                 if (u.platformBadge) {
                     nameDiv.insertAdjacentHTML('beforeend', getPlatformBadgeHTML(u.platformBadge));
                 }
+                nameDiv.insertAdjacentHTML('beforeend', getCharismaHTML(u.charisma));
 
                 item.appendChild(nameDiv);
 
@@ -3043,7 +3053,7 @@
                         <div style="font-weight:bold;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${safeName}</div>
                         <div style="font-size:0.75rem;color:#888;">@${safeUser}</div>
                     </div>
-                    <span class="platform-badge ${escapeHTML(badgeType)}">${badgeType === 'owner' ? '👑' : badgeType === 'admin' ? '⚡' : '🛡️'} ${escapeHTML(badgeText)}</span>
+                    <span class="platform-badge ${escapeHTML(badgeType)}">${badgeType === 'owner' ? '👑' : badgeType === 'admin' ? '⚡' : '🛡️'} ${escapeHTML(badgeText)}</span>${getCharismaHTML(m.charisma)}
                 `;
                 modSearchList.appendChild(item);
             });
@@ -4382,6 +4392,7 @@
                 if (u.platformBadge) {
                     nameWrap.insertAdjacentHTML('beforeend', getPlatformBadgeHTML(u.platformBadge));
                 }
+                nameWrap.insertAdjacentHTML('beforeend', getCharismaHTML(u.charisma));
 
                 updateVisibleMessageBadges(u.userId || u.username);
                 userEl.appendChild(nameWrap);

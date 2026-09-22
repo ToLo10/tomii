@@ -17,9 +17,12 @@
       <div class="brand"><i class="fa-solid fa-comments"></i><strong>TOMI</strong></div>
       <nav>
         <a href="index.html"><i class="fa-solid fa-house"></i><span>الرئيسية</span></a>
+        <a href="explore.html"><i class="fa-solid fa-compass"></i><span>اكسبلور</span></a>
         <a href="index.html"><i class="fa-solid fa-magnifying-glass"></i><span>البحث عن أشخاص</span></a>
         <a href="room.html"><i class="fa-solid fa-comment-dots"></i><span>نافذة الدردشة</span></a>
         <a href="voice-rooms.html" class="active"><i class="fa-solid fa-microphone-lines"></i><span>الغرف الصوتية</span></a>
+        <a href="games.html"><i class="fa-solid fa-gamepad"></i><span>الألعاب</span></a>
+        <a href="wallet.html"><i class="fa-solid fa-wallet"></i><span>المحفظة والمتجر</span></a>
         <a href="settings.html"><i class="fa-solid fa-gear"></i><span>الإعدادات</span></a>
       </nav>
       <button id="logoutBtn" class="logout"><i class="fa-solid fa-right-from-bracket"></i> تسجيل خروج</button>
@@ -236,8 +239,19 @@
     }
     function avatarMarkup(profile, className=''){
       const name=profile?.displayName||profile?.username||'TOMI';
-      if(profile?.avatar) return `<img class="${className}" src="${escapeHTML(profile.avatar)}" alt="${escapeHTML(name)}">`;
-      return `<span class="avatar-fallback ${className}">${escapeHTML(initials(name))}</span>`;
+      const photo=profile?.avatar
+        ? `<img class="voice-avatar-photo" src="${escapeHTML(profile.avatar)}" alt="${escapeHTML(name)}">`
+        : `<span class="voice-avatar-photo avatar-fallback">${escapeHTML(initials(name))}</span>`;
+      const frame=profile?.frame?.url
+        ? `<img class="voice-avatar-frame" src="${escapeHTML(profile.frame.url)}" alt="" aria-hidden="true">`
+        : '';
+      return `<span class="voice-avatar-wrap ${escapeHTML(className)}">${photo}${frame}</span>`;
+    }
+
+    function charismaMarkup(profile){
+      const charisma=profile?.charisma;
+      if(!charisma) return '';
+      return `<span class="voice-charisma" title="${escapeHTML(charisma.points||0)} كارزما">${escapeHTML(charisma.icon||'✨')} ${Number(charisma.level||0)}</span>`;
     }
 
     function showRoomsStatus(message, isError = false){
@@ -341,6 +355,12 @@
       for(const p of [...peers.keys()]) if(!(state.members||[]).includes(p)) closePeer(p);
       syncLocalSeatMedia();
     });
+    socket.on('profile-updated', profile=>{
+      if(!profile?.username || !currentState) return;
+      if(Array.isArray(currentState.memberProfiles)) currentState.memberProfiles=currentState.memberProfiles.map(item=>item.username===profile.username?{...item,...profile}:item);
+      if(Array.isArray(currentState.seats)) currentState.seats=currentState.seats.map(item=>item.username===profile.username?{...item,...profile}:item);
+      renderState();
+    });
     socket.on('voice-room-peer-joined', d=>{ if(d.roomId===currentRoom && d.username!==me.username) ensurePeer(d.username, me.username.localeCompare(d.username)<0); });
     socket.on('voice-room-peer-left', d=>{ if(d.roomId===currentRoom) closePeer(d.username); });
     socket.on('voice-room-kicked', d=>{
@@ -389,12 +409,13 @@
         box.className='seat '+(s.locked?'locked ':'')+(s.username?'occupied ':'')+(isHost?'owner-seat ':'');
         box.dataset.seat=String(s.seat);
         const profile=s.username?profileFor(s.username):null;
-        const avatar=s.username ? avatarMarkup({...(profile||{}),avatar:s.avatar||profile?.avatar,displayName:s.displayName||profile?.displayName,username:s.username},'seat-avatar-img') : `<div class="seat-plus">${s.locked?'<i class="fa-solid fa-lock"></i>':'<i class="fa-solid fa-plus"></i>'}</div>`;
+        const seatProfile={...(profile||{}),avatar:s.avatar||profile?.avatar,frame:s.frame||profile?.frame,charisma:s.charisma||profile?.charisma,displayName:s.displayName||profile?.displayName,username:s.username};
+        const avatar=s.username ? avatarMarkup(seatProfile,'seat-avatar-img') : `<div class="seat-plus">${s.locked?'<i class="fa-solid fa-lock"></i>':'<i class="fa-solid fa-plus"></i>'}</div>`;
         const waveform=s.username && !s.muted ? '<span class="waveform"><i></i><i></i><i></i><i></i><i></i></span>' : '';
         const crown=s.role==='owner'?'<span class="crown"><i class="fa-solid fa-crown"></i></span>':'';
         const micBadge=s.username?`<span class="mic-badge ${s.muted?'off':''}"><i class="fa-solid ${s.muted?'fa-microphone-slash':'fa-microphone'}"></i></span>`:'';
         const roleLabel=s.role==='owner'?'المالك':s.role==='moderator'?'مشرف':'';
-        box.innerHTML=`<div class="seat-visual">${crown}${avatar}${waveform}${micBadge}</div><strong>${s.username?escapeHTML(s.displayName||s.username):s.locked?'مقعد مغلق':'مقعد فارغ'}</strong>${roleLabel?`<span class="seat-role">${roleLabel}</span>`:''}`;
+        box.innerHTML=`<div class="seat-visual">${crown}${avatar}${waveform}${micBadge}</div><strong>${s.username?escapeHTML(s.displayName||s.username):s.locked?'مقعد مغلق':'مقعد فارغ'}${s.username?charismaMarkup(seatProfile):''}</strong>${roleLabel?`<span class="seat-role">${roleLabel}</span>`:''}`;
         if(!s.username && !s.locked) box.onclick=()=>takeSeat(s.seat);
         if(isStaff()){
           const manage=document.createElement('button'); manage.className='seat-manage'; manage.innerHTML='<i class="fa-solid fa-ellipsis"></i>';
@@ -426,7 +447,7 @@
         const username=p.username;
         const row=document.createElement('div'); row.className='member-row';
         const role=username===currentState.owner?'مالك':currentState.moderators?.includes(username)?'مشرف':'مستمع';
-        row.innerHTML=`<div class="member-profile">${avatarMarkup(p,'member-avatar')}<div><strong>${escapeHTML(p.displayName||username)}</strong><span>@${escapeHTML(username)} • ${role}</span></div></div>`;
+        row.innerHTML=`<div class="member-profile">${avatarMarkup(p,'member-avatar')}<div><strong>${escapeHTML(p.displayName||username)}${charismaMarkup(p)}</strong><span>@${escapeHTML(username)} • ${role}</span></div></div>`;
         if(canActOn(username)){
           const action=document.createElement('button'); action.className='member-more'; action.innerHTML='<i class="fa-solid fa-ellipsis-vertical"></i>'; action.onclick=()=>openMemberActions(username,currentState?.seats?.find(s=>s.username===username)?.seat||null); row.appendChild(action);
         }

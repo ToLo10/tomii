@@ -49,6 +49,24 @@ const FAQ_ENTRIES = Object.freeze([
     answer: "من خيارات الرسالة أو ملف المستخدم اختر «إبلاغ»، اكتب السبب والتفاصيل وأرسل البلاغ. يراجعه المشرفون حسب الصلاحيات."
   },
   {
+    id: "explore",
+    title: "اكسبلور والمنشورات",
+    keywords: ["اكسبلور", "استكشاف", "منشور", "انشر", "نشر", "فيديو", "ملاحظة"],
+    answer: "من «اكسبلور» تقدر ترسل فيديو قصيراً أو ملاحظة كتابية قصيرة. يبقى المنشور قيد المراجعة ولا يظهر للكل إلا بعد موافقة المالك أو مشرف لديه صلاحية اكسبلور."
+  },
+  {
+    id: "getting-started",
+    title: "مساعدة المستخدم الجديد",
+    keywords: ["جديد", "جديده", "بداية", "ابدأ", "استخدم الموقع", "اول مرة", "أول مرة"],
+    answer: "أهلاً بك في TOMI. ابدأ بإكمال ملفك من الإعدادات، ابحث عن أصدقائك، ثم افتح المحادثات أو الغرف الصوتية. من «الألعاب» تنشئ غرفة لعب، ومن «المحفظة والمتجر» تشوف رصيدك وهداياك، ومن «اكسبلور» تتابع المنشورات بعد مراجعتها."
+  },
+  {
+    id: "coins-games",
+    title: "الكوينز والألعاب",
+    keywords: ["كوين", "كوينز", "عملات", "رصيد", "روليت", "لعبة", "العاب", "ألعاب"],
+    answer: "رصيد TOMI وإدارة الهدايا موجودان في «المحفظة والمتجر». تقدر تلعب ألعاب الموقع من «الألعاب»؛ راجع قيمة الرهان وقواعد الجولة قبل التأكيد."
+  },
+  {
     id: "search",
     title: "البحث داخل محادثاتي",
     keywords: ["بحث", "ابحث", "رسالة", "رسائل", "سجل", "search"],
@@ -67,6 +85,8 @@ const HELP_CARDS = Object.freeze([
   { id: "invites", icon: "fa-user-plus", title: "الدعوات", text: "دعوة الأصدقاء إلى المحادثة أو الغرفة الصوتية." },
   { id: "notifications", icon: "fa-bell", title: "الإشعارات", text: "تشغيل الإشعارات أو إيقافها من جهازك." },
   { id: "media", icon: "fa-photo-film", title: "الملفات", text: "إرسال الصور والفيديو والملفات بأمان." },
+  { id: "explore", icon: "fa-compass", title: "اكسبلور", text: "تابع المنشورات العامة أو أرسل فيديو أو ملاحظة للمراجعة." },
+  { id: "new-user", icon: "fa-hand-sparkles", title: "ابدأ هنا", text: "دليل سريع للمستخدم الجديد داخل TOMI." },
   { id: "privacy", icon: "fa-shield-halved", title: "الخصوصية", text: "المحادثات الخاصة لا تظهر إلا لأصحابها." }
 ]);
 
@@ -424,7 +444,7 @@ function createTomiAiService(options = {}) {
     return safeString(text, 20000).match(/https?:\/\/[^\s<>()]+/gi) || [];
   }
 
-  function analyzeMessage(message) {
+  function analyzeMessage(message, { trackRecent = true } = {}) {
     const text = safeString(message?.msg, 20000);
     const normalized = normalizeText(text);
     const username = safeString(message?.userId || message?.username, 80);
@@ -464,22 +484,30 @@ function createTomiAiService(options = {}) {
       score += 0.62;
     }
 
-    const previous = recentMessages.get(username) || [];
-    const now = Date.now();
-    const recent = previous.filter(item => now - item.at < 90_000);
-    const duplicateCount = recent.filter(item => item.text === normalized && normalized.length > 8).length;
-    if (duplicateCount >= 2) {
-      categories.add("spam");
-      reasons.push("تكرار الرسالة عدة مرات خلال وقت قصير");
-      score += 0.65;
+    if (/(اباحي|جنس(?:ي|يه)?|عاري|تعري|صور عاريه|محتوي جنسي|porn(?:ography)?|nude|nsfw|explicit sex|sexual content)/i.test(normalized)) {
+      categories.add("sexual-content");
+      reasons.push("محتوى جنسي صريح يحتاج مراجعة المالك");
+      score += 1;
     }
-    if (normalized.length > 0 && /(.)\1{11,}/u.test(normalized.replace(/\s/g, ""))) {
-      categories.add("spam");
-      reasons.push("تكرار حروف غير طبيعي");
-      score += 0.35;
+
+    if (trackRecent) {
+      const previous = recentMessages.get(username) || [];
+      const now = Date.now();
+      const recent = previous.filter(item => now - item.at < 90_000);
+      const duplicateCount = recent.filter(item => item.text === normalized && normalized.length > 8).length;
+      if (duplicateCount >= 2) {
+        categories.add("spam");
+        reasons.push("تكرار الرسالة عدة مرات خلال وقت قصير");
+        score += 0.65;
+      }
+      if (normalized.length > 0 && /(.)\1{11,}/u.test(normalized.replace(/\s/g, ""))) {
+        categories.add("spam");
+        reasons.push("تكرار حروف غير طبيعي");
+        score += 0.35;
+      }
+      recent.push({ text: normalized, at: now });
+      recentMessages.set(username, recent.slice(-12));
     }
-    recent.push({ text: normalized, at: now });
-    recentMessages.set(username, recent.slice(-12));
 
     return {
       flagged: score >= 0.55,
@@ -496,7 +524,7 @@ function createTomiAiService(options = {}) {
     const response = await callRemote([
       {
         role: "system",
-        content: "صنّف الرسالة لأغراض سلامة منصة محادثة. أعد JSON فقط بالشكل {flagged:boolean,score:number,categories:string[],reasons:string[]}. الفئات المسموحة: spam,suspicious-link,scam,abuse,threat. لا تذكر نص الرسالة في النتيجة."
+      content: "صنّف النص لأغراض سلامة منصة اجتماعية. أعد JSON فقط بالشكل {flagged:boolean,score:number,categories:string[],reasons:string[]}. الفئات المسموحة: spam,suspicious-link,scam,abuse,threat,sexual-content. لا تذكر نص الرسالة في النتيجة."
       },
       { role: "user", content: JSON.stringify({ text: safeString(message?.msg, 1200) }) }
     ], 220);
@@ -505,7 +533,7 @@ function createTomiAiService(options = {}) {
       const match = response.match(/\{[\s\S]*\}/);
       const parsed = JSON.parse(match ? match[0] : response);
       const categories = Array.isArray(parsed.categories)
-        ? parsed.categories.filter(item => ["spam", "suspicious-link", "scam", "abuse", "threat"].includes(item)).slice(0, 5)
+        ? parsed.categories.filter(item => ["spam", "suspicious-link", "scam", "abuse", "threat", "sexual-content"].includes(item)).slice(0, 6)
         : [];
       const reasons = Array.isArray(parsed.reasons) ? parsed.reasons.map(item => safeString(item, 160)).filter(Boolean).slice(0, 5) : [];
       return {
@@ -535,6 +563,8 @@ function createTomiAiService(options = {}) {
       sender: safeString(message?.userId || message?.username, 80),
       senderDisplayName: safeString(message?.displayName || message?.userId || message?.username, 100),
       preview: safeString(message?.msg, 500),
+      source: safeString(message?.source, 40),
+      postId: safeString(message?.postId, 160),
       categories: analysis.categories,
       reasons: analysis.reasons,
       score: analysis.score,
@@ -572,6 +602,41 @@ function createTomiAiService(options = {}) {
     return final.flagged ? createAlert(message, final) : null;
   }
 
+  async function reviewPublicContent({ postId, username, displayName, text, type } = {}) {
+    const cleanText = safeString(text, 700);
+    const message = {
+      msgId: `explore_${safeString(postId, 120)}`,
+      postId: safeString(postId, 120),
+      source: "explore",
+      roomId: "explore",
+      roomName: "اكسبلور • منشور قيد المراجعة",
+      userId: safeString(username, 80),
+      displayName: safeString(displayName || username, 100),
+      msg: cleanText
+    };
+    let local = analyzeMessage(message, { trackRecent: false });
+    const remote = cleanText ? await remoteSafetyReview(message) : null;
+    if (remote?.flagged) {
+      local = {
+        flagged: true,
+        score: Math.max(local.score, remote.score),
+        categories: [...new Set([...local.categories, ...remote.categories])],
+        reasons: [...new Set([...local.reasons, ...remote.reasons])],
+        urls: local.urls,
+        engine: `${local.engine}+${remote.engine}`
+      };
+    }
+    if (local.flagged) createAlert(message, local);
+    return {
+      flagged: local.flagged,
+      score: local.score,
+      categories: local.categories,
+      reasons: local.reasons,
+      engine: local.engine,
+      type: type === "video" ? "video" : "note"
+    };
+  }
+
   function listAlerts({ status = "pending", limit = 100 } = {}) {
     const db = ensureState();
     const rows = Object.values(db.aiModerationAlerts || {})
@@ -603,6 +668,8 @@ function createTomiAiService(options = {}) {
     const timeseries = Array.isArray(snapshot?.timeseries) ? snapshot.timeseries : [];
     const rooms = Array.isArray(snapshot?.rooms) ? snapshot.rooms : [];
     const referrals = Array.isArray(snapshot?.referrals) ? snapshot.referrals : [];
+    const explore = snapshot?.explore || {};
+    const moderation = snapshot?.moderation || {};
     const clean = normalizeText(question);
     let answer = "";
 
@@ -610,7 +677,13 @@ function createTomiAiService(options = {}) {
       const value = Number(item?.peakOnline || item?.activeUsers || item?.sessions || 0);
       return value > Number(best?.value || 0) ? { item, value } : best;
     }, null);
-    if (/ضغط|ذروه|ذروة|اوقات|أوقات|وقت النشاط|نشاط الموقع/.test(clean)) {
+    if (/اكسبلور|استكشاف|منشورات|محتوى اباحي|محتوي اباحي|مراجعه المحتوى|مراجعة المحتوى|تنبيهات السلامه|تنبيهات السلامة/.test(clean)) {
+      if (/اباحي|اباحيه|جنسي|مخالف|سلامه|سلامة|تنبيه/.test(clean)) {
+        answer = `خلال الفترة المحددة: ${Number(moderation.pendingAlerts || 0)} تنبيه أمان بانتظار المراجعة، منها ${Number(moderation.sexualContentAlerts || 0)} تنبيه مرتبط بمحتوى جنسي. في اكسبلور ${Number(explore.flaggedPending || 0)} طلباً عليه إشارة آلية.`;
+      } else {
+        answer = `إحصائيات اكسبلور للفترة: ${Number(explore.published || 0)} منشوراً منشوراً، ${Number(explore.pending || 0)} بانتظار المراجعة، و${Number(explore.rejected || 0)} مرفوضاً. الطلبات التي عليها تنبيه آلي: ${Number(explore.flaggedPending || 0)}.`;
+      }
+    } else if (/ضغط|ذروه|ذروة|اوقات|أوقات|وقت النشاط|نشاط الموقع/.test(clean)) {
       answer = peak?.item
         ? `أعلى ضغط مسجل كان تقريباً ${peak.value} مستخدم عند ${new Date(peak.item.bucketStart).toLocaleString("ar-IQ")}.`
         : "لا توجد نقاط زمنية كافية حتى أحدد وقت الضغط الأعلى.";
@@ -642,9 +715,9 @@ function createTomiAiService(options = {}) {
     const remote = await callRemote([
       {
         role: "system",
-        content: "أنت محلل TOMI. أجب بالعربية العراقية باختصار اعتماداً على أرقام مجمعة فقط. لا تخترع أرقاماً ولا تكشف محتوى رسائل أو بيانات شخصية."
+        content: "أنت محلل TOMI. أجب بالعربية العراقية باختصار اعتماداً على أرقام مجمعة فقط. لا تخترع أرقاماً ولا تكشف محتوى رسائل أو بيانات شخصية. إذا لم تتضمن المقاييس معلومة فقل إنها غير متاحة."
       },
-      { role: "user", content: JSON.stringify({ question: safeString(question, 800), answerDraft: answer, metrics: { overview, rooms: rooms.slice(0, 10), referrals: referrals.slice(0, 10) } }) }
+      { role: "user", content: JSON.stringify({ question: safeString(question, 800), answerDraft: answer, metrics: { overview, rooms: rooms.slice(0, 10), referrals: referrals.slice(0, 10), explore, moderation } }) }
     ], 350);
     return {
       question: safeString(question, 800),
@@ -667,6 +740,7 @@ function createTomiAiService(options = {}) {
     setPreferences,
     getRecommendations,
     scanMessage,
+    reviewPublicContent,
     listAlerts,
     reviewAlert,
     answerAnalyticsQuestion,
