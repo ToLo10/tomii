@@ -52,6 +52,8 @@ body {
     right: 0;
     top: 0;
     height: 100vh;
+    max-height: 100vh;
+    overflow: hidden;
     z-index: 1000;
     transition: transform 0.3s ease;
 }
@@ -72,6 +74,7 @@ body {
 }
 
 .sidebar-header {
+    flex: 0 0 auto;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -97,11 +100,22 @@ body {
     flex-direction: column;
     gap: 4px;
     padding: 0 12px;
-    flex: 1;
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(148, 163, 184, 0.55) transparent;
 }
+
+.nav-menu::-webkit-scrollbar { width: 6px; }
+.nav-menu::-webkit-scrollbar-thumb { background: rgba(148, 163, 184, 0.55); border-radius: 999px; }
 
 .nav-item {
     display: flex;
+    flex-shrink: 0;
     align-items: center;
     gap: 14px;
     padding: 14px 18px;
@@ -132,6 +146,7 @@ body {
 }
 
 .logout-section {
+    flex: 0 0 auto;
     padding: 15px 12px 0;
     border-top: 1px solid var(--border);
     margin-top: auto;
