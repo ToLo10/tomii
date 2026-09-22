@@ -6,16 +6,17 @@ const PLATFORM_OWNER_USERNAME = "tomi";
 const DAILY_COIN_REWARD = 500;
 const MAX_COIN_BALANCE = 9_000_000_000;
 const MAX_CHARISMA = 100_000_000;
+const COIN_TRANSACTION_HISTORY_LIMIT = 10;
 const ECONOMY_TIME_ZONE = process.env.TOMI_COIN_TIME_ZONE || "Asia/Baghdad";
 const ROULETTE_SLOTS = Object.freeze([
-  { slot: 0, icon: "🍉", label: "بطيخ", category: "fruit", multiplier: 5 },
-  { slot: 1, icon: "🍊", label: "برتقال", category: "fruit", multiplier: 5 },
-  { slot: 2, icon: "🍎", label: "تفاح", category: "fruit", multiplier: 5 },
-  { slot: 3, icon: "🥬", label: "خضار", category: "fruit", multiplier: 5 },
-  { slot: 4, icon: "🐟", label: "سمك", category: "meat", multiplier: 10 },
-  { slot: 5, icon: "🍔", label: "برغر", category: "meat", multiplier: 15 },
-  { slot: 6, icon: "🍤", label: "روبيان", category: "meat", multiplier: 25 },
-  { slot: 7, icon: "🍗", label: "دجاج", category: "meat", multiplier: 45 }
+  { slot: 0, icon: "🍉", label: "بطيخ", category: "fruit", multiplier: 5, chancePercent: 19.4 },
+  { slot: 1, icon: "🍊", label: "برتقال", category: "fruit", multiplier: 5, chancePercent: 19.4 },
+  { slot: 2, icon: "🍎", label: "تفاح", category: "fruit", multiplier: 5, chancePercent: 19.4 },
+  { slot: 3, icon: "🥬", label: "خضار", category: "fruit", multiplier: 5, chancePercent: 19.4 },
+  { slot: 4, icon: "🐟", label: "سمك", category: "meat", multiplier: 10, chancePercent: 9.5 },
+  { slot: 5, icon: "🍔", label: "برغر", category: "meat", multiplier: 15, chancePercent: 7 },
+  { slot: 6, icon: "🍤", label: "روبيان", category: "meat", multiplier: 25, chancePercent: 3.8 },
+  { slot: 7, icon: "🍗", label: "دجاج", category: "meat", multiplier: 45, chancePercent: 2.1 }
 ]);
 const ROULETTE_SLOT_COUNT = ROULETTE_SLOTS.length;
 const ROULETTE_WIN_MULTIPLIER = 2;
@@ -26,7 +27,6 @@ const ROULETTE_HISTORY_LIMIT = 8;
 const ROULETTE_DAILY_PRIZES = Object.freeze([2_000, 1_000, 500]);
 const ROULETTE_SALAD_MIN_DELAY_MS = 2 * 60 * 60 * 1000;
 const ROULETTE_SALAD_MAX_DELAY_MS = 6 * 60 * 60 * 1000;
-const ROULETTE_SLOT_CHANCE_PERCENT = 100 / ROULETTE_SLOT_COUNT;
 
 function randomRouletteSaladDelayMs() {
   return crypto.randomInt(ROULETTE_SALAD_MIN_DELAY_MS, ROULETTE_SALAD_MAX_DELAY_MS + 1);
@@ -250,6 +250,9 @@ function ensureEconomyUser(user) {
   if (!Array.isArray(user.coinTransactions)) {
     user.coinTransactions = [];
     changed = true;
+  } else if (user.coinTransactions.length > COIN_TRANSACTION_HISTORY_LIMIT) {
+    user.coinTransactions = user.coinTransactions.slice(0, COIN_TRANSACTION_HISTORY_LIMIT);
+    changed = true;
   }
   if (!Array.isArray(user.rouletteHistory)) {
     user.rouletteHistory = [];
@@ -295,7 +298,7 @@ function createTransaction(user, { delta = 0, type = "adjustment", reason = "", 
     createdAt: isoNow()
   };
   user.coinTransactions.unshift(entry);
-  user.coinTransactions = user.coinTransactions.slice(0, 100);
+  user.coinTransactions = user.coinTransactions.slice(0, COIN_TRANSACTION_HISTORY_LIMIT);
   return entry;
 }
 
@@ -434,7 +437,7 @@ function registerEconomyGames({
       sentGifts: user.sentGifts.slice(0, 50).map(publicGiftTransfer),
       charismaHistory: user.charismaHistory.slice(0, 50),
       rouletteLastBets: user.rouletteLastBets.slice(0, 50),
-      transactions: user.coinTransactions.slice(0, 50),
+      transactions: user.coinTransactions.slice(0, COIN_TRANSACTION_HISTORY_LIMIT),
       rouletteHistory: user.rouletteHistory.slice(0, ROULETTE_HISTORY_LIMIT)
     };
   }
@@ -573,17 +576,9 @@ function registerEconomyGames({
       spinStartedAt: round?.spinStartedAt || null,
       spinEndsAt: round?.spinEndsAt || null,
       result: roulettePublicResult(round?.result),
-      slots: ROULETTE_SLOTS.map(item => ({ ...item, chancePercent: ROULETTE_SLOT_CHANCE_PERCENT })),
+      slots: ROULETTE_SLOTS,
       denominations: ROULETTE_DENOMINATIONS,
-      slotBets: ROULETTE_SLOTS.map(item => ({ ...item, chancePercent: ROULETTE_SLOT_CHANCE_PERCENT, totalBet: Number(totals[String(item.slot)] || 0) })),
-      odds: {
-        fruitPercent: 50,
-        meatPercent: 50,
-        perSlotPercent: ROULETTE_SLOT_CHANCE_PERCENT,
-        saladIntervalMinHours: ROULETTE_SALAD_MIN_DELAY_MS / 3_600_000,
-        saladIntervalMaxHours: ROULETTE_SALAD_MAX_DELAY_MS / 3_600_000,
-        nextSaladAt: Number(db.rouletteSaladNextAt || 0)
-      },
+      slotBets: ROULETTE_SLOTS.map(item => ({ ...item, totalBet: Number(totals[String(item.slot)] || 0) })),
       ownBets,
       recentRounds,
       recentWinners: db.rouletteWinners.slice(0, 30).map(item => ({ ...item, ...roulettePlayer(item.username) })),
@@ -632,7 +627,15 @@ function registerEconomyGames({
       db.rouletteSaladNextAt = Date.now() + randomRouletteSaladDelayMs();
       return saladResult(category);
     }
-    const item = ROULETTE_SLOTS[crypto.randomInt(0, ROULETTE_SLOT_COUNT)];
+    let weightedDraw = crypto.randomInt(0, 1_000);
+    let item = ROULETTE_SLOTS[ROULETTE_SLOT_COUNT - 1];
+    for (const candidate of ROULETTE_SLOTS) {
+      weightedDraw -= Math.round(candidate.chancePercent * 10);
+      if (weightedDraw < 0) {
+        item = candidate;
+        break;
+      }
+    }
     return { kind: "item", category: item.category, slot: item.slot, displaySlot: item.slot, icon: item.icon, label: item.label, multiplier: item.multiplier, createdAt: isoNow() };
   }
 

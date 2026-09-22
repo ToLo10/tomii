@@ -14,14 +14,14 @@
   let toastTimer = null;
 
   const DEFAULT_ROULETTE_SLOTS = [
-    {slot:0, icon:'🍉', label:'بطيخ', category:'fruit', multiplier:5},
-    {slot:1, icon:'🍊', label:'برتقال', category:'fruit', multiplier:5},
-    {slot:2, icon:'🍎', label:'تفاح', category:'fruit', multiplier:5},
-    {slot:3, icon:'🥬', label:'خضار', category:'fruit', multiplier:5},
-    {slot:4, icon:'🐟', label:'سمك', category:'meat', multiplier:10},
-    {slot:5, icon:'🍔', label:'برغر', category:'meat', multiplier:15},
-    {slot:6, icon:'🍤', label:'روبيان', category:'meat', multiplier:25},
-    {slot:7, icon:'🍗', label:'دجاج', category:'meat', multiplier:45}
+    {slot:0, icon:'🍉', label:'بطيخ', category:'fruit', multiplier:5, chancePercent:19.4},
+    {slot:1, icon:'🍊', label:'برتقال', category:'fruit', multiplier:5, chancePercent:19.4},
+    {slot:2, icon:'🍎', label:'تفاح', category:'fruit', multiplier:5, chancePercent:19.4},
+    {slot:3, icon:'🥬', label:'خضار', category:'fruit', multiplier:5, chancePercent:19.4},
+    {slot:4, icon:'🐟', label:'سمك', category:'meat', multiplier:10, chancePercent:9.5},
+    {slot:5, icon:'🍔', label:'برغر', category:'meat', multiplier:15, chancePercent:7},
+    {slot:6, icon:'🍤', label:'روبيان', category:'meat', multiplier:25, chancePercent:3.8},
+    {slot:7, icon:'🍗', label:'دجاج', category:'meat', multiplier:45, chancePercent:2.1}
   ];
 
   const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
@@ -92,17 +92,37 @@
     return rouletteState?.slotBets?.find(item => Number(item.slot) === Number(slotId)) || rouletteDefinition(slotId);
   }
 
+  function rouletteChancePercent(item, slotCount) {
+    const chancePercent = Number(item?.chancePercent);
+    return Number.isFinite(chancePercent) && chancePercent > 0 ? chancePercent : 100 / Math.max(1, slotCount);
+  }
+
   function buildRoulette() {
     const host = $('rouletteSlots');
     const wheel = $('rouletteWheel');
     if (!host || !wheel) return;
     const definitions = rouletteSlots();
-    const sector = 360 / Math.max(1, definitions.length);
+    let cursorAngle = 0;
+    const colors = ['#ef4444', '#fb923c', '#ef4444', '#22c55e', '#f59e0b', '#ef4444', '#38bdf8', '#fb923c'];
+    const segments = definitions.map((item, position) => {
+      const span = 360 * rouletteChancePercent(item, definitions.length) / 100;
+      const segment = {angle:cursorAngle + span / 2, span, start:cursorAngle, end:cursorAngle + span, color:colors[position % colors.length]};
+      cursorAngle += span;
+      return segment;
+    });
+    if (segments.length) {
+      const stops = segments.map(segment => `${segment.color} ${segment.start.toFixed(3)}deg ${segment.end.toFixed(3)}deg`).join(',');
+      wheel.style.background = `conic-gradient(from ${(-segments[0].span / 2).toFixed(3)}deg,${stops})`;
+    }
     const labels = $('rouletteWheelLabels');
     if (labels) {
+      const radius = Math.max(60, (wheel.clientWidth || 310) / 2 - 23);
       labels.innerHTML = definitions.map((item, position) => {
-        const angle = position * sector;
-        return `<span class="roulette-wheel-symbol" title="${escapeHtml(item.label)}" style="transform:translate(-50%,-50%) rotate(${angle}deg) translateY(-88px) rotate(${-angle}deg)">${escapeHtml(item.icon)}</span>`;
+        const segment = segments[position];
+        const arcLength = radius * segment.span * Math.PI / 180;
+        const symbolSize = Math.min(42, Math.max(12, arcLength * 0.66));
+        const angle = segment.angle;
+        return `<span class="roulette-wheel-symbol" title="${escapeHtml(item.label)}" style="width:${symbolSize.toFixed(1)}px;height:${symbolSize.toFixed(1)}px;font-size:${Math.max(10, symbolSize * 0.74).toFixed(1)}px;transform:translate(-50%,-50%) rotate(${angle}deg) translateY(-${radius.toFixed(1)}px) rotate(${-angle}deg)">${escapeHtml(item.icon)}</span>`;
       }).join('');
     }
     host.innerHTML = definitions.map(item => {
@@ -110,7 +130,7 @@
       const bet = rouletteBetFor(slotId);
       const own = rouletteState?.ownBets?.find(row => Number(row.slot) === slotId)?.amount || 0;
       const recentBet = recentRouletteBet?.slot === slotId && recentRouletteBet.until > Date.now();
-      return `<div class="roulette-slot-item ${slotId === selectedSlot ? 'active' : ''} ${recentBet ? 'bet-placed' : ''}"><button type="button" class="roulette-slot ${slotId === selectedSlot ? 'active' : ''}" data-slot="${slotId}" title="اختيار ${escapeHtml(item.label)}"><span class="roulette-slot-icon">${escapeHtml(item.icon)}</span><span class="roulette-slot-copy"><strong>${escapeHtml(item.label)}</strong><small>احتمال ${Number(item.chancePercent ?? 100 / definitions.length).toLocaleString('en-US')}% • x${Number(item.multiplier || 1).toLocaleString('en-US')} • الكل ${Number(bet.totalBet || 0).toLocaleString('en-US')}</small>${own ? `<em>رهانك ${Number(own).toLocaleString('en-US')}</em>` : ''}</span></button></div>`;
+      return `<div class="roulette-slot-item ${slotId === selectedSlot ? 'active' : ''} ${recentBet ? 'bet-placed' : ''}"><button type="button" class="roulette-slot ${slotId === selectedSlot ? 'active' : ''}" data-slot="${slotId}" title="اختيار ${escapeHtml(item.label)}"><span class="roulette-slot-icon">${escapeHtml(item.icon)}</span><span class="roulette-slot-copy"><strong>${escapeHtml(item.label)}</strong><small>احتمال ${Number(item.chancePercent ?? 0).toLocaleString('en-US')}% • x${Number(item.multiplier || 1).toLocaleString('en-US')} • الكل ${Number(bet.totalBet || 0).toLocaleString('en-US')}</small>${own ? `<em>رهانك ${Number(own).toLocaleString('en-US')}</em>` : ''}</span></button></div>`;
     }).join('');
     host.querySelectorAll('.roulette-slot').forEach(button => button.addEventListener('click', () => { selectedSlot = Number(button.dataset.slot); buildRoulette(); renderRouletteControls(); }));
   }
@@ -120,9 +140,13 @@
     if (!wheel) return;
     const definitions = rouletteSlots();
     const winningPosition = Math.max(0, definitions.findIndex(item => Number(item.slot) === Number(winningSlot)));
-    const sector = 360 / Math.max(1, definitions.length);
+    let winningAngle = 0;
+    definitions.forEach((item, position) => {
+      if (position < winningPosition) winningAngle += 360 * rouletteChancePercent(item, definitions.length) / 100;
+      else if (position === winningPosition) winningAngle += 180 * rouletteChancePercent(item, definitions.length) / 100;
+    });
     const currentMod = ((wheelRotation % 360) + 360) % 360;
-    const targetMod = ((-(winningPosition * sector)) % 360 + 360) % 360;
+    const targetMod = ((-winningAngle) % 360 + 360) % 360;
     wheelRotation += 360 * 7 + ((targetMod - currentMod + 360) % 360);
     wheel.style.transitionDuration = `${Math.max(250, durationMs)}ms`;
     wheel.style.transform = `rotate(${wheelRotation}deg)`;
@@ -189,16 +213,6 @@
     clearInterval(rouletteCountdownTimer);
     const statusNode = $('rouletteRoundStatus');
     const summaryNode = $('rouletteBetSummary');
-    const oddsNode = $('rouletteOdds');
-    if (oddsNode) {
-      const odds = state.odds || {};
-      const perSlot = Number(odds.perSlotPercent ?? 100 / rouletteSlots().length);
-      const fruit = Number(odds.fruitPercent ?? 50);
-      const meat = Number(odds.meatPercent ?? 50);
-      const minHours = Number(odds.saladIntervalMinHours ?? 2);
-      const maxHours = Number(odds.saladIntervalMaxHours ?? 6);
-      oddsNode.textContent = `بالنتائج العادية: الفواكه ${fruit}% واللحوم ${meat}%، واحتمال كل خانة ${perSlot}%؛ السلطة نادرة وتظهر عشوائياً كل ${minHours}–${maxHours} ساعات (أقل من 1% تقريباً).`;
-    }
     const now = Date.now();
     if (statusNode) {
       if (state.status === 'betting') {
