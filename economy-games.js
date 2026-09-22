@@ -23,6 +23,7 @@ const ROULETTE_WIN_MULTIPLIER = 2;
 const ROULETTE_DENOMINATIONS = Object.freeze([20, 100, 1_000, 5_000]);
 const ROULETTE_BETTING_MS = 30_000;
 const ROULETTE_SPIN_MS = 7_000;
+const ROULETTE_RESULTS_MS = 5_000;
 const ROULETTE_HISTORY_LIMIT = 8;
 const ROULETTE_DAILY_PRIZES = Object.freeze([2_000, 1_000, 500]);
 const ROULETTE_SALAD_MIN_DELAY_MS = 2 * 60 * 60 * 1000;
@@ -575,7 +576,21 @@ function registerEconomyGames({
       bettingEndsAt: round?.bettingEndsAt || null,
       spinStartedAt: round?.spinStartedAt || null,
       spinEndsAt: round?.spinEndsAt || null,
+      resultsEndsAt: round?.resultsEndsAt || null,
       result: roulettePublicResult(round?.result),
+      roundSummary: round?.roundSummary ? {
+        roundId: round.roundSummary.roundId,
+        date: round.roundSummary.date,
+        result: roulettePublicResult(round.roundSummary.result),
+        totalBet: Number(round.roundSummary.totalBet || 0),
+        totalPayout: Number(round.roundSummary.totalPayout || 0),
+        winnerCount: Number(round.roundSummary.winnerCount || 0),
+        winners: [...(round.roundSummary.winners || [])]
+          .sort((a, b) => Number(b.payout || 0) - Number(a.payout || 0))
+          .slice(0, 3)
+          .map(row => ({ ...row, ...roulettePlayer(row.username) })),
+        createdAt: round.roundSummary.createdAt || null
+      } : null,
       slots: ROULETTE_SLOTS,
       denominations: ROULETTE_DENOMINATIONS,
       slotBets: ROULETTE_SLOTS.map(item => ({ ...item, totalBet: Number(totals[String(item.slot)] || 0) })),
@@ -731,6 +746,7 @@ function registerEconomyGames({
     round.roundSummary = summary;
     round.spinStartedAt = Date.now();
     round.spinEndsAt = round.spinStartedAt + ROULETTE_SPIN_MS;
+    round.resultsEndsAt = null;
     persist();
     return summary;
   }
@@ -748,6 +764,7 @@ function registerEconomyGames({
       bettingEndsAt: Date.now() + ROULETTE_BETTING_MS,
       spinStartedAt: null,
       spinEndsAt: null,
+      resultsEndsAt: null,
       bets: {},
       chips: {},
       result: null
@@ -756,10 +773,20 @@ function registerEconomyGames({
     broadcastRoulette("roulette:round-started");
     scheduleRoulette(() => {
       const summary = settleRouletteRound();
-      if (summary) broadcastRoulette("roulette:spin-started");
+      if (!summary) return startRouletteRound();
+      const roundId = activeRouletteRound.roundId;
+      broadcastRoulette("roulette:spin-started");
       scheduleRoulette(() => {
-        activeRouletteRound = null;
-        startRouletteRound();
+        if (activeRouletteRound?.roundId !== roundId) return;
+        activeRouletteRound.status = "results";
+        activeRouletteRound.resultsEndsAt = Date.now() + ROULETTE_RESULTS_MS;
+        persist();
+        broadcastRoulette("roulette:results-started");
+        scheduleRoulette(() => {
+          if (activeRouletteRound?.roundId !== roundId) return;
+          activeRouletteRound = null;
+          startRouletteRound();
+        }, ROULETTE_RESULTS_MS);
       }, ROULETTE_SPIN_MS);
     }, ROULETTE_BETTING_MS);
   }

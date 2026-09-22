@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#0b0b14">
   <title>TOMI - المحفظة والمتجر</title>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
-  <link rel="stylesheet" href="economy.css?v=20260922-roulette-food-clear">
+  <link rel="stylesheet" href="economy.css?v=20260922-roulette-results">
 </head>
 <body>
   <div class="app-shell">
@@ -43,7 +43,7 @@
         <article class="card roulette-card">
           <div class="card-kicker"><i class="fa-solid fa-spinner"></i> لعبة العجلة</div>
           <h2>عجلة الفواكه واللحوم</h2>
-          <p>الجولة مشتركة بين الجميع. لديك 30 ثانية لتضع رقائقك، ثم تدور العجلة بسلاسة لمدة 7 ثوانٍ وبالنتيجة نفسها عند كل المستخدمين.</p>
+          <p>الجولة مشتركة بين الجميع. لديك 30 ثانية للرهان، ثم تدور العجلة 7 ثوانٍ وتُعرض النتائج 5 ثوانٍ قبل بداية الجولة التالية.</p>
           <div id="rouletteRoundStatus" class="roulette-round-status">جاري تحميل الجولة...</div>
           <div class="roulette-list-heading"><strong>خانات العجلة</strong><span>اختَر خانة ثم أضف قيمة الرهان</span></div>
           <div class="roulette-stage" aria-label="عجلة TOMI">
@@ -58,9 +58,6 @@
           <div id="rouletteDenominations" class="roulette-denominations" aria-label="قيم الرهان"></div>
           <button id="rouletteRepeatBtn" class="roulette-repeat secondary" type="button"><i class="fa-solid fa-repeat"></i> تكرار آخر رهان</button>
           <div id="rouletteResult" class="roulette-result">اختَر خانة ثم ضع رقائقك قبل انتهاء الوقت.</div>
-          <div id="rouletteSpecialOverlay" class="roulette-special-overlay hidden" role="dialog" aria-live="polite">
-            <div class="roulette-special-box"><button id="rouletteSpecialClose" class="roulette-special-close" type="button" aria-label="إغلاق">×</button><div id="rouletteSpecialIcon" class="roulette-special-icon">🥗</div><h3 id="rouletteSpecialTitle">سلطة فواكه</h3><p id="rouletteSpecialText">تفوز كل رهانات الفواكه في هذه الجولة.</p></div>
-          </div>
           <div class="roulette-history-columns">
             <div><h3>سجل النتائج</h3><div id="rouletteResultsHistory" class="roulette-history-list"></div></div>
             <div><h3>سجل الفائزين</h3><div id="rouletteWinnersHistory" class="roulette-history-list"></div></div>
@@ -169,7 +166,22 @@
       </section>
     </main>
   </div>
+  <div id="rouletteRoundResultsOverlay" class="roulette-round-results-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="rouletteRoundResultsTitle">
+    <section class="roulette-round-results-panel">
+      <button id="rouletteRoundResultsClose" class="roulette-round-results-close" type="button" aria-label="إغلاق النتائج">×</button>
+      <div class="roulette-results-prize"><span id="rouletteRoundResultsIcon">🍉</span><i class="fa-solid fa-sparkles" aria-hidden="true"></i></div>
+      <h2 id="rouletteRoundResultsTitle">نتائج الجولة!</h2>
+      <p class="roulette-results-round">الجولة <strong id="rouletteRoundResultsNumber">—</strong></p>
+      <div class="roulette-results-stats">
+        <div><small>مكافآت الجولة</small><strong><span id="rouletteRoundResultsPayout">0</span> <i class="fa-solid fa-coins coin"></i></strong></div>
+        <div><small>مجموع الرهانات</small><strong><span id="rouletteRoundResultsBet">0</span> <i class="fa-solid fa-coins coin"></i></strong></div>
+      </div>
+      <h3>أكبر الفائزين</h3>
+      <div id="rouletteRoundResultsWinners" class="roulette-round-winners"></div>
+      <p class="roulette-results-next">الجولة التالية تبدأ بعد <strong id="rouletteRoundResultsCountdown">5</strong> ثوانٍ</p>
+    </section>
+  </div>
   <script src="/socket.io/socket.io.js"></script>
-  <script src="wallet.js?v=20260922-roulette-food-clear"></script>
+  <script src="wallet.js?v=20260922-roulette-results"></script>
 </body>
 </html>

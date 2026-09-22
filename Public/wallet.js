@@ -7,6 +7,7 @@
   let rouletteState = null;
   let rouletteSocket = null;
   let rouletteCountdownTimer = null;
+  let rouletteResultsAutoCloseTimer = null;
   let lastAnimatedRoundId = '';
   let lastShownResultRoundId = '';
   let wheelRotation = 0;
@@ -112,10 +113,12 @@
       const angle = position * sector;
       const chancePercent = Number(item.chancePercent ?? 0).toLocaleString('en-US');
       const multiplier = Number(item.multiplier || 1).toLocaleString('en-US');
-      const totalBet = Number(bet.totalBet || 0).toLocaleString('en-US');
-      const betSummary = own ? `رهانك ${Number(own).toLocaleString('en-US')}` : Number(bet.totalBet || 0) ? `إجمالي الرهانات ${totalBet}` : '';
+      const totalBetAmount = Number(bet.totalBet || 0);
+      const totalBet = totalBetAmount.toLocaleString('en-US');
+      const betSummary = own ? `رهانك ${Number(own).toLocaleString('en-US')}` : totalBetAmount ? `إجمالي الرهانات ${totalBet}` : '';
       const title = `${item.label} — ×${multiplier} — ${chancePercent}%${betSummary ? ` — ${betSummary}` : ''}`;
-      return `<div class="roulette-slot-item ${slotId === selectedSlot ? 'active' : ''} ${recentBet ? 'bet-placed' : ''}" style="width:${cardWidth.toFixed(1)}px;height:${cardHeight.toFixed(1)}px;--slot-frame-height:${frameHeight.toFixed(1)}px;--slot-icon-size:${iconSize.toFixed(1)}px;transform:translate(-50%,-50%) rotate(${angle}deg) translateY(-${radius.toFixed(1)}px) rotate(${-angle}deg)"><button type="button" class="roulette-slot ${slotId === selectedSlot ? 'active' : ''}" data-slot="${slotId}" title="${escapeHtml(title)}"><span class="roulette-slot-frame"><span class="roulette-slot-icon">${escapeHtml(item.icon)}</span></span><span class="roulette-slot-copy"><strong>${escapeHtml(item.label)}</strong><small>×${multiplier} • ${chancePercent}%</small></span></button></div>`;
+      const betBadge = totalBetAmount > 0 ? `<span class="roulette-slot-total-bet"><i class="fa-solid fa-coins coin" aria-hidden="true"></i><b>${totalBet}</b></span>` : '';
+      return `<div class="roulette-slot-item ${slotId === selectedSlot ? 'active' : ''} ${recentBet ? 'bet-placed' : ''}" style="width:${cardWidth.toFixed(1)}px;height:${cardHeight.toFixed(1)}px;--slot-frame-height:${frameHeight.toFixed(1)}px;--slot-icon-size:${iconSize.toFixed(1)}px;transform:translate(-50%,-50%) rotate(${angle}deg) translateY(-${radius.toFixed(1)}px) rotate(${-angle}deg)"><button type="button" class="roulette-slot ${slotId === selectedSlot ? 'active' : ''}" data-slot="${slotId}" title="${escapeHtml(title)}">${betBadge}<span class="roulette-slot-frame"><span class="roulette-slot-icon">${escapeHtml(item.icon)}</span></span><span class="roulette-slot-copy"><strong>${escapeHtml(item.label)}</strong><small>×${multiplier} • ${chancePercent}%</small></span></button></div>`;
     }).join('');
     host.querySelectorAll('.roulette-slot').forEach(button => button.addEventListener('click', () => { selectedSlot = Number(button.dataset.slot); buildRoulette(); renderRouletteControls(); }));
   }
@@ -208,6 +211,12 @@
         statusNode.textContent = remaining ? `العجلة تدور — النتيجة المشتركة بعد ${remaining} ث` : 'تم تثبيت النتيجة';
         statusNode.className = 'roulette-round-status spinning';
         rouletteCountdownTimer = setInterval(() => renderRouletteState(), 500);
+      } else if (state.status === 'results') {
+        const remaining = Math.max(0, Math.ceil((Number(state.resultsEndsAt || 0) - now) / 1000));
+        statusNode.textContent = `نتائج الجولة — الجولة التالية بعد ${remaining} ث`;
+        statusNode.className = 'roulette-round-status results';
+        if ($('rouletteRoundResultsCountdown')) $('rouletteRoundResultsCountdown').textContent = String(remaining);
+        rouletteCountdownTimer = setInterval(() => renderRouletteState(), 500);
       } else {
         statusNode.textContent = 'بانتظار الجولة القادمة';
         statusNode.className = 'roulette-round-status';
@@ -218,16 +227,34 @@
     buildRoulette();
     renderRouletteControls();
     renderRouletteHistories();
-    if (state.result && state.status === 'spinning') $('rouletteResult').textContent = formatRouletteResult(state.result);
+    if (state.result && ['spinning', 'results'].includes(state.status)) $('rouletteResult').textContent = formatRouletteResult(state.result);
   }
 
-  function showSpecialResult(result, roundId) {
-    if (!result || result.kind !== 'salad' || lastShownResultRoundId === roundId) return;
-    lastShownResultRoundId = roundId;
-    $('rouletteSpecialIcon').textContent = result.icon || '🥗';
-    $('rouletteSpecialTitle').textContent = result.label || 'سلطة';
-    $('rouletteSpecialText').textContent = `كل من راهن على ${result.category === 'fruit' ? 'الفواكه' : 'اللحوم'} يفوز حسب مضاعف الخانة.`;
-    $('rouletteSpecialOverlay').classList.remove('hidden');
+  function showRouletteResults(summary, resultsEndsAt) {
+    if (!summary || lastShownResultRoundId === summary.roundId) return;
+    lastShownResultRoundId = summary.roundId;
+    const overlay = $('rouletteRoundResultsOverlay');
+    if (!overlay) return;
+    const result = summary.result || {};
+    $('rouletteRoundResultsIcon').textContent = result.icon || '✨';
+    $('rouletteRoundResultsNumber').textContent = String(summary.roundId || summary.date || '—').replace(/^roulette[-_:]?/i, '').slice(-8);
+    $('rouletteRoundResultsPayout').textContent = Number(summary.totalPayout || 0).toLocaleString('en-US');
+    $('rouletteRoundResultsBet').textContent = Number(summary.totalBet || 0).toLocaleString('en-US');
+    const winnersHost = $('rouletteRoundResultsWinners');
+    const winners = Array.isArray(summary.winners) ? summary.winners.slice(0, 3) : [];
+    winnersHost.innerHTML = winners.length ? winners.map((row, index) => {
+      const name = row.displayName || row.username || 'مستخدم';
+      const avatar = row.avatar
+        ? `<img src="${escapeHtml(row.avatar)}" alt="${escapeHtml(name)}">`
+        : `<span>${escapeHtml(String(name).trim().slice(0, 1) || '👤')}</span>`;
+      const medal = ['🥇', '🥈', '🥉'][index];
+      return `<article class="roulette-round-winner"><span class="roulette-winner-medal">${medal}</span><div class="roulette-winner-avatar">${avatar}</div><strong title="${escapeHtml(name)}">${escapeHtml(name)}</strong><small>@${escapeHtml(row.username || '')}</small><b>+${Number(row.payout || 0).toLocaleString('en-US')} <i class="fa-solid fa-coins coin" aria-hidden="true"></i></b></article>`;
+    }).join('') : '<div class="roulette-no-winners">ماكو فائزين في هذه الجولة.</div>';
+    overlay.classList.remove('hidden');
+    clearTimeout(rouletteResultsAutoCloseTimer);
+    const fallbackEnd = Date.now() + 5_000;
+    const remaining = Math.max(0, Number(resultsEndsAt || fallbackEnd) - Date.now());
+    rouletteResultsAutoCloseTimer = setTimeout(() => overlay.classList.add('hidden'), remaining);
   }
 
   function applyRouletteState(incoming) {
@@ -241,22 +268,28 @@
       wheelRotation = 0;
       $('rouletteWheel')?.style.setProperty('--roulette-rotation', '0deg');
     }
-    if (previous?.roundId !== next.roundId && next.status === 'betting') { lastAnimatedRoundId = ''; lastShownResultRoundId = ''; }
+    if (previous?.roundId !== next.roundId && next.status === 'betting') {
+      lastAnimatedRoundId = '';
+      lastShownResultRoundId = '';
+      clearTimeout(rouletteResultsAutoCloseTimer);
+      $('rouletteRoundResultsOverlay')?.classList.add('hidden');
+    }
     if (slotsChanged || !previous) buildRoulette();
     renderRouletteState();
     if (next.status === 'spinning' && next.result && lastAnimatedRoundId !== next.roundId) {
       lastAnimatedRoundId = next.roundId;
       const remaining = Math.max(300, Number(next.spinEndsAt || 0) - Date.now());
       animateWheel(next.result.displaySlot ?? next.result.slot ?? 0, remaining);
-      setTimeout(() => { if (rouletteState?.roundId !== next.roundId) return; $('rouletteResult').textContent = formatRouletteResult(next.result); showSpecialResult(next.result, next.roundId); }, remaining + 40);
+      setTimeout(() => { if (rouletteState?.roundId !== next.roundId) return; $('rouletteResult').textContent = formatRouletteResult(next.result); }, remaining + 40);
     }
+    if (next.status === 'results' && next.roundSummary) showRouletteResults(next.roundSummary, next.resultsEndsAt);
   }
 
   function connectRouletteSocket() {
     if (typeof io !== 'function') return;
     rouletteSocket = io({transports:['websocket','polling']});
     rouletteSocket.on('connect', () => rouletteSocket.emit('roulette:subscribe'));
-    ['roulette:state', 'roulette:round-started', 'roulette:spin-started', 'roulette:control-updated'].forEach(eventName => rouletteSocket.on(eventName, applyRouletteState));
+    ['roulette:state', 'roulette:round-started', 'roulette:spin-started', 'roulette:results-started', 'roulette:control-updated'].forEach(eventName => rouletteSocket.on(eventName, applyRouletteState));
     rouletteSocket.on('roulette:bet-result', result => {
       if (!result?.success) return showToast(result?.error || 'تعذر وضع الرهان', true);
       if (result.wallet) { wallet = result.wallet; renderWallet(); }
@@ -402,7 +435,7 @@
   $('claimDailyBtn').addEventListener('click', claimDaily);
   $('refreshBtn').addEventListener('click', load);
   $('rouletteRepeatBtn').addEventListener('click', repeatRouletteBet);
-  $('rouletteSpecialClose').addEventListener('click', () => $('rouletteSpecialOverlay').classList.add('hidden'));
+  $('rouletteRoundResultsClose').addEventListener('click', () => $('rouletteRoundResultsOverlay').classList.add('hidden'));
   $('rouletteControlMode').addEventListener('change', () => $('rouletteControlSlotLabel').classList.toggle('hidden', $('rouletteControlMode').value !== 'slot'));
   $('menuBtn').addEventListener('click', () => $('sidebar').classList.toggle('open'));
   $('logoutBtn').addEventListener('click', async () => { await request('/api/logout', {method:'POST', body:'{}'}).catch(() => {}); location.replace('login.html'); });
