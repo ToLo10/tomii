@@ -38,9 +38,9 @@ upload/download bandwidth. Older GridFS files continue to work through the
 authorized `/api/files/:fileId` route.
 
 `REQUIRE_EXTERNAL_MEDIA_STORAGE=true` is enabled in `render.yaml`. If R2 is not
-configured, new chat media is rejected with a clear setup error instead of
-being written to Render's disposable disk. This prevents a restart or a full
-disk from turning a successful-looking upload into a missing message.
+configured, new chat and Explore media are rejected with a clear setup error
+instead of being written to Render's disposable disk. This prevents a restart
+or a full disk from turning a successful-looking upload into a missing message.
 
 ## Calls
 For basic WebRTC calls, STUN is included. For reliable cloud-hosted calls add a TURN service:

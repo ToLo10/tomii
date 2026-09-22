@@ -74,6 +74,115 @@
     return box;
   }
 
+  // Media URLs can be short-lived redirects (for example, a signed R2 URL).
+  // Keep the post URL as the source of truth and request a fresh URL when a
+  // browser reports an expired/stalled stream. This prevents a video that
+  // worked immediately after publishing from becoming a permanent 0:00
+  // placeholder after the signed URL or a temporary network connection ends.
+  function makeVideoElement(post) {
+    const shell = document.createElement("div");
+    shell.className = "post-video-shell";
+    const video = document.createElement("video");
+    video.className = "post-video";
+    video.controls = true;
+    video.preload = "metadata";
+    video.playsInline = true;
+    video.setAttribute("playsinline", "");
+
+    const errorBox = document.createElement("div");
+    errorBox.className = "post-video-error";
+    errorBox.hidden = true;
+    const errorText = document.createElement("span");
+    errorText.textContent = "تعذر تحميل الفيديو حالياً";
+    const retryButton = document.createElement("button");
+    retryButton.type = "button";
+    retryButton.textContent = "إعادة المحاولة";
+    errorBox.append(errorText, retryButton);
+
+    const sourceUrl = String(post.fileUrl || "");
+    let recoveryCount = 0;
+    let recoveryTimer = null;
+    let recovering = false;
+    let shouldResume = false;
+
+    function freshUrl() {
+      try {
+        const url = new URL(sourceUrl, window.location.origin);
+        url.searchParams.set("retry", `${Date.now()}-${recoveryCount}`);
+        return `${url.pathname}${url.search}${url.hash}`;
+      } catch (_) {
+        return sourceUrl;
+      }
+    }
+
+    function showVideoError() {
+      errorBox.hidden = false;
+      video.classList.add("has-error");
+    }
+
+    function recoverVideo({ manual = false } = {}) {
+      if (!sourceUrl || recovering) return;
+      if (!manual && recoveryCount >= 3) {
+        showVideoError();
+        return;
+      }
+      if (manual) recoveryCount = 0;
+      recoveryCount += 1;
+      recovering = true;
+      errorBox.hidden = true;
+      video.classList.remove("has-error");
+      const resumeAt = Number.isFinite(video.currentTime) ? video.currentTime : 0;
+      const wasPlaying = shouldResume && !video.ended;
+      video.pause();
+      video.src = freshUrl();
+      video.load();
+      video.addEventListener("loadedmetadata", () => {
+        recovering = false;
+        if (resumeAt > 0 && Number.isFinite(video.duration) && video.duration > resumeAt) {
+          try { video.currentTime = resumeAt; } catch (_) {}
+        }
+        if (wasPlaying) video.play().catch(() => {});
+      }, { once: true });
+      // If the server returns a persistent error, release the lock so the
+      // visible retry button can request another fresh URL.
+      setTimeout(() => { recovering = false; }, 8000);
+    }
+
+    function scheduleRecovery(delay = 350) {
+      if (recoveryTimer || recoveryCount >= 3) return;
+      recoveryTimer = setTimeout(() => {
+        recoveryTimer = null;
+        recoverVideo();
+      }, delay);
+    }
+
+    video.addEventListener("error", () => {
+      if (recoveryCount < 3) scheduleRecovery(350);
+      else showVideoError();
+    });
+    video.addEventListener("play", () => { shouldResume = true; });
+    video.addEventListener("pause", () => {
+      // A media error can implicitly pause the element. Keep the prior play
+      // intent so a refreshed signed URL can continue from the same position.
+      if (!video.error) shouldResume = false;
+    });
+    video.addEventListener("ended", () => { shouldResume = false; });
+    video.addEventListener("stalled", () => {
+      // During preload the element is technically paused, so also recover a
+      // stream that never managed to receive metadata (readyState === 0).
+      if (video.readyState < 1 || (!video.paused && video.readyState < 3)) {
+        scheduleRecovery(2500);
+      }
+    });
+    video.addEventListener("waiting", () => {
+      if (!video.paused && video.readyState < 3) scheduleRecovery(2500);
+    });
+    retryButton.addEventListener("click", () => recoverVideo({ manual: true }));
+    video.src = sourceUrl;
+    shell.append(video, errorBox);
+    return shell;
+  }
+
   function renderFeed() {
     const host = $("feedList");
     if (!host) return;
@@ -102,13 +211,7 @@
           caption.textContent = post.caption;
           card.appendChild(caption);
         }
-        const video = document.createElement("video");
-        video.className = "post-video";
-        video.controls = true;
-        video.preload = "metadata";
-        video.playsInline = true;
-        video.src = post.fileUrl;
-        card.appendChild(video);
+        card.appendChild(makeVideoElement(post));
       } else {
         const body = document.createElement("p");
         body.className = "post-text";
@@ -209,13 +312,7 @@
           caption.textContent = post.caption;
           card.appendChild(caption);
         }
-        const video = document.createElement("video");
-        video.className = "post-video";
-        video.controls = true;
-        video.preload = "metadata";
-        video.playsInline = true;
-        video.src = post.fileUrl;
-        card.appendChild(video);
+        card.appendChild(makeVideoElement(post));
       } else {
         const body = document.createElement("p");
         body.className = "post-text";

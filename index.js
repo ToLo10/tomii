@@ -1636,9 +1636,9 @@ const MAX_UPLOAD_BYTES = Math.max(
   10 * 1024 * 1024,
   Number(process.env.MAX_UPLOAD_BYTES || 512 * 1024 * 1024)
 );
-// Production chat media must not fall back to Render's ephemeral disk. When
-// R2 is missing, reject the upload with a useful configuration error instead
-// of accepting bytes that will disappear on the next restart.
+// Production chat and Explore media must not fall back to Render's ephemeral
+// disk. When R2 is missing, reject the upload with a useful configuration
+// error instead of accepting bytes that will disappear on the next restart.
 const REQUIRE_EXTERNAL_MEDIA_STORAGE = String(
   process.env.REQUIRE_EXTERNAL_MEDIA_STORAGE || "false"
 ).toLowerCase() === "true";
@@ -2057,7 +2057,7 @@ async function persistUploadedFileToCloud(reqFile, fileId, {
         size: reqFile.size
       };
     } catch (error) {
-      if (REQUIRE_EXTERNAL_MEDIA_STORAGE && context === "chat") {
+      if (REQUIRE_EXTERNAL_MEDIA_STORAGE && ["chat", "explore-video"].includes(context)) {
         const externalError = new Error("التخزين الخارجي للوسائط غير متاح حالياً؛ لم يتم حفظ الملف على السيرفر");
         externalError.statusCode = 503;
         externalError.code = "EXTERNAL_MEDIA_STORAGE_REQUIRED";
@@ -3951,13 +3951,22 @@ function isExploreReviewer(username) {
 
 function formatExplorePost(post, { includeReview = false } = {}) {
   const author = db.users?.[post.authorUsername] || {};
+  const uploadRecord = post.fileId ? db.uploads?.[post.fileId] : null;
+  const mediaVersion = uploadRecord?.playbackReadyAt
+    || uploadRecord?.mediaVersion
+    || uploadRecord?.createdAt
+    || post.createdAt
+    || "";
+  const fileUrl = post.fileId
+    ? `/api/files/${encodeURIComponent(post.fileId)}?playback=compatible${mediaVersion ? `&v=${encodeURIComponent(mediaVersion)}` : ""}`
+    : null;
   const formatted = {
     id: post.id,
     type: post.type,
     text: post.text || "",
     caption: post.caption || "",
     fileId: post.fileId || null,
-    fileUrl: post.fileId ? `/api/files/${encodeURIComponent(post.fileId)}` : null,
+    fileUrl,
     createdAt: post.createdAt,
     pinned: Boolean(post.pinned),
     pinnedAt: post.pinnedAt || null,
@@ -5666,9 +5675,21 @@ function selectVideoPlaybackRecord(record, req) {
 function setStoredFileResponseHeaders(record, res) {
   const fileId = String(record.fileId || "file");
   const totalSize = Number(record.size || 0);
+  const isVideo = record.fileType === "video";
+  const isExternalObject = record.storage === "r2";
+  const isExploreVideo = isVideo && record.context === "explore-video";
   res.type(effectiveStoredMimeType(record));
   res.setHeader("Accept-Ranges", "bytes");
-  res.setHeader("Cache-Control", "private, max-age=86400, immutable");
+  // R2 responses are redirects to short-lived signed URLs. Caching the 302
+  // for a day leaves the browser with an expired URL and produces the
+  // familiar 0:00/broken-video player on every device. Explore videos also
+  // use a short revalidation window so a storage failover is not hidden by a
+  // stale browser cache.
+  const cacheControl = isExternalObject
+    ? "private, no-store"
+    : (isExploreVideo || isVideo ? "private, max-age=60, must-revalidate" : "private, max-age=86400, immutable");
+  res.setHeader("Cache-Control", cacheControl);
+  if (isVideo) res.setHeader("Vary", "Range");
   res.setHeader("ETag", `\"${fileId}-${totalSize}\"`);
   if (record.createdAt) {
     const createdMs = Date.parse(record.createdAt);
@@ -5691,7 +5712,7 @@ function setVideoCompatibilityCachePolicy(record, playbackRecord, req, res) {
   // Before conversion completes, do not let the browser keep the original
   // HEVC response forever under the compatibility URL. The ready event also
   // adds a version query, but this short cache makes refresh/reopen reliable.
-  if (requestedCompatibility && !variantReady) {
+  if (requestedCompatibility && !variantReady && playbackRecord?.storage !== "r2") {
     res.setHeader("Cache-Control", "private, max-age=5, must-revalidate");
   }
 }
@@ -5738,7 +5759,10 @@ async function redirectR2StoredFile(record, req, res) {
       key: record.r2Key,
       mimeType: effectiveStoredMimeType(record),
       fileName: record.originalName,
-      inline: ["image", "gif", "video", "audio", "pdf"].includes(record.fileType)
+      inline: ["image", "gif", "video", "audio", "pdf"].includes(record.fileType),
+      cacheControl: record.fileType === "video"
+        ? "private, max-age=60, must-revalidate"
+        : "private, max-age=300, must-revalidate"
     });
     // The browser follows this short-lived signed URL directly to R2. Media
     // bytes therefore bypass the Node process and its hosting bandwidth.
@@ -5785,7 +5809,11 @@ app.get("/api/files/:fileId", requireHttpAuth, async (req, res) => {
   setStoredFileResponseHeaders(playbackRecord, res);
   setVideoCompatibilityCachePolicy(record, playbackRecord, req, res);
   const etag = `\"${String(playbackRecord.fileId || "file")}-${Number(playbackRecord.size || 0)}\"`;
-  if (!req.headers.range && req.headers["if-none-match"] === etag) return res.status(304).end();
+  // Never answer a conditional request from the app cache for an R2-backed
+  // object: the next response must mint a fresh signed URL.
+  if (playbackRecord.storage !== "r2" && !req.headers.range && req.headers["if-none-match"] === etag) {
+    return res.status(304).end();
+  }
 
   if (await redirectR2StoredFile(playbackRecord, req, res)) return;
 

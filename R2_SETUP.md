@@ -1,7 +1,7 @@
 # Cloudflare R2 setup for TOMI
 
-This build sends every non-empty chat attachment (images, GIFs, videos, audio
-and ordinary files) directly from the browser to Cloudflare R2 using multipart
+This build sends every non-empty chat attachment and Explore video (images,
+GIFs, videos, audio and ordinary files) directly from the browser to Cloudflare R2 using multipart
 uploads. Render handles login, permissions, upload authorization, chat metadata
 and Socket.IO; it does not receive or spool the media bytes. MongoDB stores only
 the small file/message metadata and the active multipart session state.
@@ -37,7 +37,8 @@ ALLOW_LOCAL_JSON_FALLBACK=false
 R2_DIRECT_BROWSER_UPLOAD=false
 ```
 
-With `R2_DIRECT_BROWSER_UPLOAD=false`, images, videos, files, and voice notes
+With `R2_DIRECT_BROWSER_UPLOAD=false`, images, videos, files, Explore videos,
+and voice notes
 use the server's resumable upload route and are then streamed to R2. This is
 the recommended setting for mobile clients because it avoids browser CORS and
 multipart `ETag` failures. Set it to `true` only after configuring and testing
@@ -86,8 +87,8 @@ connection, it retries the same R2 multipart part and resumes from the last
 confirmed ETag. It never falls back to copying a complete file through Render.
 
 The service keeps the old `/api/upload` and GridFS paths so existing records can
-still be read and older non-chat tools remain compatible. New chat browser
-uploads use direct R2 automatically when the variables above are present. If
+still be read and older non-chat tools remain compatible. New chat and Explore
+uploads use durable R2 storage when the variables above are present. If
 R2 is temporarily unavailable in production, the upload is rejected and the
 file is not written to Render as a hidden fallback.
 Existing GridFS files are not deleted or moved automatically.

@@ -228,15 +228,17 @@ function createObjectStorage() {
     };
   }
 
-  async function getSignedDownloadUrl({ key, mimeType, fileName, inline = true } = {}) {
+  async function getSignedDownloadUrl({ key, mimeType, fileName, inline = true, cacheControl = "" } = {}) {
     requireConfigured();
     const disposition = `${inline ? "inline" : "attachment"}; filename*=UTF-8''${encodeURIComponent(safeDownloadName(fileName))}`;
-    return getSignedUrl(client, new GetObjectCommand({
+    const commandInput = {
       Bucket: bucket,
       Key: String(key),
       ResponseContentType: safeMimeType(mimeType),
       ResponseContentDisposition: disposition
-    }), { expiresIn: downloadUrlTtlSeconds });
+    };
+    if (cacheControl) commandInput.ResponseCacheControl = String(cacheControl).slice(0, 300);
+    return getSignedUrl(client, new GetObjectCommand(commandInput), { expiresIn: downloadUrlTtlSeconds });
   }
 
   return {
