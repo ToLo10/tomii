@@ -4,6 +4,7 @@
   let shopItems = [];
   let charismaLevels = [];
   let selectedSlot = 0;
+  let selectedDenomination = 100;
   let rouletteState = null;
   let rouletteSocket = null;
   let rouletteCountdownTimer = null;
@@ -113,14 +114,30 @@
       const angle = position * sector;
       const chancePercent = Number(item.chancePercent ?? 0).toLocaleString('en-US');
       const multiplier = Number(item.multiplier || 1).toLocaleString('en-US');
-      const totalBetAmount = Number(bet.totalBet || 0);
-      const totalBet = totalBetAmount.toLocaleString('en-US');
-      const betSummary = own ? `رهانك ${Number(own).toLocaleString('en-US')}` : totalBetAmount ? `إجمالي الرهانات ${totalBet}` : '';
+      const hotRank = Number(bet.hotRank || 0);
+      const betSummary = own ? `رهانك ${Number(own).toLocaleString('en-US')}` : '';
       const title = `${item.label} — ×${multiplier} — ${chancePercent}%${betSummary ? ` — ${betSummary}` : ''}`;
-      const betBadge = totalBetAmount > 0 ? `<span class="roulette-slot-total-bet"><i class="fa-solid fa-coins coin" aria-hidden="true"></i><b>${totalBet}</b></span>` : '';
-      return `<div class="roulette-slot-item ${slotId === selectedSlot ? 'active' : ''} ${recentBet ? 'bet-placed' : ''}" style="width:${cardWidth.toFixed(1)}px;height:${cardHeight.toFixed(1)}px;--slot-frame-height:${frameHeight.toFixed(1)}px;--slot-icon-size:${iconSize.toFixed(1)}px;transform:translate(-50%,-50%) rotate(${angle}deg) translateY(-${radius.toFixed(1)}px) rotate(${-angle}deg)"><button type="button" class="roulette-slot ${slotId === selectedSlot ? 'active' : ''}" data-slot="${slotId}" title="${escapeHtml(title)}">${betBadge}<span class="roulette-slot-frame"><span class="roulette-slot-icon">${escapeHtml(item.icon)}</span></span><span class="roulette-slot-copy"><strong>${escapeHtml(item.label)}</strong><small>×${multiplier} • ${chancePercent}%</small></span></button></div>`;
+      const ownBadge = own > 0
+        ? `<span class="roulette-slot-own-bet"><i class="fa-solid fa-coins coin" aria-hidden="true"></i><b>${Number(own).toLocaleString('en-US')}</b></span>`
+        : '';
+      const hotBadge = hotRank > 0
+        ? `<span class="roulette-slot-hot-badge">HOT ${hotRank}</span>`
+        : '';
+      const badges = ownBadge || hotBadge ? `<span class="roulette-slot-badges">${hotBadge}${ownBadge}</span>` : '';
+      return `<div class="roulette-slot-item ${slotId === selectedSlot ? 'active' : ''} ${recentBet ? 'bet-placed' : ''}" style="width:${cardWidth.toFixed(1)}px;height:${cardHeight.toFixed(1)}px;--slot-frame-height:${frameHeight.toFixed(1)}px;--slot-icon-size:${iconSize.toFixed(1)}px;transform:translate(-50%,-50%) rotate(${angle}deg) translateY(-${radius.toFixed(1)}px) rotate(${-angle}deg)"><button type="button" class="roulette-slot ${slotId === selectedSlot ? 'active' : ''}" data-slot="${slotId}" title="${escapeHtml(title)}">${badges}<span class="roulette-slot-frame"><span class="roulette-slot-icon">${escapeHtml(item.icon)}</span></span><span class="roulette-slot-copy"><strong>${escapeHtml(item.label)}</strong><small>×${multiplier} • ${chancePercent}%</small></span></button></div>`;
     }).join('');
-    host.querySelectorAll('.roulette-slot').forEach(button => button.addEventListener('click', () => { selectedSlot = Number(button.dataset.slot); buildRoulette(); renderRouletteControls(); }));
+    host.querySelectorAll('.roulette-slot').forEach(button => button.addEventListener('click', () => {
+      const slotId = Number(button.dataset.slot);
+      selectedSlot = slotId;
+      if (rouletteState?.status === 'betting' && Number(selectedDenomination) > 0) {
+        // The denomination is selected below the wheel; every cell press adds
+        // one chip of that value to the pressed cell.
+        void placeRouletteBet(selectedDenomination, slotId);
+      } else {
+        buildRoulette();
+        renderRouletteControls();
+      }
+    }));
   }
 
   function animateWheel(winningSlot, durationMs = 5000) {
@@ -186,10 +203,15 @@
     if ($('rouletteCenterMultiplier')) $('rouletteCenterMultiplier').textContent = `×${Number(selected.multiplier || 1).toLocaleString('en-US')}`;
     const denominationHost = $('rouletteDenominations');
     const denominations = state.denominations || [20, 100, 1000, 5000];
-    if (denominationHost) denominationHost.innerHTML = denominations.map(value => `<button type="button" class="roulette-denomination" data-denomination="${Number(value)}" ${betting ? '' : 'disabled'}><i class="fa-solid fa-coins coin"></i> ${Number(value).toLocaleString('en-US')}</button>`).join('');
+    if (!denominations.some(value => Number(value) === Number(selectedDenomination))) selectedDenomination = Number(denominations[0] || 0);
+    if (denominationHost) denominationHost.innerHTML = denominations.map(value => `<button type="button" class="roulette-denomination ${Number(value) === Number(selectedDenomination) ? 'active' : ''}" data-denomination="${Number(value)}" aria-pressed="${Number(value) === Number(selectedDenomination) ? 'true' : 'false'}" ${betting ? '' : 'disabled'}><i class="fa-solid fa-coins coin"></i> ${Number(value).toLocaleString('en-US')}</button>`).join('');
     const repeat = $('rouletteRepeatBtn');
     if (repeat) repeat.disabled = !betting || !Array.isArray(wallet?.rouletteLastBets) || !wallet.rouletteLastBets.length;
-    denominationHost?.querySelectorAll('[data-denomination]').forEach(button => button.addEventListener('click', () => placeRouletteBet(Number(button.dataset.denomination))));
+    denominationHost?.querySelectorAll('[data-denomination]').forEach(button => button.addEventListener('click', () => {
+      selectedDenomination = Number(button.dataset.denomination);
+      renderRouletteControls();
+    }));
+    if ($('rouletteSelected')) $('rouletteSelected').textContent = `الخانة المختارة: ${selected.icon} ${selected.label} • قيمة الضغطة: ${Number(selectedDenomination || 0).toLocaleString('en-US')} كوينز`;
     if ($('rouletteControlMode')) $('rouletteControlSlotLabel').classList.toggle('hidden', $('rouletteControlMode').value !== 'slot');
   }
 
@@ -223,7 +245,11 @@
       }
     }
     const own = (state.ownBets || []).reduce((sum, row) => sum + Number(row.amount || 0), 0);
-    if (summaryNode) summaryNode.textContent = own ? `رهانك في الجولة: ${own.toLocaleString('en-US')} كوينز على ${state.ownBets.length} خانة.` : 'لم تضع أي رهان في الجولة الحالية.';
+    if (summaryNode) summaryNode.textContent = own
+      ? `رهانك في الجولة: ${own.toLocaleString('en-US')} كوينز على ${state.ownBets.length} خانة.`
+      : state.status === 'betting'
+        ? `قيمة كل ضغطة: ${Number(selectedDenomination || 0).toLocaleString('en-US')} كوينز — اضغط الخانة لإضافة الرهان.`
+        : 'لم تضع أي رهان في الجولة الحالية.';
     buildRoulette();
     renderRouletteControls();
     renderRouletteHistories();
@@ -300,12 +326,15 @@
     rouletteSocket.on('connect_error', () => showToast('تعذر الاتصال بسيرفر العجلة، أعد المحاولة بعد لحظة', true));
   }
 
-  async function placeRouletteBet(denomination) {
+  async function placeRouletteBet(denomination, slotId = selectedSlot) {
     if (!rouletteState || rouletteState.status !== 'betting') return showToast('انتظر بداية المراهنة', true);
-    const slotId = selectedSlot;
-    animateRouletteBet(slotId, denomination);
-    if (rouletteSocket?.connected) return rouletteSocket.emit('roulette:bet', {slot:slotId, denomination});
-    try { const data = await request('/api/economy/roulette/bet', {method:'POST', body:JSON.stringify({slot:slotId, denomination})}); wallet = data.wallet || wallet; renderWallet(); applyRouletteState(data.state); }
+    const amount = Number(denomination);
+    const targetSlot = Number(slotId);
+    selectedSlot = targetSlot;
+    renderRouletteControls();
+    animateRouletteBet(targetSlot, amount);
+    if (rouletteSocket?.connected) return rouletteSocket.emit('roulette:bet', {slot:targetSlot, denomination:amount});
+    try { const data = await request('/api/economy/roulette/bet', {method:'POST', body:JSON.stringify({slot:targetSlot, denomination:amount})}); wallet = data.wallet || wallet; renderWallet(); applyRouletteState(data.state); }
     catch (error) { showToast(error.message, true); }
   }
 

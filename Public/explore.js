@@ -311,6 +311,47 @@
     $("videoFile").required = state.type === "video";
   }
 
+  async function isSupportedExploreVideo(file) {
+    const mime = String(file?.type || "").toLowerCase().split(";", 1)[0].trim();
+    const name = String(file?.name || "").toLowerCase();
+    const ext = name.includes(".") ? name.slice(name.lastIndexOf(".")) : "";
+    const videoExtensions = new Set([
+      ".mp4", ".m4v", ".mov", ".webm", ".mkv", ".avi", ".3gp", ".3g2",
+      ".mpeg", ".mpg", ".mts", ".m2ts", ".ogv", ".flv", ".wmv"
+    ]);
+    const audioExtensions = new Set([".m4a", ".mp3", ".aac", ".wav", ".ogg", ".opus", ".flac", ".weba"]);
+    const imageExtensions = new Set([".jpg", ".jpeg", ".png", ".webp", ".gif", ".heic", ".heif", ".avif"]);
+
+    if (mime.startsWith("image/") || mime === "application/pdf" || imageExtensions.has(ext)) return false;
+    if (/^voice[-_]/i.test(name) || (audioExtensions.has(ext) && !videoExtensions.has(ext))) return false;
+    if (mime.startsWith("video/") || videoExtensions.has(ext)) return true;
+    // iOS and some Android gallery providers report MP4/MOV videos as audio.
+    if (["audio/mp4", "audio/quicktime"].includes(mime)
+      && !audioExtensions.has(ext) && !/^voice[-_]/i.test(name)) return true;
+    // A mobile gallery may return an empty or generic MIME and no filename.
+    // Inspect a short signature rather than guessing from the picker alone.
+    if (!mime || ["application/octet-stream", "binary/octet-stream"].includes(mime)) {
+      try {
+        const bytes = new Uint8Array(await file.slice(0, 32).arrayBuffer());
+        const startsWith = (...signature) => signature.every((value, index) => bytes[index] === value);
+        const asciiAt = (offset, length) => {
+          if (bytes.length < offset + length) return "";
+          return String.fromCharCode(...bytes.slice(offset, offset + length));
+        };
+        if (startsWith(0x89, 0x50, 0x4e, 0x47) || startsWith(0xff, 0xd8, 0xff)
+          || asciiAt(0, 4) === "GIF8" || (asciiAt(0, 4) === "RIFF" && asciiAt(8, 4) === "WEBP")) return false;
+        if (asciiAt(4, 4) === "ftyp") {
+          const brand = asciiAt(8, 4).toLowerCase();
+          if (["heic", "heix", "hevc", "hevx", "mif1", "msf1", "avif"].includes(brand)) return false;
+          return ["isom", "iso2", "mp41", "mp42", "avc1", "hvc1", "hev1", "m4v ", "qt  ", "3gp4", "3gp5"].includes(brand);
+        }
+        if (startsWith(0x1a, 0x45, 0xdf, 0xa3)) return true;
+        if (asciiAt(0, 4) === "RIFF" && asciiAt(8, 4) === "AVI ") return true;
+      } catch (_) {}
+    }
+    return false;
+  }
+
   async function submitPost(event) {
     event.preventDefault();
     const button = $("submitPost");
@@ -321,7 +362,8 @@
       if (state.type === "video") {
         const file = $("videoFile").files?.[0];
         if (!file) throw new Error("اختر فيديو أولاً");
-        if (!file.type.startsWith("video/")) throw new Error("الملف المختار ليس فيديو");
+        if (!await isSupportedExploreVideo(file)) throw new Error("اختر ملف فيديو بصيغة مدعومة");
+        if (!file.size) throw new Error("ملف الفيديو فارغ");
         if (file.size > 150 * 1024 * 1024) throw new Error("الحد الأعلى لفيديو اكسبلور هو 150 ميغابايت");
         const form = new FormData();
         form.append("file", file);
@@ -362,9 +404,12 @@
   document.querySelectorAll(".type-option").forEach(button => button.addEventListener("click", () => setType(button.dataset.type)));
   $("postForm").addEventListener("submit", submitPost);
   $("noteText").addEventListener("input", () => { $("noteCount").textContent = `${$("noteText").value.length} / 500`; });
-  $("videoFile").addEventListener("change", () => {
+  $("videoFile").addEventListener("change", async () => {
     const file = $("videoFile").files?.[0];
-    $("videoName").textContent = file ? `${file.name} • ${(file.size / 1024 / 1024).toFixed(1)} MB` : "MP4 أو صيغة فيديو مدعومة • الحد 150 ميغابايت";
+    const supported = file ? await isSupportedExploreVideo(file) : false;
+    $("videoName").textContent = file
+      ? `${file.name} • ${(file.size / 1024 / 1024).toFixed(1)} MB${supported ? "" : " • تحقق من اختيار فيديو"}`
+      : "MP4 أو صيغة فيديو مدعومة • الحد 150 ميغابايت";
   });
   $("feedTab").addEventListener("click", () => showPane("feed"));
   $("reviewTab").addEventListener("click", () => showPane("review"));

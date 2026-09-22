@@ -1885,8 +1885,15 @@ function classifyFileType(mimeType, originalName = "", clientHint = "") {
   // Android photo pickers occasionally label a selected video as audio/mp4 or
   // audio/quicktime and may also omit the normal .mp4/.mov extension. An
   // explicit video hint from the image/video picker is authoritative here.
+  const hasExplicitImageMime = mt.startsWith("image/");
+  const hasExplicitPdfMime = mt === "application/pdf";
+  const looksLikeGalleryVideoAudioMime = ["audio/mp4", "audio/quicktime"].includes(mt)
+    && !audioExts.has(ext) && !looksLikeVoiceRecording;
+  const hasOtherExplicitAudioMime = mt.startsWith("audio/") && !looksLikeGalleryVideoAudioMime;
   if (hint === "video" && !looksLikeVoiceRecording && !audioExts.has(ext)
-    && !imageExts.has(ext) && ext !== ".gif" && ext !== ".pdf") return "video";
+    && !imageExts.has(ext) && ext !== ".gif" && ext !== ".pdf"
+    && !hasExplicitImageMime && !hasExplicitPdfMime
+    && (!hasOtherExplicitAudioMime || looksLikeGalleryVideoAudioMime)) return "video";
   const genericMime = !mt || ["application/octet-stream", "binary/octet-stream"].includes(mt);
   if (hint === "gif" && (mt === "image/gif" || ext === ".gif" || (genericMime && !videoExts.has(ext) && !audioExts.has(ext)))) return "gif";
   if (hint === "image" && (mt.startsWith("image/") || imageExts.has(ext)

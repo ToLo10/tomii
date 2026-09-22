@@ -554,6 +554,16 @@ function registerEconomyGames({
         for (const [slotId, amount] of Object.entries(bets || {})) totals[slotId] = Number(totals[slotId] || 0) + Number(amount || 0);
       }
     }
+    // Keep the live board useful without exposing another player's exact stake.
+    // Only the three busiest cells are marked HOT; the viewer's own amount is
+    // returned separately below and is therefore visible only to that viewer.
+    const hotRanks = new Map(
+      Object.entries(totals)
+        .filter(([, amount]) => Number(amount || 0) > 0)
+        .sort((a, b) => Number(b[1] || 0) - Number(a[1] || 0) || Number(a[0]) - Number(b[0]))
+        .slice(0, 3)
+        .map(([slotId], index) => [Number(slotId), index + 1])
+    );
     const ownBets = actor && round?.bets?.[actor]
       ? Object.entries(round.bets[actor]).map(([slot, amount]) => ({ slot: integer(slot), amount: Number(amount || 0) })).filter(item => item.amount > 0)
       : [];
@@ -593,7 +603,11 @@ function registerEconomyGames({
       } : null,
       slots: ROULETTE_SLOTS,
       denominations: ROULETTE_DENOMINATIONS,
-      slotBets: ROULETTE_SLOTS.map(item => ({ ...item, totalBet: Number(totals[String(item.slot)] || 0) })),
+      slotBets: ROULETTE_SLOTS.map(item => ({
+        ...item,
+        // Do not send totalBet to browsers: it reveals other users' wagers.
+        hotRank: hotRanks.get(Number(item.slot)) || 0
+      })),
       ownBets,
       recentRounds,
       recentWinners: db.rouletteWinners.slice(0, 30).map(item => ({ ...item, ...roulettePlayer(item.username) })),
