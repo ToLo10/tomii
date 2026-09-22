@@ -99,8 +99,10 @@
     const definitions = rouletteSlots();
     const sector = 360 / Math.max(1, definitions.length);
     const wheelSize = wheel.clientWidth || 360;
-    const cardWidth = Math.max(64, Math.min(118, wheelSize * 0.21));
-    const cardHeight = Math.max(54, Math.min(88, wheelSize * 0.155));
+    const cardWidth = Math.max(68, Math.min(124, wheelSize * 0.22));
+    const cardHeight = Math.max(82, Math.min(116, wheelSize * 0.205));
+    const frameHeight = Math.max(40, cardHeight * 0.48);
+    const iconSize = Math.max(32, Math.min(48, wheelSize * 0.09));
     const radius = Math.max(58, wheelSize / 2 - Math.max(cardWidth, cardHeight) / 2 - 8);
     host.innerHTML = definitions.map((item, position) => {
       const slotId = Number(item.slot);
@@ -111,8 +113,9 @@
       const chancePercent = Number(item.chancePercent ?? 0).toLocaleString('en-US');
       const multiplier = Number(item.multiplier || 1).toLocaleString('en-US');
       const totalBet = Number(bet.totalBet || 0).toLocaleString('en-US');
-      const detail = own ? `رهانك ${Number(own).toLocaleString('en-US')}` : Number(bet.totalBet || 0) ? `الكل ${totalBet}` : '';
-      return `<div class="roulette-slot-item ${slotId === selectedSlot ? 'active' : ''} ${recentBet ? 'bet-placed' : ''}" style="width:${cardWidth.toFixed(1)}px;height:${cardHeight.toFixed(1)}px;transform:translate(-50%,-50%) rotate(${angle}deg) translateY(-${radius.toFixed(1)}px) rotate(${-angle}deg)"><button type="button" class="roulette-slot ${slotId === selectedSlot ? 'active' : ''}" data-slot="${slotId}" title="${escapeHtml(item.label)} — x${multiplier} — ${chancePercent}%"><span class="roulette-slot-frame"><span class="roulette-slot-icon">${escapeHtml(item.icon)}</span></span><span class="roulette-slot-copy"><strong>${escapeHtml(item.label)}</strong><small>×${multiplier} • ${chancePercent}%</small>${detail ? `<em>${detail}</em>` : ''}</span></button></div>`;
+      const betSummary = own ? `رهانك ${Number(own).toLocaleString('en-US')}` : Number(bet.totalBet || 0) ? `إجمالي الرهانات ${totalBet}` : '';
+      const title = `${item.label} — ×${multiplier} — ${chancePercent}%${betSummary ? ` — ${betSummary}` : ''}`;
+      return `<div class="roulette-slot-item ${slotId === selectedSlot ? 'active' : ''} ${recentBet ? 'bet-placed' : ''}" style="width:${cardWidth.toFixed(1)}px;height:${cardHeight.toFixed(1)}px;--slot-frame-height:${frameHeight.toFixed(1)}px;--slot-icon-size:${iconSize.toFixed(1)}px;transform:translate(-50%,-50%) rotate(${angle}deg) translateY(-${radius.toFixed(1)}px) rotate(${-angle}deg)"><button type="button" class="roulette-slot ${slotId === selectedSlot ? 'active' : ''}" data-slot="${slotId}" title="${escapeHtml(title)}"><span class="roulette-slot-frame"><span class="roulette-slot-icon">${escapeHtml(item.icon)}</span></span><span class="roulette-slot-copy"><strong>${escapeHtml(item.label)}</strong><small>×${multiplier} • ${chancePercent}%</small></span></button></div>`;
     }).join('');
     host.querySelectorAll('.roulette-slot').forEach(button => button.addEventListener('click', () => { selectedSlot = Number(button.dataset.slot); buildRoulette(); renderRouletteControls(); }));
   }

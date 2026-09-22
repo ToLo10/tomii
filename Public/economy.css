@@ -68,8 +68,8 @@
 .roulette-wheel .roulette-slot-item .roulette-slot:hover{filter:brightness(1.13)}
 .roulette-wheel .roulette-slot-item.active .roulette-slot{border-color:#fff2a2!important;box-shadow:0 0 0 3px #ffdf5c99,0 5px 18px #000b,inset 0 1px 2px #fff9}
 .roulette-wheel .roulette-slot-item.bet-placed .roulette-slot{filter:brightness(1.22);box-shadow:0 0 0 3px #ffe291aa,0 0 18px #f8b94a99}
-.roulette-slot-frame{display:grid;flex:1;min-height:0;place-items:center;overflow:hidden;border:1px solid #ffd978;border-radius:9px;background:linear-gradient(180deg,#30170fee,#100c12ee);box-shadow:inset 0 0 12px #000b,0 1px 2px #fff5}
-.roulette-wheel .roulette-slot-icon{font-size:clamp(23px,4.2vw,39px);line-height:1;filter:drop-shadow(0 2px 2px #0009)}
+.roulette-slot-frame{display:grid;flex:0 0 var(--slot-frame-height,40px);width:100%;height:var(--slot-frame-height,40px);min-height:0;box-sizing:border-box;place-items:center;overflow:hidden;border:1px solid #ffe59a;border-radius:9px;background:radial-gradient(ellipse at 50% 30%,#6e3825 0,#30170f 68%,#100c12 100%);box-shadow:inset 0 0 10px #0008,0 1px 2px #fff5}
+.roulette-wheel .roulette-slot-icon{display:block;max-width:100%;max-height:100%;font-size:var(--slot-icon-size,38px);line-height:1;filter:drop-shadow(0 2px 2px #0009)}
 .roulette-slot-copy{display:flex;width:100%;min-width:0;flex-direction:column;align-items:center;gap:1px;line-height:1.05}
 .roulette-slot-copy strong{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:clamp(9px,1.45vw,12px);font-weight:900;color:#fff8dc}
 .roulette-slot-copy small{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#fff;font-size:clamp(8px,1.2vw,10px);font-weight:800}
