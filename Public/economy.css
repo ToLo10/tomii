@@ -53,4 +53,27 @@
 @media(max-width:1000px){.owner-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:720px){.gift-send-form{grid-template-columns:1fr}.owner-grid{grid-template-columns:1fr}}
 
+/* Orbiting slot cards styled after the TOMI wheel reference. */
+@property --roulette-rotation{syntax:"<angle>";inherits:true;initial-value:0deg}
+.roulette-stage{width:min(560px,100%);aspect-ratio:1;margin:24px auto 14px;display:grid;place-items:center}
+.roulette-stage>.roulette-wheel{width:100%;height:100%;transform:rotate(var(--roulette-rotation));transition:transform 7s cubic-bezier(.07,.74,.17,1),--roulette-rotation 7s cubic-bezier(.07,.74,.17,1)}
+.roulette-wheel-center{inset:auto;left:50%;top:50%;width:clamp(88px,24vw,150px);height:clamp(88px,24vw,150px);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;text-align:center;transform:translate(-50%,-50%) rotate(calc(0deg - var(--roulette-rotation)));background:radial-gradient(circle,#fff7c4 0,#ffca3a 67%,#ec8712 100%);border:5px solid #fff0a0;color:#74300f;box-shadow:0 0 0 5px #ffbd3d66,0 5px 22px #0009;pointer-events:none}
+.roulette-wheel-center small{font-size:clamp(8px,1.5vw,11px);font-weight:800;color:#8f4512}
+.roulette-wheel-center strong{max-width:90%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:clamp(10px,2.3vw,15px)}
+.roulette-wheel-center span{font-size:clamp(15px,3vw,21px);font-weight:1000;line-height:1;color:#782c0d}
+.roulette-wheel .roulette-slots{position:absolute;inset:0;display:block;max-height:none;margin:0;padding:0;overflow:visible;z-index:4;pointer-events:none}
+.roulette-wheel .roulette-slot-item{position:absolute;left:50%;top:50%;display:block;min-width:0;padding:0;border:0;border-radius:18px;background:transparent;box-shadow:none;overflow:visible;z-index:2;pointer-events:none;animation:none!important}
+.roulette-wheel .roulette-slot-item.active{border:0;box-shadow:none}
+.roulette-wheel .roulette-slot-item .roulette-slot{position:relative;display:flex;width:100%;height:100%;min-width:0;flex-direction:column;align-items:stretch;justify-content:space-between;gap:3px;padding:5px;border:4px solid #ffe078!important;border-radius:17px;background:linear-gradient(155deg,#ffd63d 0%,#f39512 48%,#9b3d11 100%)!important;color:#fff;text-align:center;box-shadow:0 4px 0 #69250f,0 7px 15px #000a,inset 0 1px 2px #fff9;pointer-events:auto;transform:rotate(calc(0deg - var(--roulette-rotation)));transition:filter .18s,box-shadow .18s}
+.roulette-wheel .roulette-slot-item .roulette-slot:hover{filter:brightness(1.13)}
+.roulette-wheel .roulette-slot-item.active .roulette-slot{border-color:#fff2a2!important;box-shadow:0 0 0 3px #ffdf5c99,0 5px 18px #000b,inset 0 1px 2px #fff9}
+.roulette-wheel .roulette-slot-item.bet-placed .roulette-slot{filter:brightness(1.22);box-shadow:0 0 0 3px #ffe291aa,0 0 18px #f8b94a99}
+.roulette-slot-frame{display:grid;flex:1;min-height:0;place-items:center;overflow:hidden;border:1px solid #ffd978;border-radius:9px;background:linear-gradient(180deg,#30170fee,#100c12ee);box-shadow:inset 0 0 12px #000b,0 1px 2px #fff5}
+.roulette-wheel .roulette-slot-icon{font-size:clamp(23px,4.2vw,39px);line-height:1;filter:drop-shadow(0 2px 2px #0009)}
+.roulette-slot-copy{display:flex;width:100%;min-width:0;flex-direction:column;align-items:center;gap:1px;line-height:1.05}
+.roulette-slot-copy strong{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:clamp(9px,1.45vw,12px);font-weight:900;color:#fff8dc}
+.roulette-slot-copy small{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#fff;font-size:clamp(8px,1.2vw,10px);font-weight:800}
+.roulette-slot-copy em{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#ffe98c;font-size:clamp(7px,1vw,9px);font-style:normal}
+@media(max-width:500px){.roulette-stage{width:100%;margin-top:20px}.roulette-wheel .roulette-slot-item .roulette-slot{padding:4px;border-width:3px!important;border-radius:13px}.roulette-wheel .roulette-slot-item{border-radius:13px}.roulette-slot-copy em{display:none}}
+
 .admin-item{flex-wrap:wrap}.admin-item-name{min-width:120px}.admin-item .admin-edit-icon{width:110px;padding:7px}.admin-item .admin-edit-price,.admin-item .admin-edit-charisma{width:92px;padding:7px}.admin-item .admin-edit-image{width:170px;padding:7px}.admin-edit-check{display:inline-flex;align-items:center;gap:4px;color:var(--muted);font-size:11px;white-space:nowrap}.admin-edit-check input{accent-color:#a855f7}
