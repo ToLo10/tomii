@@ -102,11 +102,12 @@
     const wheel = $('rouletteWheel');
     if (!host || !wheel) return;
     const definitions = rouletteSlots();
+    const firstHalfAngle = definitions.length ? 180 * rouletteChancePercent(definitions[0], definitions.length) / 100 : 0;
     let cursorAngle = 0;
     const colors = ['#ef4444', '#fb923c', '#ef4444', '#22c55e', '#f59e0b', '#ef4444', '#38bdf8', '#fb923c'];
     const segments = definitions.map((item, position) => {
       const span = 360 * rouletteChancePercent(item, definitions.length) / 100;
-      const segment = {angle:cursorAngle + span / 2, span, start:cursorAngle, end:cursorAngle + span, color:colors[position % colors.length]};
+      const segment = {angle:cursorAngle + span / 2 - firstHalfAngle, span, start:cursorAngle, end:cursorAngle + span, color:colors[position % colors.length]};
       cursorAngle += span;
       return segment;
     });
@@ -140,7 +141,7 @@
     if (!wheel) return;
     const definitions = rouletteSlots();
     const winningPosition = Math.max(0, definitions.findIndex(item => Number(item.slot) === Number(winningSlot)));
-    let winningAngle = 0;
+    let winningAngle = definitions.length ? -180 * rouletteChancePercent(definitions[0], definitions.length) / 100 : 0;
     definitions.forEach((item, position) => {
       if (position < winningPosition) winningAngle += 360 * rouletteChancePercent(item, definitions.length) / 100;
       else if (position === winningPosition) winningAngle += 180 * rouletteChancePercent(item, definitions.length) / 100;
