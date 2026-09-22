@@ -21,9 +21,16 @@ const ROULETTE_SLOT_COUNT = ROULETTE_SLOTS.length;
 const ROULETTE_WIN_MULTIPLIER = 2;
 const ROULETTE_DENOMINATIONS = Object.freeze([20, 100, 1_000, 5_000]);
 const ROULETTE_BETTING_MS = 30_000;
-const ROULETTE_SPIN_MS = 5_000;
+const ROULETTE_SPIN_MS = 7_000;
 const ROULETTE_HISTORY_LIMIT = 8;
-const ROULETTE_DAILY_PRIZES = Object.freeze([100_000, 50_000, 25_000]);
+const ROULETTE_DAILY_PRIZES = Object.freeze([2_000, 1_000, 500]);
+const ROULETTE_SALAD_MIN_DELAY_MS = 2 * 60 * 60 * 1000;
+const ROULETTE_SALAD_MAX_DELAY_MS = 6 * 60 * 60 * 1000;
+const ROULETTE_SLOT_CHANCE_PERCENT = 100 / ROULETTE_SLOT_COUNT;
+
+function randomRouletteSaladDelayMs() {
+  return crypto.randomInt(ROULETTE_SALAD_MIN_DELAY_MS, ROULETTE_SALAD_MAX_DELAY_MS + 1);
+}
 
 // The charisma thresholds intentionally follow the progression shown in the
 // TOMI reference: stars, diamonds, crowns, then the higher royal tiers.
@@ -218,6 +225,10 @@ function ensureEconomyState(db) {
   }
   if (typeof db.rouletteCurrentDate !== "string") {
     db.rouletteCurrentDate = "";
+    changed = true;
+  }
+  if (!Number.isSafeInteger(Number(db.rouletteSaladNextAt)) || Number(db.rouletteSaladNextAt) <= 0) {
+    db.rouletteSaladNextAt = Date.now() + randomRouletteSaladDelayMs();
     changed = true;
   }
   return changed;
@@ -562,9 +573,17 @@ function registerEconomyGames({
       spinStartedAt: round?.spinStartedAt || null,
       spinEndsAt: round?.spinEndsAt || null,
       result: roulettePublicResult(round?.result),
-      slots: ROULETTE_SLOTS,
+      slots: ROULETTE_SLOTS.map(item => ({ ...item, chancePercent: ROULETTE_SLOT_CHANCE_PERCENT })),
       denominations: ROULETTE_DENOMINATIONS,
-      slotBets: ROULETTE_SLOTS.map(item => ({ ...item, totalBet: Number(totals[String(item.slot)] || 0) })),
+      slotBets: ROULETTE_SLOTS.map(item => ({ ...item, chancePercent: ROULETTE_SLOT_CHANCE_PERCENT, totalBet: Number(totals[String(item.slot)] || 0) })),
+      odds: {
+        fruitPercent: 50,
+        meatPercent: 50,
+        perSlotPercent: ROULETTE_SLOT_CHANCE_PERCENT,
+        saladIntervalMinHours: ROULETTE_SALAD_MIN_DELAY_MS / 3_600_000,
+        saladIntervalMaxHours: ROULETTE_SALAD_MAX_DELAY_MS / 3_600_000,
+        nextSaladAt: Number(db.rouletteSaladNextAt || 0)
+      },
       ownBets,
       recentRounds,
       recentWinners: db.rouletteWinners.slice(0, 30).map(item => ({ ...item, ...roulettePlayer(item.username) })),
@@ -588,31 +607,30 @@ function registerEconomyGames({
   function chooseRouletteResult() {
     const db = dbState();
     const control = db.rouletteControl || { mode: "random", slot: null };
+    const displaySlotForCategory = category => {
+      const eligible = ROULETTE_SLOTS.filter(item => item.category === category);
+      return eligible[crypto.randomInt(0, eligible.length)].slot;
+    };
+    const saladResult = category => ({
+      kind: "salad",
+      category,
+      icon: category === "fruit" ? "🥗" : "🍖",
+      label: category === "fruit" ? "سلطة فواكه" : "سلطة لحوم",
+      displaySlot: displaySlotForCategory(category),
+      createdAt: isoNow()
+    });
     const forcedCategory = control.mode === "fruit_salad" ? "fruit" : control.mode === "meat_salad" ? "meat" : null;
     if (forcedCategory) {
-      return {
-        kind: "salad",
-        category: forcedCategory,
-        icon: forcedCategory === "fruit" ? "🥗" : "🍖",
-        label: forcedCategory === "fruit" ? "سلطة فواكه" : "سلطة لحوم",
-        displaySlot: crypto.randomInt(0, ROULETTE_SLOT_COUNT),
-        createdAt: isoNow()
-      };
+      return saladResult(forcedCategory);
     }
     if (control.mode === "slot" && rouletteSlot(control.slot)) {
       const item = rouletteSlot(control.slot);
       return { kind: "item", category: item.category, slot: item.slot, displaySlot: item.slot, icon: item.icon, label: item.label, multiplier: item.multiplier, createdAt: isoNow() };
     }
-    if (crypto.randomInt(0, 100) < 10) {
+    if (Date.now() >= Number(db.rouletteSaladNextAt || 0)) {
       const category = crypto.randomInt(0, 2) === 0 ? "fruit" : "meat";
-      return {
-        kind: "salad",
-        category,
-        icon: category === "fruit" ? "🥗" : "🍖",
-        label: category === "fruit" ? "سلطة فواكه" : "سلطة لحوم",
-        displaySlot: crypto.randomInt(0, ROULETTE_SLOT_COUNT),
-        createdAt: isoNow()
-      };
+      db.rouletteSaladNextAt = Date.now() + randomRouletteSaladDelayMs();
+      return saladResult(category);
     }
     const item = ROULETTE_SLOTS[crypto.randomInt(0, ROULETTE_SLOT_COUNT)];
     return { kind: "item", category: item.category, slot: item.slot, displaySlot: item.slot, icon: item.icon, label: item.label, multiplier: item.multiplier, createdAt: isoNow() };
@@ -923,7 +941,13 @@ function registerEconomyGames({
       const db = dbState();
       ensureDefaultShopItems();
       const senderKey = req.authUser;
-      const targetKey = findUserKey(db, req.body?.toUsername || req.body?.username);
+      const recipientMode = req.body?.recipientMode;
+      if (recipientMode !== undefined && !["self", "user"].includes(recipientMode)) {
+        return res.status(400).json({ error: "طريقة إرسال الهدية غير صالحة" });
+      }
+      const targetKey = recipientMode === "self"
+        ? senderKey
+        : findUserKey(db, req.body?.toUsername || req.body?.username);
       const inventoryId = clampText(req.body?.inventoryId, 160);
       const sender = db.users?.[senderKey];
       const recipient = targetKey ? db.users?.[targetKey] : null;
@@ -1177,6 +1201,57 @@ function registerEconomyGames({
     emitWallet(targetUser);
     io.emit("profile-updated", profile);
     res.json({ success: true, username: targetUser, granted: actual, charisma: publicCharisma(user), profile });
+  });
+
+  app.post("/api/economy/admin/withdraw", requireHttpAuth, (req, res) => {
+    if (!onlyOwner(req, res)) return;
+    const db = dbState();
+    const targetUser = findUserKey(db, req.body?.username);
+    const user = db.users?.[targetUser];
+    const asset = req.body?.asset;
+    const amount = integer(req.body?.amount);
+    const reason = clampText(req.body?.reason || "سحب بواسطة مالك TOMI", 180);
+    if (!user) return res.status(404).json({ error: "المستخدم غير موجود" });
+    if (!["coins", "charisma"].includes(asset)) return res.status(400).json({ error: "اختر الكوينز أو الكارزما" });
+    const maximum = asset === "coins" ? MAX_COIN_BALANCE : MAX_CHARISMA;
+    if (!Number.isSafeInteger(amount) || amount < 1 || amount > maximum) {
+      return res.status(400).json({ error: `المبلغ يجب أن يكون بين 1 و${maximum.toLocaleString("en-US")}` });
+    }
+    ensureEconomyUser(user);
+    const balance = asset === "coins" ? user.coins : user.charisma;
+    if (amount > balance) return res.status(400).json({ error: `رصيد المستخدم الحالي ${balance.toLocaleString("en-US")} فقط` });
+
+    if (asset === "coins") {
+      user.coins -= amount;
+      createTransaction(user, {
+        delta: -amount,
+        type: "owner_withdraw",
+        reason,
+        metadata: { withdrawnBy: req.authUser, asset }
+      });
+    } else {
+      user.charisma -= amount;
+      createCharismaEntry(user, {
+        delta: -amount,
+        type: "owner_withdraw",
+        reason,
+        metadata: { withdrawnBy: req.authUser, asset }
+      });
+    }
+
+    persist();
+    const profile = asset === "charisma" ? publicUserProfile(targetUser) : null;
+    emitWallet(targetUser);
+    if (profile) io.emit("profile-updated", profile);
+    res.json({
+      success: true,
+      username: targetUser,
+      asset,
+      withdrawn: amount,
+      balance: asset === "coins" ? user.coins : publicCharisma(user).points,
+      wallet: walletPayload(targetUser),
+      charisma: asset === "charisma" ? publicCharisma(user) : undefined
+    });
   });
 
   app.post("/api/economy/admin/reset-password", authLimiter, requireHttpAuth, (req, res) => {

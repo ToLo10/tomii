@@ -43,4 +43,15 @@
 .roulette-personal-history{margin-top:16px;padding-top:13px;border-top:1px solid #30254a}.roulette-personal-history h3{margin:0 0 8px;font-size:14px;color:#ffe291}.loss-text{color:#ff889a!important}
 @media(max-width:720px){.roulette-denominations{grid-template-columns:repeat(2,1fr)}.roulette-history-columns{grid-template-columns:1fr}.roulette-stage{width:min(285px,78vw)}}
 
+/* Odds, bet placement feedback, and a slower synchronized spin. */
+.roulette-wheel{transition:transform 7s cubic-bezier(.07,.74,.17,1)}
+.roulette-odds{margin:9px 0 4px!important;padding:9px 12px;border:1px solid #45345f;border-radius:11px;background:#151226;color:#d8c9f1!important;text-align:center;font-size:12px}
+.roulette-slot-item.bet-placed{animation:rouletteBetPulse .78s ease-out;border-color:#ffe291;box-shadow:0 0 0 2px #ffe29155,0 0 20px #f8b94a66}
+@keyframes rouletteBetPulse{0%{transform:scale(1)}25%{transform:scale(1.035)}65%{transform:scale(.99)}100%{transform:scale(1)}}
+.roulette-denomination:active{transform:scale(.96)}
+.gift-send-form{grid-template-columns:1fr 1fr 1.1fr auto}
+.owner-grid{grid-template-columns:repeat(3,minmax(0,1fr))}
+@media(max-width:1000px){.owner-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:720px){.gift-send-form{grid-template-columns:1fr}.owner-grid{grid-template-columns:1fr}}
+
 .admin-item{flex-wrap:wrap}.admin-item-name{min-width:120px}.admin-item .admin-edit-icon{width:110px;padding:7px}.admin-item .admin-edit-price,.admin-item .admin-edit-charisma{width:92px;padding:7px}.admin-item .admin-edit-image{width:170px;padding:7px}.admin-edit-check{display:inline-flex;align-items:center;gap:4px;color:var(--muted);font-size:11px;white-space:nowrap}.admin-edit-check input{accent-color:#a855f7}

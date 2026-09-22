@@ -126,6 +126,11 @@ body.modal-open { overflow: hidden; }
 .listener-avatar .voice-avatar-photo,.invite-friend-avatar .voice-avatar-photo{border:0;box-shadow:none;border-radius:50%;font-size:11px}
 .member-avatar .voice-avatar-wrap,.action-avatar .voice-avatar-wrap{width:100%;height:100%}
 .member-avatar .voice-avatar-photo,.action-avatar .voice-avatar-photo{border:0;box-shadow:none;border-radius:50%;font-size:15px}
+
+/* Keep decorative frames larger than the photo despite generic .seat img sizing. */
+.seat .voice-avatar-frame,.listener-avatar .voice-avatar-frame,.invite-friend-avatar .voice-avatar-frame,.member-avatar .voice-avatar-frame,.action-avatar .voice-avatar-frame{position:absolute!important;inset:-7%!important;width:114%!important;height:114%!important;max-width:none!important;max-height:none!important;object-fit:contain!important;border:0!important;border-radius:0!important;box-shadow:none!important;z-index:3;pointer-events:none}
+.listener-avatar{overflow:visible}
+.listener-avatars{overflow:visible}
 @media(max-width:620px){
   .seat .voice-avatar-wrap{width:72px;height:72px}
   .seat.owner-seat .voice-avatar-wrap{width:112px;height:112px}
