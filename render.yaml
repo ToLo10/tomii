@@ -29,7 +29,7 @@ services:
       - key: R2_PRESIGNED_UPLOAD_TTL_SECONDS
         value: "900"
       - key: R2_PRESIGNED_DOWNLOAD_TTL_SECONDS
-        value: "900"
+        value: "86400"
       - key: REQUIRE_EXTERNAL_MEDIA_STORAGE
         value: "true"
       - key: WRITE_LOCAL_JSON_BACKUP
@@ -58,6 +58,12 @@ services:
         value: "2000"
       - key: CHAT_HISTORY_LIMIT
         value: "50"
+      - key: CHAT_MESSAGE_WINDOW_MS
+        value: "10000"
+      - key: CHAT_MESSAGE_LIMIT
+        value: "30"
+      - key: CHAT_MESSAGE_MIN_INTERVAL_MS
+        value: "180"
       - key: UNSENT_CHAT_UPLOAD_TTL_MS
         value: "21600000"
       - key: MEMORY_WARN_MB

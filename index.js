@@ -33,7 +33,15 @@ const objectStorage = createObjectStorage();
 const io = new Server(server, {
   // Chat media is uploaded through /api/upload. Keep Socket.IO payloads small so
   // a legacy/base64 event cannot consume hundreds of MB of RAM.
-  maxHttpBufferSize: 2 * 1024 * 1024 // 2MB: more than enough for chat + WebRTC signaling
+  maxHttpBufferSize: 2 * 1024 * 1024, // 2MB: more than enough for chat + WebRTC signaling
+  // Mobile browsers can suspend a tab briefly while opening the picker or
+  // switching between chats. Give the connection enough time to recover before
+  // declaring it dead, while keeping the normal heartbeat frequent.
+  pingInterval: 25_000,
+  pingTimeout: 60_000,
+  connectTimeout: 45_000,
+  upgradeTimeout: 30_000,
+  allowUpgrades: true
 });
 
 // =========================================================
@@ -85,9 +93,7 @@ const CLOUD_DATABASE_ENABLED = Boolean(MONGODB_URI);
 // still wins for operators who want a backup in the cloud.
 const configuredLocalBackup = process.env.WRITE_LOCAL_JSON_BACKUP;
 const WRITE_LOCAL_JSON_BACKUP = String(
-  configuredLocalBackup == null
-    ? (CLOUD_DATABASE_ENABLED ? "false" : "true")
-    : configuredLocalBackup
+  configuredLocalBackup == null ? "false" : configuredLocalBackup
 ).toLowerCase() !== "false";
 
 // Cloudflare Realtime TURN. Keep the long-lived TURN key token on the server.
@@ -144,6 +150,7 @@ function emptyDatabase() {
     voiceRoomBans: {},
     voiceRoomInvites: {},
     shopItems: {},
+    giftStats: {},
     gameRooms: {},
     gameInvites: {},
     aiPreferences: {},
@@ -167,6 +174,17 @@ function normalizeDatabaseState(source) {
   if (!state.exploreQueue || Array.isArray(state.exploreQueue)) state.exploreQueue = {};
   if (!Array.isArray(state.exploreReviews)) state.exploreReviews = [];
   if (!Array.isArray(state.platformBroadcastCopies)) state.platformBroadcastCopies = [];
+  const normalizeExplorePost = post => {
+    if (!post || typeof post !== "object") return post;
+    if (!Array.isArray(post.likedBy)) post.likedBy = [];
+    post.likedBy = [...new Set(post.likedBy.map(value => String(value || "").trim()).filter(Boolean))].slice(0, 10000);
+    if (!Array.isArray(post.comments)) post.comments = [];
+    post.comments = post.comments.filter(comment => comment && typeof comment === "object").slice(-200);
+    return post;
+  };
+  state.explorePosts = state.explorePosts.map(normalizeExplorePost);
+  for (const [id, post] of Object.entries(state.exploreQueue)) state.exploreQueue[id] = normalizeExplorePost(post);
+  if (!state.giftStats || Array.isArray(state.giftStats)) state.giftStats = {};
   state.explorePosts = state.explorePosts.slice(-50);
   state.platformBroadcastCopies = state.platformBroadcastCopies.slice(-100);
   return state;
@@ -1328,6 +1346,172 @@ function checkPlatformBan(username) {
   return { banned: false };
 }
 
+// A chat-only restriction is intentionally different from a full platform
+// freeze: the account can sign in and receive/read existing conversations,
+// but every outgoing interaction is rejected with a clear user-facing reason.
+// Older records without a mode remain full freezes for backwards compatibility.
+function isChatOnlyPlatformBan(ban) {
+  return Boolean(ban?.banned && ban.mode === "chat-readonly");
+}
+
+function isFullPlatformBan(ban) {
+  return Boolean(ban?.banned && !isChatOnlyPlatformBan(ban));
+}
+
+function chatRestrictionText(ban) {
+  if (!ban?.isPermanent && ban?.expiresAt) {
+    const remaining = Math.max(1, Math.ceil((Date.parse(ban.expiresAt) - Date.now()) / 60000));
+    return `لقد تم حرمانك من هذه الوظيفة. يمكنك قراءة واستلام الرسائل، لكن لا يمكنك الإرسال أو إجراء أي تفاعل لمدة ${remaining} دقيقة.`;
+  }
+  return "لقد تم حرمانك من هذه الوظيفة. يمكنك قراءة واستلام الرسائل، لكن لا يمكنك الإرسال أو إجراء أي تفاعل حالياً.";
+}
+
+function platformRestrictionText(ban) {
+  return isChatOnlyPlatformBan(ban) ? chatRestrictionText(ban) : platformFreezeText(ban);
+}
+
+// Read-only sockets must still be able to load the inbox and join a
+// conversation so incoming messages continue to arrive. Everything else is
+// treated as an interaction and is rejected before its handler runs.
+const CHAT_RESTRICTED_READ_EVENTS = new Set([
+  "login",
+  "get_my_chats",
+  "get-room-by-code",
+  "join-room-by-code",
+  "join-room",
+  "leave-room-view",
+  "get-room-members",
+  "query-room-users",
+  "get-chat-background",
+  "get_user_profile",
+  "search_users",
+  "get_friends",
+  "get_friend_requests",
+  "get-my-public-rooms",
+  "get-message-info",
+  "message-delivered",
+  "mark-as-read",
+  "mark-room-read"
+]);
+
+function isChatRestrictedReadEvent(eventName) {
+  return CHAT_RESTRICTED_READ_EVENTS.has(String(eventName || ""));
+}
+
+// Platform restrictions are deliberately enforced in one place. Individual
+// handlers still keep their normal permission checks; the full mode blocks
+// every action, while chat-readonly allows only inbox/history reads and room
+// joins needed to receive incoming messages through a stale Socket.IO tab.
+function platformFreezeText(ban) {
+  if (!ban?.isPermanent && ban?.expiresAt) {
+    const remaining = Math.max(1, Math.ceil((Date.parse(ban.expiresAt) - Date.now()) / 60000));
+    return `تم تجميد حسابك بالكامل من المنصة. ينتهي التجميد خلال ${remaining} دقيقة.`;
+  }
+  return "تم تجميد حسابك بالكامل من المنصة بشكل دائم.";
+}
+
+function installPlatformFreezeGuard(socket) {
+  if (!socket?.use) return;
+  socket.use((packet, next) => {
+    const username = socket.userId || socket.sessionUser || socket.platformBanUsername || "";
+    const liveBan = checkPlatformBan(username);
+    const ban = liveBan.banned ? liveBan : { banned: false };
+    if (!ban?.banned) {
+      if (socket.chatRestriction) {
+        socket.chatRestriction = null;
+        socket.emit("chat-restriction-cleared", {
+          targetUser: username,
+          message: "انتهت مدة منع التفاعل عن حسابك. يمكنك الإرسال والتفاعل الآن."
+        });
+      }
+      return next();
+    }
+
+    const eventName = Array.isArray(packet) ? String(packet[0] || "") : "";
+    if (isChatOnlyPlatformBan(ban)) {
+      socket.chatRestriction = ban;
+      if (isChatRestrictedReadEvent(eventName)) return next();
+
+      socket.emit("chat-restricted", {
+        code: "CHAT_RESTRICTED",
+        message: chatRestrictionText(ban),
+        ban,
+        mode: "chat-readonly"
+      });
+      const error = new Error("CHAT_RESTRICTED");
+      error.data = { code: "CHAT_RESTRICTED", ban, message: chatRestrictionText(ban) };
+      return next(error);
+    }
+
+    // Even login/register are blocked once this socket is known to belong to
+    // a fully frozen account; otherwise a stale tab could create a second
+    // account during the short disconnect grace period.
+    socket.platformBan = ban;
+
+    socket.emit("platform-banned", {
+      message: platformFreezeText(ban),
+      ban,
+      mode: "full-freeze"
+    });
+    const error = new Error("PLATFORM_BANNED");
+    error.data = { code: "PLATFORM_BANNED", ban };
+    return next(error);
+  });
+}
+
+// Keep chat responsive under bursts without buffering unbounded events. The
+// budget is in-memory only and is reset on deploy/restart; it never becomes
+// persistent database data.
+const CHAT_MESSAGE_WINDOW_MS = Math.max(
+  1000,
+  Number(process.env.CHAT_MESSAGE_WINDOW_MS || 10000) || 10000
+);
+const CHAT_MESSAGE_LIMIT = Math.max(
+  8,
+  Number(process.env.CHAT_MESSAGE_LIMIT || 30) || 30
+);
+const CHAT_MESSAGE_MIN_INTERVAL_MS = Math.max(
+  60,
+  Number(process.env.CHAT_MESSAGE_MIN_INTERVAL_MS || 180) || 180
+);
+const chatMessageRate = new Map();
+
+function consumeChatMessageBudget(username, roomId, kind = "text") {
+  const actor = String(username || "");
+  const room = String(roomId || "");
+  if (!actor || !room) return { allowed: false, retryAfterMs: CHAT_MESSAGE_WINDOW_MS };
+  const key = `${actor}:${room}`;
+  const now = Date.now();
+  let state = chatMessageRate.get(key);
+  if (!state || now - state.startedAt >= CHAT_MESSAGE_WINDOW_MS) {
+    state = { startedAt: now, count: 0, lastAt: 0, kind };
+  }
+  const sinceLast = state.lastAt ? now - state.lastAt : Infinity;
+  if (state.count >= CHAT_MESSAGE_LIMIT || sinceLast < CHAT_MESSAGE_MIN_INTERVAL_MS) {
+    const windowRetry = Math.max(50, CHAT_MESSAGE_WINDOW_MS - (now - state.startedAt));
+    const intervalRetry = Math.max(50, CHAT_MESSAGE_MIN_INTERVAL_MS - sinceLast);
+    chatMessageRate.set(key, state);
+    return {
+      allowed: false,
+      retryAfterMs: Math.min(windowRetry, intervalRetry),
+      kind
+    };
+  }
+  state.count += 1;
+  state.lastAt = now;
+  state.kind = kind;
+  chatMessageRate.set(key, state);
+  return { allowed: true, retryAfterMs: 0, kind };
+}
+
+const chatMessageRateCleanupTimer = setInterval(() => {
+  const cutoff = Date.now() - CHAT_MESSAGE_WINDOW_MS * 2;
+  for (const [key, state] of chatMessageRate.entries()) {
+    if (!state || state.startedAt < cutoff) chatMessageRate.delete(key);
+  }
+}, CHAT_MESSAGE_WINDOW_MS);
+chatMessageRateCleanupTimer.unref?.();
+
 function canUserAccessRoom(roomIdOrCode, username) {
   if (!username) return false;
   const rId = getCanonicalRoomId(roomIdOrCode);
@@ -1624,11 +1808,20 @@ function requireHttpAuth(req, res, next) {
     return res.status(401).json({ error: "يجب تسجيل الدخول أولاً" });
   }
   const ban = checkPlatformBan(session.username);
-  if (ban.banned) {
-    return res.status(403).json({ error: "الحساب محظور على المنصة", ban });
+  if (isFullPlatformBan(ban)) {
+    return res.status(403).json({ error: "الحساب محظور على المنصة", ban, code: "PLATFORM_BANNED" });
+  }
+  if (isChatOnlyPlatformBan(ban) && !["GET", "HEAD", "OPTIONS"].includes(String(req.method || "").toUpperCase())) {
+    return res.status(403).json({
+      error: chatRestrictionText(ban),
+      ban,
+      code: "CHAT_RESTRICTED",
+      mode: "chat-readonly"
+    });
   }
   req.authUser = session.username;
   req.sessionToken = session.token;
+  req.platformRestriction = isChatOnlyPlatformBan(ban) ? ban : null;
   next();
 }
 
@@ -1636,12 +1829,21 @@ const MAX_UPLOAD_BYTES = Math.max(
   10 * 1024 * 1024,
   Number(process.env.MAX_UPLOAD_BYTES || 512 * 1024 * 1024)
 );
-// Production chat and Explore media must not fall back to Render's ephemeral
-// disk. When R2 is missing, reject the upload with a useful configuration
-// error instead of accepting bytes that will disappear on the next restart.
+// Production media must not fall back to Render's ephemeral disk. When R2 is
+// missing, reject every non-empty upload with a useful configuration error
+// instead of accepting bytes that will disappear on the next restart.
 const REQUIRE_EXTERNAL_MEDIA_STORAGE = String(
-  process.env.REQUIRE_EXTERNAL_MEDIA_STORAGE || "false"
+  process.env.REQUIRE_EXTERNAL_MEDIA_STORAGE || "true"
 ).toLowerCase() === "true";
+
+// R2 is the preferred media store, but MongoDB/GridFS is a durable fallback
+// for deployments that have not finished the R2 setup yet.  The old guard
+// checked R2 alone and rejected every upload even when GridFS was ready; that
+// is what produced the "التخزين الخارجي غير متاح" card on otherwise healthy
+// chat rooms.
+function hasDurableMediaStorage() {
+  return objectStorage.isConfigured() || Boolean(mongoReady && gridFsBucket);
+}
 // Keep browser-to-R2 uploads opt-in. They require bucket CORS to expose the
 // multipart ETag header, and a missing/incorrect CORS rule makes uploads fail
 // on phones even though the server-side R2 credentials are valid. The normal
@@ -2029,9 +2231,10 @@ async function persistUploadedFileToCloud(reqFile, fileId, {
   if (!reqFile) throw new Error("الملف غير موجود");
 
   // R2 is the canonical store for new uploads. The source file is removed only
-  // after the object-store write succeeds. Production chat media must never
-  // fall through to GridFS/local storage when R2 is unavailable: that would
-  // recreate the Render disk/RAM failure this build is designed to prevent.
+  // after the object-store write succeeds. If R2 is unavailable, MongoDB/GridFS
+  // is the durable compatibility path; a local-disk fallback is still blocked
+  // while REQUIRE_EXTERNAL_MEDIA_STORAGE is enabled so media cannot disappear
+  // on the next hosting restart.
   if (objectStorage.isConfigured()) {
     const objectKey = objectStorage.buildObjectKey({
       fileId,
@@ -2057,7 +2260,7 @@ async function persistUploadedFileToCloud(reqFile, fileId, {
         size: reqFile.size
       };
     } catch (error) {
-      if (REQUIRE_EXTERNAL_MEDIA_STORAGE && ["chat", "explore-video"].includes(context)) {
+      if (REQUIRE_EXTERNAL_MEDIA_STORAGE && !(mongoReady && gridFsBucket)) {
         const externalError = new Error("التخزين الخارجي للوسائط غير متاح حالياً؛ لم يتم حفظ الملف على السيرفر");
         externalError.statusCode = 503;
         externalError.code = "EXTERNAL_MEDIA_STORAGE_REQUIRED";
@@ -2066,6 +2269,13 @@ async function persistUploadedFileToCloud(reqFile, fileId, {
       }
       console.warn("R2 upload failed; using the explicitly allowed compatibility storage:", error?.message || error);
     }
+  }
+
+  if (REQUIRE_EXTERNAL_MEDIA_STORAGE && !hasDurableMediaStorage()) {
+    const externalError = new Error("يجب تهيئة Cloudflare R2 أو MongoDB/GridFS قبل رفع الوسائط؛ لم يتم حفظ الملف على السيرفر");
+    externalError.statusCode = 503;
+    externalError.code = "EXTERNAL_MEDIA_STORAGE_REQUIRED";
+    throw externalError;
   }
 
   if (!mongoReady || !gridFsBucket) {
@@ -3395,7 +3605,7 @@ app.get("/api/health", (_req, res) => {
       : (gridFsBucket ? "mongodb-gridfs" : "local-disk"),
     directObjectStorage: objectStorage.isConfigured(),
     directBrowserR2Upload: DIRECT_BROWSER_R2_UPLOAD && objectStorage.isConfigured(),
-    externalMediaStorageRequired: REQUIRE_EXTERNAL_MEDIA_STORAGE,
+    externalMediaStorageRequired: REQUIRE_EXTERNAL_MEDIA_STORAGE && !hasDurableMediaStorage(),
     activeResumableUploads: uploadSessions.size,
     turn: CLOUDFLARE_TURN_CONFIGURED ? "cloudflare" : (staticTurnConfigured ? "static" : "stun-only"),
     notifications: webPushReady ? "enabled" : "unavailable",
@@ -3880,7 +4090,7 @@ app.post("/api/login", authLimiter, (req, res) => {
     }
 
     const platformBan = checkPlatformBan(cleanUsername);
-    if (platformBan.banned) {
+    if (isFullPlatformBan(platformBan)) {
       return res.status(403).json({ error: "هذا الحساب محظور على المنصة", ban: platformBan });
     }
 
@@ -3913,7 +4123,9 @@ app.post("/api/login", authLimiter, (req, res) => {
       frame: getActiveFrame(user.username),
       charisma: publicCharisma(user),
       referralCode: user.referralCode || "",
-      sessionToken
+      sessionToken,
+      restriction: isChatOnlyPlatformBan(platformBan) ? platformBan : null,
+      chatRestricted: isChatOnlyPlatformBan(platformBan)
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -3933,7 +4145,9 @@ app.get("/api/session", requireHttpAuth, (req, res) => {
     avatar: user.avatar || "",
     frame: getActiveFrame(user.username),
     charisma: publicCharisma(user),
-    referralCode: user.referralCode || ""
+    referralCode: user.referralCode || "",
+    restriction: req.platformRestriction,
+    chatRestricted: Boolean(req.platformRestriction)
   });
 });
 
@@ -3949,7 +4163,7 @@ function isExploreReviewer(username) {
   return username === PLATFORM_OWNER_USERNAME || hasPermission(username, "manage_explore");
 }
 
-function formatExplorePost(post, { includeReview = false } = {}) {
+function formatExplorePost(post, { includeReview = false, actor = "" } = {}) {
   const author = db.users?.[post.authorUsername] || {};
   const uploadRecord = post.fileId ? db.uploads?.[post.fileId] : null;
   const mediaVersion = uploadRecord?.playbackReadyAt
@@ -3971,6 +4185,16 @@ function formatExplorePost(post, { includeReview = false } = {}) {
     pinned: Boolean(post.pinned),
     pinnedAt: post.pinnedAt || null,
     pinnedBy: post.pinnedBy || null,
+    likeCount: Array.isArray(post.likedBy) ? post.likedBy.length : 0,
+    likedByMe: Boolean(actor && Array.isArray(post.likedBy) && post.likedBy.includes(actor)),
+    comments: (Array.isArray(post.comments) ? post.comments : []).slice(-200).map(comment => ({
+      id: comment.id || "",
+      username: comment.username || "",
+      displayName: comment.displayName || comment.username || "مستخدم TOMI",
+      avatar: comment.avatar || db.users?.[comment.username]?.avatar || "",
+      text: String(comment.text || "").slice(0, 500),
+      createdAt: comment.createdAt || null
+    })),
     author: {
       username: post.authorUsername,
       displayName: post.authorDisplayName || author.displayName || post.authorUsername,
@@ -4014,7 +4238,7 @@ app.get("/api/explore", requireHttpAuth, (req, res) => {
     .filter(post => post?.authorUsername === req.authUser)
     .sort((a, b) => Date.parse(b.createdAt || 0) - Date.parse(a.createdAt || 0))
     .slice(0, 20)
-    .map(post => ({ ...formatExplorePost(post, { includeReview: true }), status: "pending" }));
+    .map(post => ({ ...formatExplorePost(post, { includeReview: true, actor: req.authUser }), status: "pending" }));
   const ownRecentReviews = (db.exploreReviews || [])
     .filter(item => item?.authorUsername === req.authUser)
     .slice(0, 20)
@@ -4022,9 +4246,10 @@ app.get("/api/explore", requireHttpAuth, (req, res) => {
   res.json({
     success: true,
     username: req.authUser,
-    posts: posts.map(post => formatExplorePost(post)),
+    posts: posts.map(post => formatExplorePost(post, { actor: req.authUser })),
     isOwner: req.authUser === PLATFORM_OWNER_USERNAME,
     canReview: isExploreReviewer(req.authUser),
+    canDelete: isExploreReviewer(req.authUser),
     pendingCount: isExploreReviewer(req.authUser) ? Object.keys(db.exploreQueue || {}).length : 0,
     mySubmissions: [...ownPending, ...ownRecentReviews].slice(0, 20)
   });
@@ -4034,13 +4259,13 @@ app.get("/api/explore/review", requireHttpAuth, (req, res) => {
   if (!isExploreReviewer(req.authUser)) return res.status(403).json({ error: "لا تملك صلاحية مراجعة منشورات اكسبلور" });
   const queue = Object.values(db.exploreQueue || {})
     .sort((a, b) => Date.parse(a.createdAt || 0) - Date.parse(b.createdAt || 0));
-  return res.json({ success: true, queue: queue.map(post => formatExplorePost(post, { includeReview: true })) });
+  return res.json({ success: true, queue: queue.map(post => formatExplorePost(post, { includeReview: true, actor: req.authUser })) });
 });
 
 app.post("/api/explore/posts", exploreWriteLimiter, requireHttpAuth, async (req, res) => {
   const actor = req.authUser;
   const isOwner = actor === PLATFORM_OWNER_USERNAME;
-  if (checkPlatformBan(actor).banned) return res.status(403).json({ error: "الحساب محظور على المنصة" });
+  if (isFullPlatformBan(checkPlatformBan(actor))) return res.status(403).json({ error: "الحساب محظور على المنصة" });
   if (!isOwner && Object.values(db.exploreQueue || {}).filter(post => post?.authorUsername === actor).length >= 5) {
     return res.status(429).json({ error: "لديك خمسة طلبات بانتظار المراجعة. انتظر القرار قبل إرسال المزيد." });
   }
@@ -4073,6 +4298,8 @@ app.post("/api/explore/posts", exploreWriteLimiter, requireHttpAuth, async (req,
     authorDisplayName: user.displayName || actor,
     authorAvatar: user.avatar || "",
     createdAt: new Date().toISOString(),
+    likedBy: [],
+    comments: [],
     moderation: await aiService?.reviewPublicContent?.({
       postId,
       username: actor,
@@ -4098,7 +4325,7 @@ app.post("/api/explore/posts", exploreWriteLimiter, requireHttpAuth, async (req,
       success: true,
       published: true,
       message: "تم نشر منشورك مباشرة في اكسبلور",
-      post: formatExplorePost({ ...post, publishedAt, publishedBy: actor }, { includeReview: true })
+      post: formatExplorePost({ ...post, publishedAt, publishedBy: actor }, { includeReview: true, actor })
     });
   }
 
@@ -4107,7 +4334,7 @@ app.post("/api/explore/posts", exploreWriteLimiter, requireHttpAuth, async (req,
   analyticsService?.track("explore_submission", { userId: actor, page: "/explore.html", feature: type });
   void notifyExploreReviewers(post);
   emitToStaffWithPermission("manage_explore", "explore:review-count-updated", { count: Object.keys(db.exploreQueue).length });
-  return res.status(201).json({ success: true, message: "وصل منشورك للمراجعة. راح يظهر للكل بعد الموافقة.", post: formatExplorePost(post, { includeReview: true }) });
+  return res.status(201).json({ success: true, message: "وصل منشورك للمراجعة. راح يظهر للكل بعد الموافقة.", post: formatExplorePost(post, { includeReview: true, actor }) });
 });
 
 app.post("/api/explore/posts/:postId/review", exploreWriteLimiter, requireHttpAuth, (req, res) => {
@@ -4176,6 +4403,64 @@ app.post("/api/explore/posts/:postId/pin", exploreWriteLimiter, requireHttpAuth,
   return res.json({ success: true, pinned, message: pinned ? "تم تثبيت المنشور في أعلى اكسبلور" : "تم إلغاء تثبيت المنشور" });
 });
 
+app.delete("/api/explore/posts/:postId", exploreWriteLimiter, requireHttpAuth, (req, res) => {
+  const actor = req.authUser;
+  if (!isExploreReviewer(actor)) {
+    return res.status(403).json({ error: "حذف منشورات اكسبلور متاح للمالك والمشرفين المخولين فقط" });
+  }
+  const postId = String(req.params.postId || "").slice(0, 140);
+  const posts = Array.isArray(db.explorePosts) ? db.explorePosts : [];
+  const index = posts.findIndex(post => post?.id === postId);
+  if (index < 0) return res.status(404).json({ error: "المنشور غير موجود أو لم تتم الموافقة عليه" });
+  const [removed] = posts.splice(index, 1);
+  db.explorePosts = posts.slice(-50);
+  if (removed?.fileId) pruneExploreUploadIfUnreferenced(removed.fileId);
+  saveDB(db);
+  analyticsService?.track("explore_deleted", { userId: actor, page: "/explore.html", feature: removed?.type || "post" });
+  io.emit("explore:posts-updated", { postId, decision: "delete", count: db.explorePosts.length });
+  return res.json({ success: true, message: "تم حذف منشور اكسبلور" });
+});
+
+app.post("/api/explore/posts/:postId/like", exploreWriteLimiter, requireHttpAuth, (req, res) => {
+  const actor = req.authUser;
+  const postId = String(req.params.postId || "").slice(0, 140);
+  const post = (Array.isArray(db.explorePosts) ? db.explorePosts : []).find(item => item?.id === postId);
+  if (!post) return res.status(404).json({ error: "المنشور غير موجود" });
+  if (!Array.isArray(post.likedBy)) post.likedBy = [];
+  const existing = post.likedBy.indexOf(actor);
+  const liked = existing < 0;
+  if (liked) post.likedBy.push(actor);
+  else post.likedBy.splice(existing, 1);
+  post.likedBy = [...new Set(post.likedBy)].slice(-10000);
+  saveDB(db);
+  io.emit("explore:posts-updated", { postId, decision: "like", likeCount: post.likedBy.length });
+  return res.json({ success: true, liked, likeCount: post.likedBy.length, postId });
+});
+
+app.post("/api/explore/posts/:postId/comments", exploreWriteLimiter, requireHttpAuth, (req, res) => {
+  const actor = req.authUser;
+  const postId = String(req.params.postId || "").slice(0, 140);
+  const text = String(req.body?.text || "").trim().slice(0, 500);
+  if (!text) return res.status(400).json({ error: "اكتب تعليقًا أولاً" });
+  const post = (Array.isArray(db.explorePosts) ? db.explorePosts : []).find(item => item?.id === postId);
+  if (!post) return res.status(404).json({ error: "المنشور غير موجود" });
+  if (!Array.isArray(post.comments)) post.comments = [];
+  const user = db.users?.[actor] || {};
+  const comment = {
+    id: `exp_comment_${Date.now()}_${crypto.randomBytes(5).toString("hex")}`,
+    username: actor,
+    displayName: user.displayName || actor,
+    avatar: user.avatar || "",
+    text,
+    createdAt: new Date().toISOString()
+  };
+  post.comments.push(comment);
+  post.comments = post.comments.slice(-200);
+  saveDB(db);
+  io.emit("explore:posts-updated", { postId, decision: "comment", commentCount: post.comments.length });
+  return res.status(201).json({ success: true, comment, commentCount: post.comments.length });
+});
+
 app.post("/api/logout", (req, res) => {
   const session = getRequestSession(req);
   if (session?.token) deleteSession(session.token);
@@ -4206,7 +4491,7 @@ app.get("/api/client-config", requireHttpAuth, (_req, res) => {
     uploadChunkSize: UPLOAD_CHUNK_SIZE,
     resumableUploads: true,
     directObjectStorage: DIRECT_BROWSER_R2_UPLOAD && objectStorage.isConfigured(),
-    externalMediaStorageRequired: REQUIRE_EXTERNAL_MEDIA_STORAGE,
+    externalMediaStorageRequired: REQUIRE_EXTERNAL_MEDIA_STORAGE && !hasDurableMediaStorage(),
     mediaBytesBypassServer: DIRECT_BROWSER_R2_UPLOAD && objectStorage.isConfigured(),
     serverUploadFallback: true,
     objectStorageProvider: objectStorage.isConfigured() ? "cloudflare-r2" : null,
@@ -4597,6 +4882,14 @@ function publishStoredUploadMessage({ actor, roomIdOrCode, fileId, msgId, time, 
     return { success: false, status: 400, error: "بيانات إرسال الملف غير كاملة" };
   }
 
+  const platformBan = checkPlatformBan(actor);
+  if (isFullPlatformBan(platformBan)) {
+    return { success: false, status: 403, code: "PLATFORM_BANNED", ban: platformBan, error: platformFreezeText(platformBan) };
+  }
+  if (isChatOnlyPlatformBan(platformBan)) {
+    return { success: false, status: 403, code: "CHAT_RESTRICTED", mode: "chat-readonly", ban: platformBan, error: chatRestrictionText(platformBan) };
+  }
+
   const rId = getCanonicalRoomId(roomIdOrCode);
   const roomDoc = db.rooms[rId];
   const file = db.uploads[fileId];
@@ -4630,6 +4923,17 @@ function publishStoredUploadMessage({ actor, roomIdOrCode, fileId, msgId, time, 
   if (file.messageId) {
     const existing = (db.roomHistory[rId] || []).find(m => m.msgId === file.messageId || m.fileId === fileId);
     if (existing) return { success: true, messageData: existing, duplicate: true };
+  }
+
+  const flood = consumeChatMessageBudget(actor, rId, "media");
+  if (!flood.allowed) {
+    return {
+      success: false,
+      status: 429,
+      code: "CHAT_RATE_LIMIT",
+      retryAfterMs: flood.retryAfterMs,
+      error: `ترسل ملفات بسرعة. حاول بعد ${Math.max(1, Math.ceil(flood.retryAfterMs / 1000))} ثانية.`
+    };
   }
 
   const createdAt = new Date().toISOString();
@@ -4870,10 +5174,10 @@ app.post("/api/upload/session", uploadLimiter, requireHttpAuth, limitConcurrentU
     }
     const sessionId = "ups_" + crypto.randomBytes(18).toString("hex");
     const fileId = "upl_" + crypto.randomBytes(16).toString("hex");
-    const chatMedia = context === "chat" && fileSize > 0 && DIRECT_MEDIA_FILE_TYPES.has(fileType);
-    if (chatMedia && REQUIRE_EXTERNAL_MEDIA_STORAGE && !objectStorage.isConfigured()) {
+    const externalMediaUpload = fileSize > 0;
+    if (externalMediaUpload && REQUIRE_EXTERNAL_MEDIA_STORAGE && !hasDurableMediaStorage()) {
       return res.status(503).json({
-        error: "التخزين الخارجي للوسائط غير مهيأ على السيرفر. أضف إعدادات Cloudflare R2 ثم أعد المحاولة."
+        error: "تخزين الوسائط غير مهيأ. أضف إعدادات Cloudflare R2 أو فعّل MongoDB/GridFS ثم أعد المحاولة."
       });
     }
 
@@ -5246,11 +5550,13 @@ app.post("/api/upload/session/:sessionId/complete", uploadLimiter, requireHttpAu
           mimetype: session.mimeType,
           size: session.fileSize
         };
-        // Chat media is published from the completed local spool first. This
-        // includes images: waiting for R2/GridFS here was the reason photos
-        // reached 99% and then failed or stayed pending on mobile.
+        // With R2 configured, complete the external write before publishing so
+        // no chat image/video/audio remains as a durable local file. The local
+        // first path is retained only for explicitly configured development
+        // compatibility mode (without R2).
         const localFirstChatMedia = session.context === "chat"
-          && ["image", "gif", "video", "audio"].includes(sessionFileType);
+          && ["image", "gif", "video", "audio"].includes(sessionFileType)
+          && !objectStorage.isConfigured();
         cloudFile = localFirstChatMedia
           ? localFirstVideoFile(session, fileId, keepLocalCache)
           : await persistUploadedFileToCloud(reqFile, fileId, {
@@ -5434,10 +5740,10 @@ app.post("/api/upload", uploadLimiter, requireHttpAuth, limitConcurrentUploads, 
       && Number(req.file.size || 0) > 0
       && DIRECT_MEDIA_FILE_TYPES.has(fileType);
     const exploreMedia = context === "explore-video" && Number(req.file.size || 0) > 0 && fileType === "video";
-    if ((chatMedia || exploreMedia) && REQUIRE_EXTERNAL_MEDIA_STORAGE && !objectStorage.isConfigured()) {
+    if (Number(req.file.size || 0) > 0 && REQUIRE_EXTERNAL_MEDIA_STORAGE && !hasDurableMediaStorage()) {
       safeUnlink(req.file.path);
       return res.status(503).json({
-        error: "التخزين الخارجي للوسائط غير مهيأ على السيرفر. أضف إعدادات Cloudflare R2 ثم أعد المحاولة."
+        error: "تخزين الوسائط غير مهيأ. أضف إعدادات Cloudflare R2 أو فعّل MongoDB/GridFS ثم أعد المحاولة."
       });
     }
     if (["background", "avatar", "frame", "voice-room-image"].includes(context) && !["image", "gif"].includes(fileType)) {
@@ -5689,7 +5995,7 @@ function setStoredFileResponseHeaders(record, res) {
     ? "private, no-store"
     : (isExploreVideo || isVideo ? "private, max-age=60, must-revalidate" : "private, max-age=86400, immutable");
   res.setHeader("Cache-Control", cacheControl);
-  if (isVideo) res.setHeader("Vary", "Range");
+  if (isVideo || record.fileType === "audio") res.setHeader("Vary", "Range");
   res.setHeader("ETag", `\"${fileId}-${totalSize}\"`);
   if (record.createdAt) {
     const createdMs = Date.parse(record.createdAt);
@@ -6200,6 +6506,8 @@ function bindSocketUser(socket, username) {
   socket.username = username;
   socket.userId = username;
   socket.role = getPublicRole(username);
+  const restriction = checkPlatformBan(username);
+  socket.chatRestriction = isChatOnlyPlatformBan(restriction) ? restriction : null;
   socket.join(`user_${username}`);
 
   if (!activeOnlineUsers.has(username)) {
@@ -6225,12 +6533,18 @@ io.use((socket, next) => {
 
     if (session && db.users[session.username]) {
       const ban = checkPlatformBan(session.username);
-      if (!ban.banned) {
+      if (!isFullPlatformBan(ban)) {
         socket.sessionToken = authToken || cookieToken;
         socket.sessionUser = session.username;
         socket.userId = session.username;
         socket.username = session.username;
         socket.role = getPublicRole(session.username);
+        socket.chatRestriction = isChatOnlyPlatformBan(ban) ? ban : null;
+      } else {
+        // Keep only a lightweight marker on a frozen socket. Do not bind it to
+        // online rooms, but let the packet guard return a clear ban response.
+        socket.platformBanUsername = session.username;
+        socket.platformBan = ban;
       }
     }
   } catch (err) {
@@ -6516,6 +6830,7 @@ app.get("/api/voice-rooms", requireHttpAuth, (_req, res) => {
 });
 
 io.on("connection", (socket) => {
+  installPlatformFreezeGuard(socket);
   economyGameHandlers.registerGameSocketHandlers(socket);
 
   // Lightweight server-side activity counters. Payload contents are ignored;
@@ -6637,10 +6952,10 @@ io.on("connection", (socket) => {
       }
 
       const platformBan = checkPlatformBan(cleanUsername);
-      if (platformBan.banned) {
+      if (isFullPlatformBan(platformBan)) {
         socket.emit("login_result", {
           success: false,
-          error: "هذا الحساب محظور على المنصة",
+          error: platformFreezeText(platformBan),
           ban: platformBan
         });
         return;
@@ -6664,7 +6979,9 @@ io.on("connection", (socket) => {
         charisma: publicCharisma(user),
         referralCode: user.referralCode || "",
         sessionToken: socket.sessionToken || null,
-        stats
+        stats,
+        restriction: isChatOnlyPlatformBan(platformBan) ? platformBan : null,
+        chatRestricted: isChatOnlyPlatformBan(platformBan)
       });
       broadcastOnlineUsers();
     } catch (err) {
@@ -7047,8 +7364,12 @@ io.on("connection", (socket) => {
       }
 
       const platformBan = checkPlatformBan(actor);
-      if (platformBan.banned) {
-        socket.emit("room-create-error", { message: "الحساب محظور على المنصة." });
+      if (isFullPlatformBan(platformBan)) {
+        socket.emit("room-create-error", { message: platformFreezeText(platformBan) });
+        return;
+      }
+      if (isChatOnlyPlatformBan(platformBan)) {
+        socket.emit("room-create-error", { code: "CHAT_RESTRICTED", message: chatRestrictionText(platformBan) });
         return;
       }
 
@@ -7221,8 +7542,8 @@ io.on("connection", (socket) => {
       }
 
       const platformBan = checkPlatformBan(actor);
-      if (platformBan.banned) {
-        socket.emit("platform-banned", { ban: platformBan, message: "الحساب محظور على المنصة." });
+      if (isFullPlatformBan(platformBan)) {
+        socket.emit("platform-banned", { ban: platformBan, mode: "full-freeze", message: platformFreezeText(platformBan) });
         return;
       }
 
@@ -7705,8 +8026,12 @@ io.on("connection", (socket) => {
       }
 
       const platformBan = checkPlatformBan(actor);
-      if (platformBan.banned) {
-        socket.emit("message-rejected", { reason: "الحساب محظور على المنصة.", ban: platformBan });
+      if (isFullPlatformBan(platformBan)) {
+        socket.emit("message-rejected", { code: "PLATFORM_BANNED", reason: platformFreezeText(platformBan), ban: platformBan });
+        return;
+      }
+      if (isChatOnlyPlatformBan(platformBan)) {
+        socket.emit("message-rejected", { code: "CHAT_RESTRICTED", reason: chatRestrictionText(platformBan), ban: platformBan, mode: "chat-readonly" });
         return;
       }
 
@@ -7732,6 +8057,16 @@ io.on("connection", (socket) => {
           socket.emit("message-rejected", { reason: "أنت محظور من هذه الغرفة", ban: banCheck });
           return;
         }
+      }
+
+      const flood = consumeChatMessageBudget(actor, rId, "text");
+      if (!flood.allowed) {
+        socket.emit("message-rejected", {
+          code: "CHAT_RATE_LIMIT",
+          retryAfterMs: flood.retryAfterMs,
+          reason: `تم تهدئة الإرسال حتى لا تتوقف المحادثة. حاول بعد ${Math.max(1, Math.ceil(flood.retryAfterMs / 1000))} ثانية.`
+        });
+        return;
       }
 
       // Socket.IO may reconnect while room.html is open. Rejoin the active room
@@ -7858,9 +8193,24 @@ io.on("connection", (socket) => {
       if (!roomDoc || !canUserAccessRoom(rId, actor) || roomDoc.systemRoom) {
         return socket.emit("message-rejected", { reason: "لا تملك صلاحية الإرسال في هذه المحادثة." });
       }
+      const platformBan = checkPlatformBan(actor);
+      if (isFullPlatformBan(platformBan)) {
+        return socket.emit("message-rejected", { code: "PLATFORM_BANNED", reason: platformFreezeText(platformBan), ban: platformBan });
+      }
+      if (isChatOnlyPlatformBan(platformBan)) {
+        return socket.emit("message-rejected", { code: "CHAT_RESTRICTED", reason: chatRestrictionText(platformBan), ban: platformBan, mode: "chat-readonly" });
+      }
       if (!roomDoc.isPrivate) {
         const banCheck = checkRoomBan(rId, actor);
         if (banCheck.banned) return socket.emit("message-rejected", { reason: "أنت محظور من هذه الغرفة", ban: banCheck });
+      }
+      const flood = consumeChatMessageBudget(actor, rId, "sticker");
+      if (!flood.allowed) {
+        return socket.emit("message-rejected", {
+          code: "CHAT_RATE_LIMIT",
+          retryAfterMs: flood.retryAfterMs,
+          reason: `تم تهدئة الإرسال حتى لا تتوقف المحادثة. حاول بعد ${Math.max(1, Math.ceil(flood.retryAfterMs / 1000))} ثانية.`
+        });
       }
       attachSocketToConversation(socket, rId);
       const createdAt = new Date().toISOString();
@@ -7918,7 +8268,12 @@ io.on("connection", (socket) => {
       });
 
       if (!result.success) {
-        socket.emit("message-rejected", { reason: result.error || "تعذر إرسال الملف." });
+        socket.emit("message-rejected", {
+          reason: result.error || "تعذر إرسال الملف.",
+          code: result.code,
+          retryAfterMs: result.retryAfterMs,
+          ban: result.ban
+        });
         if (typeof ack === "function") ack({ success: false, error: result.error || "تعذر إرسال الملف." });
         return;
       }
@@ -8185,11 +8540,21 @@ io.on("connection", (socket) => {
       }
 
       const platformBan = checkPlatformBan(actor);
-      if (platformBan.banned) {
+      if (isFullPlatformBan(platformBan)) {
         replyEdit({
           success: false,
           msgId,
-          error: "الحساب محظور على المنصة"
+          error: platformFreezeText(platformBan),
+          code: "PLATFORM_BANNED"
+        });
+        return;
+      }
+      if (isChatOnlyPlatformBan(platformBan)) {
+        replyEdit({
+          success: false,
+          msgId,
+          error: chatRestrictionText(platformBan),
+          code: "CHAT_RESTRICTED"
         });
         return;
       }
@@ -8681,7 +9046,7 @@ io.on("connection", (socket) => {
         { id: "view_user_analytics", label: "عرض إحصائيات المستخدمين" },
         { id: "manage_referrals", label: "عرض وإدارة إحصائيات الإحالة" },
         { id: "manage_ai_safety", label: "مراجعة تنبيهات الأمان والسبام الذكية" },
-        { id: "manage_explore", label: "مراجعة منشورات اكسبلور وقبولها أو رفضها" }
+        { id: "manage_explore", label: "مراجعة وحذف منشورات اكسبلور وقبولها أو رفضها" }
       ]
     });
   });
@@ -8812,18 +9177,19 @@ io.on("connection", (socket) => {
   // =======================================================
   // Platform-wide temporary/permanent bans
   // =======================================================
-  socket.on("platform-ban-user", ({ targetUser, duration, reason, isPermanent } = {}) => {
+  function applyPlatformBanRequest({ targetUser, duration, reason, isPermanent, mode = "full-freeze" } = {}) {
     const actor = socket.userId;
     if (!actor || !(actor === PLATFORM_OWNER_USERNAME || hasPermission(actor, "manage_platform_bans"))) {
       socket.emit("platform-ban-result", { success: false, error: "لا تملك صلاحية حظر المستخدمين على المنصة" });
-      return;
+      return false;
     }
 
     if (!targetUser || !db.users[targetUser] || targetUser === PLATFORM_OWNER_USERNAME) {
       socket.emit("platform-ban-result", { success: false, error: "لا يمكن حظر هذا الحساب" });
-      return;
+      return false;
     }
 
+    const safeMode = mode === "chat-readonly" ? "chat-readonly" : "full-freeze";
     const minutes = Math.max(1, Number.parseInt(duration, 10) || 60);
     const expiresAt = isPermanent ? null : new Date(Date.now() + minutes * 60_000).toISOString();
 
@@ -8833,27 +9199,61 @@ io.on("connection", (socket) => {
       reason: String(reason || "").trim().slice(0, 500),
       isPermanent: !!isPermanent,
       expiresAt,
-      createdAt: new Date().toISOString()
+      createdAt: new Date().toISOString(),
+      mode: safeMode,
+      scope: safeMode === "chat-readonly" ? "chat" : "platform"
     };
     saveDB(db);
 
-    io.to(`user_${targetUser}`).emit("platform-banned", {
-      message: isPermanent ? "تم حظر حسابك دائماً من المنصة" : "تم حظر حسابك مؤقتاً من المنصة",
-      ban: db.platformBans[targetUser]
-    });
+    const ban = db.platformBans[targetUser];
+    if (safeMode === "chat-readonly") {
+      io.to(`user_${targetUser}`).emit("chat-restricted", {
+        code: "CHAT_RESTRICTED",
+        message: chatRestrictionText(ban),
+        mode: safeMode,
+        ban
+      });
+      // Update each live socket immediately; the packet guard also rechecks
+      // the database on every event, so stale tabs cannot bypass the mode.
+      const targetSockets = activeOnlineUsers.get(targetUser);
+      if (targetSockets) {
+        for (const socketId of [...targetSockets]) {
+          const targetSocket = io.sockets.sockets.get(socketId);
+          if (targetSocket) targetSocket.chatRestriction = ban;
+        }
+      }
+    } else {
+      io.to(`user_${targetUser}`).emit("platform-banned", {
+        message: platformFreezeText(ban),
+        mode: "full-freeze",
+        ban
+      });
 
-    const userSockets = activeOnlineUsers.get(targetUser);
-    if (userSockets) {
-      for (const socketId of [...userSockets]) {
-        const targetSocket = io.sockets.sockets.get(socketId);
-        if (targetSocket) {
-          setTimeout(() => targetSocket.disconnect(true), 300);
+      const userSockets = activeOnlineUsers.get(targetUser);
+      if (userSockets) {
+        for (const socketId of [...userSockets]) {
+          const targetSocket = io.sockets.sockets.get(socketId);
+          if (targetSocket) {
+            setTimeout(() => targetSocket.disconnect(true), 300);
+          }
         }
       }
     }
 
-    socket.emit("platform-ban-result", { success: true, targetUser, ban: db.platformBans[targetUser] });
-  });
+    socket.emit("platform-ban-result", {
+      success: true,
+      targetUser,
+      mode: safeMode,
+      ban,
+      message: safeMode === "chat-readonly" ? "تم منع المستخدم من التفاعل مع إبقاء الرسائل الواردة ظاهرة" : "تم تجميد المستخدم بالكامل"
+    });
+    return true;
+  }
+
+  socket.on("platform-ban-user", payload => applyPlatformBanRequest(payload));
+  // Dedicated event kept for admin clients that expose a separate
+  // "منع التفاعل" button instead of the shared ban dialog.
+  socket.on("platform-chat-restrict-user", payload => applyPlatformBanRequest({ ...payload, mode: "chat-readonly" }));
 
   socket.on("platform-unban-user", ({ targetUser } = {}) => {
     const actor = socket.userId;
@@ -8864,6 +9264,10 @@ io.on("connection", (socket) => {
     if (db.platformBans[targetUser]) {
       delete db.platformBans[targetUser];
       saveDB(db);
+      io.to(`user_${targetUser}`).emit("chat-restriction-cleared", {
+        targetUser,
+        message: "تم رفع منع التفاعل عن حسابك. يمكنك الإرسال والتفاعل الآن."
+      });
     }
     socket.emit("platform-ban-result", { success: true, targetUser, unbanned: true });
   });
@@ -10017,9 +10421,11 @@ async function startServer() {
 
   server.listen(PORT, "0.0.0.0", () => {
     console.log(`🚀 Server Started on port ${PORT}`);
-    console.log(mongoReady ? "☁️ Database: MongoDB Atlas" : `📁 Database: local JSON (${DB_PATH})`);
+    console.log(mongoReady
+      ? "☁️ Database: MongoDB Atlas"
+      : (WRITE_LOCAL_JSON_BACKUP ? `📁 Database: local JSON (${DB_PATH})` : "🧠 Database: in-memory fallback (local backup disabled)"));
     if (objectStorage.isConfigured()) {
-      console.log(`☁️ Files: Cloudflare R2 (direct browser upload, ${objectStorage.getPartSize()} byte parts)`);
+      console.log(`☁️ Files: Cloudflare R2 external storage (${objectStorage.getPartSize()} byte parts; local source deleted after transfer)`);
     } else if (gridFsBucket) {
       console.log("☁️ Files: MongoDB GridFS (legacy fallback; configure R2 for direct media transfer)");
     } else {

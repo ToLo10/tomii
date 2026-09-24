@@ -296,6 +296,9 @@
 
         /* ===== STATUS & INPUT ===== */
         #statusIndicator { font-size: 12px; color: #6c5ce7; height: 20px; font-style: italic; padding: 0 16px; margin-top: 2px; flex-shrink: 0; }
+        .chat-restriction-notice { align-items:center; gap:8px; margin:4px 16px 0; padding:9px 12px; border:1px solid #f0b64d88; border-radius:10px; background:linear-gradient(135deg,#3b2a18,#211827); color:#ffe2a1; font-size:.76rem; line-height:1.55; }
+        .chat-restriction-notice::before { content:'🔒'; font-size:1rem; }
+        #messageInput.is-chat-restricted, #sendBtn.is-chat-restricted, .is-chat-restricted { opacity:.48; cursor:not-allowed!important; filter:saturate(.45); }
         .reply-preview-bar { display: none; background: #1e1d2d; border-right: 4px solid #6c5ce7; padding: 8px 14px; font-size: 13px; border-radius: 8px 8px 0 0; position: relative; color: #ddd; margin: 0 16px; margin-bottom: -6px; z-index: 10; }
         .reply-preview-bar .close-reply { position: absolute; left: 10px; top: 6px; cursor: pointer; font-weight: bold; color: #888; background: none; border: none; font-size: 14px; }
 
@@ -2237,6 +2240,7 @@
                 </div>
                 <div id="chatContainer"></div>
                 <div id="statusIndicator"></div>
+                <div id="chatRestrictionNotice" class="chat-restriction-notice" style="display:none;" role="status" aria-live="polite"></div>
                 <div id="stickerPicker">
                     <div class="picker-tabs">
                         <button class="tab-btn active" type="button" onclick="switchTab('emojisTab', this)">
@@ -2441,14 +2445,14 @@
             <h4><i class="fa-solid fa-ban"></i> حظر مستخدم</h4>
             <p id="banTargetUser">المستخدم: --</p>
             <select id="banTypeSelect">
-                <option value="temp">حظر مؤقت</option>
-                <option value="permanent">حظر دائم</option>
+                <option value="temp">تجميد شامل مؤقت</option>
+                <option value="permanent">تجميد شامل دائم</option>
             </select>
             <input type="number" id="banDurationInput" placeholder="المدة بالدقائق (للحظر المؤقت)" min="1" value="60">
             <textarea id="banReasonInput" placeholder="سبب الحظر (اختياري)" rows="2"></textarea>
             <div class="ban-actions">
-                <button class="confirm-temp-ban" id="confirmTempBanBtn">حظر مؤقت</button>
-                <button class="confirm-ban" id="confirmPermanentBanBtn">حظر دائم</button>
+                <button class="confirm-temp-ban" id="confirmTempBanBtn">تجميد شامل مؤقت</button>
+                <button class="confirm-ban" id="confirmPermanentBanBtn">تجميد شامل دائم</button>
                 <button class="cancel-ban" onclick="closeBanModal()">إلغاء</button>
             </div>
         </div>
@@ -2645,10 +2649,34 @@
         // Keeping autoConnect:false lets us verify the HttpOnly session first.
         const socket = io({
             autoConnect: false,
+            transports: ['websocket', 'polling'],
+            upgrade: true,
+            rememberUpgrade: true,
+            timeout: 30000,
             reconnection: true,
             reconnectionAttempts: Infinity,
-            reconnectionDelay: 1000
+            reconnectionDelay: 1000,
+            reconnectionDelayMax: 10000,
+            randomizationFactor: 0.15,
+            closeOnBeforeunload: false
         });
+
+        // A mobile tab may lose its transport while the page itself remains
+        // open. Socket.IO normally retries, but an explicit server-side close
+        // does not always restart the manager; this small watchdog does so
+        // without reloading the conversation or losing the current draft.
+        let socketWatchdogTimer = null;
+        let socketReconnectTimer = null;
+        function reconnectChatSocket() {
+            if (document.visibilityState === 'hidden' || socket.connected) return;
+            try { socket.connect(); } catch (_) {}
+        }
+        function startSocketWatchdog() {
+            clearInterval(socketWatchdogTimer);
+            socketWatchdogTimer = setInterval(() => {
+                if (document.visibilityState === 'visible' && !socket.connected) reconnectChatSocket();
+            }, 8000);
+        }
 
         // Keep the chat exactly inside the visible mobile viewport.
         // This prevents the browser address bar / virtual keyboard from hiding the composer.
@@ -2918,13 +2946,13 @@
 
                     const tempBanBtn = document.createElement('button');
                     tempBanBtn.className = 'temp-ban-btn';
-                    tempBanBtn.textContent = 'حظر مؤقت';
+                    tempBanBtn.textContent = 'تجميد شامل مؤقت';
                     tempBanBtn.onclick = () => openBanModal(u.userId, u.displayName || u.username || u.name, false);
                     actionsDiv.appendChild(tempBanBtn);
 
                     const banBtn = document.createElement('button');
                     banBtn.className = 'ban-btn';
-                    banBtn.textContent = 'حظر دائم';
+                    banBtn.textContent = 'تجميد شامل دائم';
                     banBtn.onclick = () => openBanModal(u.userId, u.displayName || u.username || u.name, true);
                     actionsDiv.appendChild(banBtn);
 
@@ -3148,6 +3176,7 @@
         let currentRoomName = '';
         let currentRoomIsPrivate = roomId.startsWith('private_');
         let currentRoomIsSystem = false;
+        let chatRestriction = null;
 
         const roomIdText = document.getElementById('roomIdText');
         const roomHeaderTitle = document.getElementById('roomHeaderTitle');
@@ -3157,6 +3186,7 @@
         const copyButton = document.getElementById('copyRoomId');
         const messageInput = document.getElementById('messageInput');
         const sendBtn = document.getElementById('sendBtn');
+        const chatRestrictionNotice = document.getElementById('chatRestrictionNotice');
         const chatContainer = document.getElementById('chatContainer');
         let chatPinnedToBottom = true;
         function isChatNearBottom(threshold = 140) {
@@ -3330,6 +3360,47 @@
             adminReportsTabBtn.style.display = (myUsername === 'tomi' || hasPermission('manage_reports')) ? 'block' : 'none';
         }
 
+        function chatRestrictionMessage(data = chatRestriction) {
+            return data?.message || 'لقد تم حرمانك من هذه الوظيفة. يمكنك قراءة واستلام الرسائل، لكن لا يمكنك الإرسال أو إجراء أي تفاعل حالياً.';
+        }
+
+        function showChatRestrictionNotice(message = chatRestrictionMessage()) {
+            const text = String(message || '').trim();
+            if (statusIndicator) statusIndicator.textContent = text;
+            if (chatRestrictionNotice) {
+                chatRestrictionNotice.textContent = text;
+                chatRestrictionNotice.style.display = text ? 'flex' : 'none';
+            }
+        }
+
+        function applyChatRestrictionUI(restriction) {
+            chatRestriction = restriction?.mode === 'chat-readonly' ? restriction : null;
+            const disabled = Boolean(chatRestriction);
+            // Keep the text field and send button clickable so the user gets
+            // the explicit «لقد تم حرمانك من هذه الوظيفة» notice on attempt;
+            // media/call controls are disabled visually and server-side.
+            [attachBtn, stickerBtn, recordBtn, audioCallBtn, videoCallBtn,
+                openMediaPickerBtn, openFilePickerBtn].forEach(element => {
+                if (!element) return;
+                element.disabled = disabled;
+                element.setAttribute('aria-disabled', String(disabled));
+                element.classList.toggle('is-chat-restricted', disabled);
+            });
+            sendBtn?.classList.toggle('is-chat-restricted', disabled);
+            if (messageInput) {
+                messageInput.placeholder = disabled ? 'لقد تم حرمانك من هذه الوظيفة — يمكنك القراءة فقط' : 'اكتب رسالة...';
+                messageInput.readOnly = false;
+            }
+            if (disabled) {
+                closeAttachmentMenu?.();
+                if (stickerPicker) stickerPicker.style.display = 'none';
+                showChatRestrictionNotice();
+            } else if (chatRestrictionNotice) {
+                chatRestrictionNotice.style.display = 'none';
+                if (statusIndicator?.textContent === chatRestrictionMessage()) statusIndicator.textContent = '';
+            }
+        }
+
         function applyIdentity(data) {
             if (!data || !data.username) return;
             myUsername = data.username;
@@ -3337,6 +3408,7 @@
             myRole = data.role || 'user';
             myBadge = data.badge || null;
             myPermissions = Array.isArray(data.permissions) ? data.permissions : [];
+            applyChatRestrictionUI(data.restriction || (data.chatRestricted ? { mode: 'chat-readonly' } : null));
             localStorage.setItem('chat_username', myUsername);
             localStorage.setItem('username', myUsername);
             localStorage.setItem('chat_userId', myUsername);
@@ -3407,6 +3479,7 @@
             await loadRoomNotificationsPreference();
             window.TomiNotifications?.subscribeIfPossible?.().catch?.(() => {});
             socket.connect();
+            startSocketWatchdog();
         }
 
         function renderRoomNotificationsButton(enabled) {
@@ -3924,6 +3997,18 @@
             if (myUsername) socket.emit('get_my_chats', myUsername);
         }
 
+        // Coalesce sidebar refreshes during a burst. The open room is already
+        // rendered from the broadcast event; repeatedly rebuilding every chat
+        // preview for each incoming message only adds DOM/network pressure.
+        let chatRefreshTimer = null;
+        function scheduleChatRefresh(delay = 180) {
+            if (chatRefreshTimer) return;
+            chatRefreshTimer = setTimeout(() => {
+                chatRefreshTimer = null;
+                refreshChats();
+            }, Math.max(0, Number(delay) || 0));
+        }
+
         function resetRoomViewForLiveSwitch() {
             try { cancelReply(); } catch (_) {}
             messagesStore = {};
@@ -4093,7 +4178,7 @@
             } else {
                 console.warn('Socket login failed:', data.error || 'unknown error');
                 if (data?.ban) {
-                    alert('تم حظر هذا الحساب من المنصة.');
+                    alert(data.error || 'تم تجميد هذا الحساب بالكامل من المنصة.');
                     window.location.href = 'login.html';
                 }
             }
@@ -4141,9 +4226,7 @@
             if (document.visibilityState === 'visible') {
                 // Returning from Samsung Gallery / Android photo picker can leave Socket.IO
                 // briefly disconnected. Reconnect silently instead of rejecting the file.
-                if (!socket.connected) {
-                    try { socket.connect(); } catch (_) {}
-                }
+                reconnectChatSocket();
                 if (roomId && socket.connected) {
                     document.querySelectorAll('.message[data-msg-id]').forEach(el => {
                         const msgId = el.getAttribute('data-msg-id');
@@ -4169,15 +4252,11 @@
         });
 
         window.addEventListener('pageshow', () => {
-            if (!socket.connected) {
-                try { socket.connect(); } catch (_) {}
-            }
+            reconnectChatSocket();
         });
 
         window.addEventListener('focus', () => {
-            if (!socket.connected) {
-                try { socket.connect(); } catch (_) {}
-            }
+            reconnectChatSocket();
         });
 
         function getCurrentTime() {
@@ -4197,6 +4276,7 @@
         }
 
         socket.on('connect', function() {
+            clearTimeout(socketReconnectTimer);
             statusIndicator.textContent = 'متصل بالخادم';
             // يعتمد الاتصال الجديد على HttpOnly session cookie؛ لا نرسل كلمة المرور مع Socket.IO.
             socket.emit('login', { username: myUsername });
@@ -4205,13 +4285,42 @@
             }, 1200);
         });
 
-        socket.on('disconnect', function() {
+        socket.on('disconnect', function(reason) {
             statusIndicator.textContent = 'انقطع الاتصال بالخادم — جاري إعادة الاتصال...';
+            // Socket.IO retries transport failures automatically. If the
+            // server explicitly closed this socket, request a fresh connection
+            // as well so the user is not left in a stale chat tab.
+            clearTimeout(socketReconnectTimer);
+            socketReconnectTimer = setTimeout(reconnectChatSocket, reason === 'io server disconnect' ? 250 : 900);
         });
 
         socket.io.on('reconnect_attempt', function() {
             statusIndicator.textContent = 'جاري إعادة الاتصال بالخادم...';
         });
+
+        socket.io.on('reconnect', function() {
+            statusIndicator.textContent = 'تمت إعادة الاتصال بالخادم';
+            setTimeout(() => {
+                if (statusIndicator.textContent === 'تمت إعادة الاتصال بالخادم') statusIndicator.textContent = '';
+            }, 1400);
+        });
+
+        socket.on('connect_error', function() {
+            statusIndicator.textContent = 'تعذر الاتصال مؤقتًا — إعادة المحاولة...';
+        });
+
+        socket.on('error', function(error) {
+            if (error?.data?.code === 'PLATFORM_BANNED' || error?.message === 'PLATFORM_BANNED') {
+                alert('🚫 ' + (error?.data?.message || 'تم تجميد حسابك بالكامل من المنصة.'));
+                window.location.href = 'login.html';
+            } else if (error?.data?.code === 'CHAT_RESTRICTED' || error?.message === 'CHAT_RESTRICTED') {
+                chatRestriction = error?.data?.ban || { mode: 'chat-readonly', message: error?.data?.message };
+                applyChatRestrictionUI(chatRestriction);
+                showChatRestrictionNotice(error?.data?.message || chatRestrictionMessage());
+            }
+        });
+
+        window.addEventListener('online', reconnectChatSocket, { passive: true });
 
         socket.on('load-history', function(history) {
             chatContainer.innerHTML = '';
@@ -4642,6 +4751,10 @@
         }
 
         function sendSticker(stickerUrl) {
+            if (chatRestriction) {
+                showChatRestrictionNotice();
+                return;
+            }
             if (!roomId) return;
             socket.emit('send-media', {
                 roomId,
@@ -4948,7 +5061,7 @@
 
         let typingTimeout;
         function sendStatus(statusText) {
-            if (roomId) socket.emit('user-typing', { roomId, status: Boolean(statusText) });
+            if (roomId && !chatRestriction) socket.emit('user-typing', { roomId, status: Boolean(statusText) });
         }
 
         messageInput.addEventListener('input', function() {
@@ -4990,6 +5103,11 @@
         function sendMessage() {
             const message = messageInput.value.trim();
             if (!message) return;
+
+            if (chatRestriction) {
+                showChatRestrictionNotice();
+                return;
+            }
 
             if (!roomId) {
                 alert('اختر محادثة أولاً.');
@@ -6032,7 +6150,7 @@
             if (!data || data.roomId !== roomId) return;
             renderTextMessage(data);
             smartScrollChat(true);
-            refreshChats();
+            scheduleChatRefresh();
         });
 
         function formatBytes(bytes) {
@@ -6720,6 +6838,10 @@
         }
 
         async function uploadAndSendChatFile(file, replySnapshot = null, pickerKind = 'file', extraMessageMeta = null, detectedFileType = '') {
+            if (chatRestriction) {
+                showChatRestrictionNotice();
+                return;
+            }
             if (!roomId || !file) return;
             const uploadRoomId = roomId;
 
@@ -6977,10 +7099,15 @@
         function finishVoiceRecording(shouldSend) {
             if (!mediaRecorder || mediaRecorder.state === 'inactive') return;
             voiceRecordingShouldSend = Boolean(shouldSend);
+            try { mediaRecorder.requestData?.(); } catch (_) {}
             try { mediaRecorder.stop(); } catch (_) {}
         }
 
         recordBtn.addEventListener('click', async function() {
+            if (chatRestriction) {
+                showChatRestrictionNotice();
+                return;
+            }
             if (!roomId) return;
             if (mediaRecorder && mediaRecorder.state !== 'inactive') {
                 // While recording, tapping the waveform simply keeps the recording active.
@@ -7055,6 +7182,12 @@
                 audioChunks = [];
                 voiceRecordingShouldSend = false;
 
+                mediaRecorder.onerror = () => {
+                    voiceRecordingShouldSend = false;
+                    sendStatus('');
+                    if (voiceRecordingBar) voiceRecordingBar.style.display = 'none';
+                    alert('تعذر تسجيل الصوت من المتصفح. جرّب السماح بالمايكروفون أو حدّث الصفحة.');
+                };
                 mediaRecorder.ondataavailable = event => {
                     if (event.data && event.data.size > 0) audioChunks.push(event.data);
                 };
@@ -7073,10 +7206,10 @@
 
                     const recordedMimeType = String(mediaRecorder.mimeType || selectedMime || 'audio/webm').trim().toLowerCase();
                     const mimeBase = recordedMimeType.split(';', 1)[0].trim() || 'audio/webm';
-                    const audioBlob = new Blob(audioChunks, { type: recordedMimeType || mimeBase });
+                    const audioBlob = new Blob(audioChunks.slice(), { type: mimeBase || recordedMimeType || 'audio/webm' });
                     const extension = mimeBase.includes('ogg') ? 'ogg'
                         : (mimeBase.includes('mp4') || mimeBase.includes('m4a') ? 'm4a' : 'webm');
-                    const file = new File([audioBlob], 'voice-' + Date.now() + '.' + extension, { type: recordedMimeType || mimeBase });
+                    const file = new File([audioBlob], 'voice-' + Date.now() + '.' + extension, { type: mimeBase || recordedMimeType || 'audio/webm' });
                     const replySnapshot = activeReplyData ? { ...activeReplyData } : null;
 
                     if (recordingStream) {
@@ -7085,11 +7218,17 @@
                     }
 
                     if (voiceRecordingShouldSend && audioBlob.size > 0) {
-                        await queueChatUpload(file, replySnapshot, 'audio', {
-                            voiceDurationMs: recordedDurationMs,
-                            voiceWaveform: recordedWaveform
-                        });
-                        cancelReply();
+                        try {
+                            await queueChatUpload(file, replySnapshot, 'audio', {
+                                voiceDurationMs: recordedDurationMs,
+                                voiceWaveform: recordedWaveform
+                            });
+                            cancelReply();
+                        } catch (error) {
+                            alert(error?.message || 'تعذر إرسال الرسالة الصوتية. حاول مرة أخرى.');
+                        }
+                    } else if (voiceRecordingShouldSend) {
+                        alert('التسجيل فارغ؛ اضغط مطولاً أو سجّل أكثر من لحظة ثم أرسله.');
                     }
                     audioChunks = [];
                     voiceWaveformSamples = [];
@@ -7228,13 +7367,16 @@
             center.appendChild(meta);
 
             const audio = document.createElement('audio');
-            audio.preload = 'metadata';
+            audio.preload = 'auto';
             audio.playsInline = true;
             audio.className = 'voice-note-audio';
             const audioSource = document.createElement('source');
             audioSource.src = sourceUrl;
-            const declaredMime = String(data.mimeType || '').trim();
-            if (declaredMime) audioSource.type = declaredMime;
+            // Do not force a stale client MIME on the <source>.  Older iOS and
+            // Android WebViews reject a valid voice note when it is labelled
+            // audio/webm/audio-mp4 even though the response itself is
+            // playable.  The /api/files response is authoritative and the
+            // browser can sniff it safely.
             audio.appendChild(audioSource);
 
             const showVoicePlaybackFallback = () => {
@@ -7272,7 +7414,17 @@
             audio.addEventListener('ended', () => { audio.currentTime = 0; setProgress(); });
             audio.addEventListener('loadeddata', () => wrap.classList.remove('voice-note-error'));
             audio.addEventListener('canplay', () => wrap.classList.remove('voice-note-error'));
-            audio.addEventListener('error', showVoicePlaybackFallback);
+            let voiceRecoveryCount = 0;
+            audio.addEventListener('error', () => {
+                if (voiceRecoveryCount < 2 && /^\/api\/files\//.test(sourceUrl)) {
+                    voiceRecoveryCount += 1;
+                    const separator = sourceUrl.includes('?') ? '&' : '?';
+                    audioSource.src = `${sourceUrl}${separator}retry=${Date.now()}-${voiceRecoveryCount}`;
+                    audio.load();
+                    return;
+                }
+                showVoicePlaybackFallback();
+            });
             playBtn.addEventListener('click', async event => {
                 event.stopPropagation();
                 try {
@@ -7401,10 +7553,18 @@
                 img.src = sourceUrl;
                 img.alt = data.fileName || 'صورة';
                 img.loading = 'lazy';
+                img.decoding = 'async';
                 img.classList.add('message-zoomable-image');
                 img.title = 'اضغط لتكبير الصورة';
                 img.onload = () => smartScrollChat(false);
+                let imageRecoveryCount = 0;
                 img.onerror = () => {
+                    if (imageRecoveryCount < 2 && /^\/api\/files\//.test(sourceUrl)) {
+                        imageRecoveryCount += 1;
+                        const separator = sourceUrl.includes('?') ? '&' : '?';
+                        img.src = `${sourceUrl}${separator}retry=${Date.now()}-${imageRecoveryCount}`;
+                        return;
+                    }
                     if (!img.nextElementSibling?.classList?.contains('media-fallback-link')) {
                         const fallback = document.createElement('a');
                         fallback.href = sourceUrl;
@@ -7435,7 +7595,7 @@
                 // client MIME (for example audio/mp4 from some Android gallery
                 // providers) can make desktop Chrome select an audio-only
                 // interpretation before it inspects the actual file.
-                const compatibleSourceUrl = withVideoPlaybackMode(sourceUrl, 'compatible');
+                const compatibleSourceUrl = data.playbackUrl || withVideoPlaybackMode(sourceUrl, 'compatible');
                 source.src = compatibleSourceUrl;
                 video.appendChild(source);
                 video.dataset.mediaFileId = String(data.fileId || '');
@@ -7471,7 +7631,21 @@
                     state.textContent = 'الاتصال بطيء • جاري المتابعة...';
                     state.classList.remove('hidden');
                 });
+                let mediaRecoveryCount = 0;
+                const refreshMediaSource = () => {
+                    if (mediaRecoveryCount >= 2 || !/^\/api\/files\//.test(sourceUrl)) return false;
+                    mediaRecoveryCount += 1;
+                    const separator = sourceUrl.includes('?') ? '&' : '?';
+                    source.src = `${sourceUrl}${separator}retry=${Date.now()}-${mediaRecoveryCount}`;
+                    video.load();
+                    return true;
+                };
                 video.addEventListener('error', () => {
+                    if (refreshMediaSource()) {
+                        state.textContent = 'جاري تجديد رابط الوسائط...';
+                        state.classList.remove('hidden');
+                        return;
+                    }
                     const pendingCompatibility = ['queued', 'checking', 'processing'].includes(String(data.playbackStatus || '').toLowerCase());
                     state.textContent = pendingCompatibility
                         ? 'جاري تجهيز نسخة متوافقة للابتوب...'
@@ -7500,10 +7674,18 @@
                     const audio = document.createElement('audio');
                     audio.src = sourceUrl;
                     audio.controls = true;
-                    audio.preload = 'metadata';
+                    audio.preload = 'auto';
                     audio.playsInline = true;
                     audio.setAttribute('controlsList', 'nodownload');
+                    let audioRecoveryCount = 0;
                     audio.addEventListener('error', () => {
+                        if (audioRecoveryCount < 2 && /^\/api\/files\//.test(sourceUrl)) {
+                            audioRecoveryCount += 1;
+                            const separator = sourceUrl.includes('?') ? '&' : '?';
+                            audio.src = `${sourceUrl}${separator}retry=${Date.now()}-${audioRecoveryCount}`;
+                            audio.load();
+                            return;
+                        }
                         const fallback = document.createElement('a');
                         fallback.href = sourceUrl;
                         fallback.target = '_blank';
@@ -7532,7 +7714,7 @@
             const wasPinned = chatPinnedToBottom || isChatNearBottom();
             renderMediaItem(data);
             if (wasPinned || data.userId === myUserId || data.username === myUsername) smartScrollChat(true);
-            refreshChats();
+            scheduleChatRefresh();
         });
 
         // The original upload remains available immediately. If the server
@@ -7882,7 +8064,7 @@
                 if (user.username !== 'tomi' && hasPermission('manage_platform_bans')) {
                     const tempBan = document.createElement('button');
                     tempBan.className = 'modal-danger';
-                    tempBan.textContent = 'حظر مؤقت';
+                    tempBan.textContent = 'تجميد شامل مؤقت';
                     tempBan.onclick = function() {
                         const duration = parseInt(prompt('مدة الحظر بالدقائق:', '60') || '0', 10);
                         if (!duration) return;
@@ -7897,7 +8079,7 @@
 
                     const permanentBan = document.createElement('button');
                     permanentBan.className = 'modal-danger';
-                    permanentBan.textContent = 'حظر دائم';
+                    permanentBan.textContent = 'تجميد شامل دائم';
                     permanentBan.onclick = function() {
                         if (!confirm('حظر @' + user.username + ' دائماً من المنصة؟')) return;
                         const reason = prompt('سبب الحظر:', '') || '';
@@ -7905,6 +8087,23 @@
                             targetUser: user.username,
                             reason,
                             isPermanent: true
+                        });
+                    };
+
+                    const chatRestrict = document.createElement('button');
+                    chatRestrict.className = 'modal-secondary';
+                    chatRestrict.textContent = 'منع التفاعل (قراءة فقط)';
+                    chatRestrict.title = 'يسمح بالدخول واستلام الرسائل فقط';
+                    chatRestrict.onclick = function() {
+                        const permanent = confirm('هل تريد منع التفاعل عن @' + user.username + ' بشكل دائم؟ اضغط إلغاء لاختيار مدة مؤقتة.');
+                        const duration = permanent ? 0 : parseInt(prompt('مدة منع التفاعل بالدقائق:', '60') || '0', 10);
+                        if (!permanent && !duration) return;
+                        const reason = prompt('سبب منع التفاعل:', '') || '';
+                        socket.emit('platform-chat-restrict-user', {
+                            targetUser: user.username,
+                            duration,
+                            reason,
+                            isPermanent: permanent
                         });
                     };
 
@@ -7916,6 +8115,7 @@
 
                     actions.appendChild(tempBan);
                     actions.appendChild(permanentBan);
+                    actions.appendChild(chatRestrict);
                     actions.appendChild(unban);
                 }
 
@@ -8047,8 +8247,23 @@
         });
 
         socket.on('platform-banned', function(data) {
-            alert('🚫 ' + (data?.message || 'تم حظر حسابك من المنصة.'));
+            alert('🚫 ' + (data?.message || 'تم تجميد حسابك بالكامل من المنصة.'));
             window.location.href = 'login.html';
+        });
+
+        socket.on('chat-restricted', function(data) {
+            chatRestriction = data?.ban || { mode: 'chat-readonly', message: data?.message };
+            applyChatRestrictionUI(chatRestriction);
+            showChatRestrictionNotice(data?.message || chatRestrictionMessage());
+        });
+
+        socket.on('chat-restriction-cleared', function(data) {
+            chatRestriction = null;
+            applyChatRestrictionUI(null);
+            if (statusIndicator) statusIndicator.textContent = data?.message || 'تم رفع منع التفاعل عن حسابك.';
+            setTimeout(() => {
+                if (statusIndicator?.textContent === (data?.message || 'تم رفع منع التفاعل عن حسابك.')) statusIndicator.textContent = '';
+            }, 3500);
         });
 
         function renderReports(reports) {
@@ -9258,6 +9473,10 @@
         }
 
         async function startPrivateCall(callType) {
+            if (chatRestriction) {
+                showChatRestrictionNotice();
+                return;
+            }
             const currentMeta = getCurrentRoomMeta();
             const verifiedPrivateRoom = Boolean(roomId && currentRoomIsPrivate && (currentMeta?.isPrivate !== false));
             if (!verifiedPrivateRoom) {
@@ -9792,6 +10011,23 @@
         socket.on('voice-room-invitation', showVoiceRoomInvitation);
 
         socket.on('message-rejected', function(data) {
+            if (data?.code === 'CHAT_RESTRICTED') {
+                chatRestriction = data?.ban || { mode: 'chat-readonly', message: data?.reason };
+                applyChatRestrictionUI(chatRestriction);
+                showChatRestrictionNotice(data?.reason || chatRestrictionMessage());
+                return;
+            }
+            if (data?.code === 'CHAT_RATE_LIMIT') {
+                const now = Date.now();
+                if (!window.__lastChatRateNoticeAt || now - window.__lastChatRateNoticeAt > 2500) {
+                    window.__lastChatRateNoticeAt = now;
+                    statusIndicator.textContent = data.reason || 'تم تهدئة الإرسال مؤقتًا...';
+                    setTimeout(() => {
+                        if (statusIndicator.textContent === (data.reason || 'تم تهدئة الإرسال مؤقتًا...')) statusIndicator.textContent = '';
+                    }, Math.max(1800, Number(data.retryAfterMs || 0)));
+                }
+                return;
+            }
             if (data?.reason) alert('❌ ' + data.reason);
         });
 

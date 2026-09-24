@@ -1803,7 +1803,7 @@
     <div id="platformBanModal" class="dashboard-modal-overlay">
         <div class="dashboard-modal-box">
             <div class="dashboard-modal-header">
-                <h3><i class="fa-solid fa-ban"></i> حظر على المنصة</h3>
+                <h3 id="platformBanModalTitle"><i class="fa-solid fa-ban"></i> حظر على المنصة</h3>
                 <button type="button" class="modal-close-btn" id="closePlatformBanBtn">✕</button>
             </div>
             <div id="platformBanTargetLabel" class="modal-target-label"></div>
@@ -1844,6 +1844,7 @@
         let permissionsCatalog = [];
         let reportTargetUser = null;
         let platformBanTargetUser = null;
+        let platformBanMode = 'full-freeze';
 
         const socket = io({ autoConnect: false });
 
@@ -2081,7 +2082,9 @@
                 });
             }
             if (welcomeSubtitle) {
-                welcomeSubtitle.textContent = myRole === 'owner'
+                welcomeSubtitle.textContent = data.chatRestricted
+                    ? 'تم منع التفاعل عن حسابك مؤقتاً أو دائماً — يمكنك قراءة واستلام الرسائل فقط.'
+                    : myRole === 'owner'
                     ? 'أنت مالك المنصة ولديك جميع صلاحيات الإدارة.'
                     : myRole === 'admin'
                         ? 'حساب إدارة مميز — الأدوات المتاحة تعتمد على الصلاحيات الممنوحة لك.'
@@ -2303,6 +2306,18 @@
             localStorage.removeItem('chat_role');
             sessionStorage.clear();
             window.location.replace('login.html');
+        });
+
+        socket.on('chat-restricted', data => {
+            showToast(data?.message || 'لقد تم حرمانك من هذه الوظيفة. يمكنك القراءة فقط.', 'error');
+        });
+
+        socket.on('chat-restriction-cleared', data => {
+            showToast(data?.message || 'تم رفع منع التفاعل عن حسابك.');
+            const subtitle = document.getElementById('welcomeSubtitle');
+            if (subtitle && savedUsername) subtitle.textContent = myRole === 'owner'
+                ? 'أنت مالك المنصة ولديك جميع صلاحيات الإدارة.'
+                : 'تواصل مع أصدقائك وشارِك لحظاتك بكل سهولة.';
         });
 
         socket.on('my-role-updated', data => {
@@ -2930,10 +2945,19 @@
         const platformBanType = document.getElementById('platformBanType');
         const platformBanDurationWrap = document.getElementById('platformBanDurationWrap');
 
-        function openPlatformBanModal(username, displayName) {
+        function openPlatformBanModal(username, displayName, mode = 'full-freeze') {
             if (!hasPermission('manage_platform_bans') || !username || username === 'tomi') return;
             platformBanTargetUser = username;
+            platformBanMode = mode === 'chat-readonly' ? 'chat-readonly' : 'full-freeze';
             document.getElementById('platformBanTargetLabel').textContent = `المستخدم: ${displayName || username} (@${username})`;
+            const title = document.getElementById('platformBanModalTitle');
+            if (title) title.innerHTML = platformBanMode === 'chat-readonly'
+                ? '<i class="fa-solid fa-comment-slash"></i> منع التفاعل — قراءة فقط'
+                : '<i class="fa-solid fa-ban"></i> تجميد كامل على المنصة';
+            const confirm = document.getElementById('confirmPlatformBanBtn');
+            if (confirm) confirm.innerHTML = platformBanMode === 'chat-readonly'
+                ? '<i class="fa-solid fa-comment-slash"></i> تنفيذ منع التفاعل'
+                : '<i class="fa-solid fa-ban"></i> تنفيذ التجميد';
             platformBanType.value = 'temporary';
             document.getElementById('platformBanDuration').value = '60';
             document.getElementById('platformBanReason').value = '';
@@ -2944,6 +2968,7 @@
         function closePlatformBanModal() {
             platformBanModal.style.display = 'none';
             platformBanTargetUser = null;
+            platformBanMode = 'full-freeze';
         }
 
         platformBanType?.addEventListener('change', () => {
@@ -2962,7 +2987,8 @@
                 targetUser: platformBanTargetUser,
                 duration,
                 reason,
-                isPermanent
+                isPermanent,
+                mode: platformBanMode
             });
         });
 
@@ -2972,7 +2998,7 @@
                 return;
             }
             closePlatformBanModal();
-            showToast(data.unbanned ? 'تم فك الحظر.' : 'تم حظر المستخدم على المنصة.');
+            showToast(data.unbanned ? 'تم فك الحظر.' : (data.mode === 'chat-readonly' ? 'تم منع التفاعل عن المستخدم.' : 'تم تجميد المستخدم على المنصة.'));
             if (canOpenAdmin()) loadAdminData();
         });
 
@@ -3253,6 +3279,12 @@
 
                 if (user.role !== 'owner' && hasPermission('manage_platform_bans')) {
                     if (user.isBanned) {
+                        const banMode = user.ban?.mode === 'chat-readonly' ? 'منع تفاعل' : 'تجميد كامل';
+                        const mode = document.createElement('span');
+                        mode.className = 'admin-user-meta';
+                        mode.textContent = 'الحالة: ' + banMode;
+                        mode.style.color = user.ban?.mode === 'chat-readonly' ? '#f6c85f' : '#ff7675';
+                        card.appendChild(mode);
                         const unban = document.createElement('button');
                         unban.className = 'btn-secondary';
                         unban.textContent = 'فك الحظر';
@@ -3264,6 +3296,13 @@
                         ban.textContent = 'حظر المنصة';
                         ban.addEventListener('click', () => openPlatformBanModal(user.username, user.displayName || user.username));
                         actions.appendChild(ban);
+
+                        const chatBan = document.createElement('button');
+                        chatBan.className = 'btn-secondary';
+                        chatBan.textContent = 'منع التفاعل';
+                        chatBan.title = 'يسمح بالدخول وقراءة الرسائل فقط';
+                        chatBan.addEventListener('click', () => openPlatformBanModal(user.username, user.displayName || user.username, 'chat-readonly'));
+                        actions.appendChild(chatBan);
                     }
                 }
 
@@ -3463,9 +3502,10 @@
                 title.textContent = '@' + (ban.username || ban.targetUser);
                 const meta = document.createElement('div');
                 meta.className = 'ban-meta';
-                meta.textContent = ban.isPermanent
-                    ? `حظر دائم • بواسطة ${ban.bannedBy || '-'}`
-                    : `حظر مؤقت حتى ${ban.expiresAt ? new Date(ban.expiresAt).toLocaleString() : '-'} • بواسطة ${ban.bannedBy || '-'}`;
+                const modeLabel = ban.mode === 'chat-readonly' ? 'منع تفاعل (قراءة فقط)' : 'تجميد كامل';
+                meta.textContent = `${modeLabel} • ` + (ban.isPermanent
+                    ? `دائم • بواسطة ${ban.bannedBy || '-'}`
+                    : `مؤقت حتى ${ban.expiresAt ? new Date(ban.expiresAt).toLocaleString() : '-'} • بواسطة ${ban.bannedBy || '-'}`);
                 info.appendChild(title);
                 info.appendChild(meta);
 

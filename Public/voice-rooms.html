@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#0f0e19">
   <title>TOMI - الغرف الصوتية</title>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
-  <link rel="stylesheet" href="voice-rooms.css?v=20260922-frame-fix1">
+  <link rel="stylesheet" href="voice-rooms.css?v=20260923-voice-fix1">
   <script src="/analytics-client.js" defer></script>
 </head>
 <body>
@@ -485,7 +485,12 @@
 
     async function startMic(){
       if(localMicStream) return localMicStream;
-      localMicStream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true},video:false});
+      if(!navigator.mediaDevices?.getUserMedia) throw new Error('المتصفح لا يدعم الميكروفون');
+      try{
+        localMicStream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true,channelCount:1},video:false});
+      }catch(_){
+        localMicStream=await navigator.mediaDevices.getUserMedia({audio:true,video:false});
+      }
       serverMuted=false; await updateOutgoingTracks(); updateMicButton(); return localMicStream;
     }
     function stopMic(){ localMicStream?.getTracks().forEach(t=>t.stop()); localMicStream=null; serverMuted=false; updateOutgoingTracks(); updateMicButton(); }
@@ -553,7 +558,15 @@
         if(!a){a=document.createElement('audio');a.id='voice-audio-'+peer;a.autoplay=true;a.playsInline=true;a.muted=!listeningEnabled;$('remoteAudios').appendChild(a);}
         a.srcObject=e.streams[0]||new MediaStream([e.track]); a.play().catch(()=>{});
       };
-      pc.onconnectionstatechange=()=>{if(['failed','closed'].includes(pc.connectionState))closePeer(peer);};
+      pc.onconnectionstatechange=()=>{
+        if(pc.connectionState==='failed'){
+          try{pc.restartIce?.();}catch(_){ }
+          setTimeout(()=>{if(peers.get(peer)?.pc===pc&&pc.connectionState==='failed')closePeer(peer);},5000);
+        }else if(pc.connectionState==='closed') closePeer(peer);
+      };
+      pc.oniceconnectionstatechange=()=>{
+        if(pc.iceConnectionState==='disconnected') setTimeout(()=>{try{pc.restartIce?.();}catch(_){ }},900);
+      };
       peers.set(peer,{pc,transceiver,makingOffer:false,ignoreOffer:false,polite:me.username.localeCompare(peer)>0}); return peers.get(peer);
     }
     async function ensurePeer(peer,offer=false){ if(!peer||peer===me.username)return null; const obj=peers.get(peer)||makePc(peer); if(offer)await makeOffer(peer); return obj; }

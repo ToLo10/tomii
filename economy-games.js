@@ -28,6 +28,8 @@ const ROULETTE_HISTORY_LIMIT = 8;
 const ROULETTE_DAILY_PRIZES = Object.freeze([2_000, 1_000, 500]);
 const ROULETTE_SALAD_MIN_DELAY_MS = 2 * 60 * 60 * 1000;
 const ROULETTE_SALAD_MAX_DELAY_MS = 6 * 60 * 60 * 1000;
+const KING_GIFT_ITEM_ID = "gift_king";
+const KING_GIFT_LUCKY_REWARD_ID = "gift_king_lucky_reward";
 
 function randomRouletteSaladDelayMs() {
   return crypto.randomInt(ROULETTE_SALAD_MIN_DELAY_MS, ROULETTE_SALAD_MAX_DELAY_MS + 1);
@@ -114,8 +116,115 @@ const GAME_SPECS = Object.freeze({
     allowedPlayers: [2, 4],
     maxValue: 13,
     actionLabel: "أرسل الورقة"
+  },
+  quiz: {
+    id: "quiz",
+    name: "تحدي الأسئلة",
+    description: "أسئلة عشوائية بين 2 و8 لاعبين مع وقت ونقاط.",
+    icon: "fa-circle-question",
+    action: "quiz",
+    advanced: "quiz",
+    allowedPlayers: [2, 3, 4, 5, 6, 7, 8],
+    actionLabel: "اختَر الإجابة",
+    roundTimeMs: 15_000
+  },
+  snakes_ladders: {
+    id: "snakes_ladders",
+    name: "السلم والأفعى",
+    description: "ارمِ النرد واصعد السلالم، لكن انتبه من الأفاعي.",
+    icon: "fa-stairs",
+    action: "roll",
+    advanced: "snakes_ladders",
+    allowedPlayers: [2, 3, 4],
+    actionLabel: "ارمِ النرد",
+    turnTimeMs: 30_000
+  },
+  dominoes: {
+    id: "dominoes",
+    name: "دومنة",
+    description: "دومنة TOMI بين لاعبين أو أربعة لاعبين مع سحب وتمرير ذكي.",
+    icon: "fa-table-cells-large",
+    action: "domino",
+    advanced: "dominoes",
+    allowedPlayers: [2, 4],
+    actionLabel: "ضع حجر الدومنة",
+    turnTimeMs: 30_000
+  },
+  uno: {
+    id: "uno",
+    name: "UNO",
+    description: "لعبة UNO سريعة بين 2 و8 لاعبين مع بطاقات خاصة وتزامن مباشر.",
+    icon: "fa-layer-group",
+    action: "uno",
+    advanced: "uno",
+    allowedPlayers: [2, 3, 4, 5, 6, 7, 8],
+    actionLabel: "العب البطاقة",
+    turnTimeMs: 30_000
+  },
+  jackaroo: {
+    id: "jackaroo",
+    name: "توميرو",
+    description: "توميرو بين لاعبين أو أربعة لاعبين، مع كرات وبطاقات خاصة.",
+    icon: "fa-chess-board",
+    action: "jackaroo",
+    advanced: "jackaroo",
+    allowedPlayers: [2, 4],
+    actionLabel: "العب البطاقة",
+    turnTimeMs: 15_000
   }
 });
+
+const QUIZ_ROUND_TIME_MS = 15_000;
+const QUIZ_RESULT_TIME_MS = 3_500;
+const SNAKES_TURN_TIME_MS = 30_000;
+const SNAKES_BOARD_SIZE = 100;
+const DOMINO_TURN_TIME_MS = 30_000;
+const DOMINO_HAND_SIZE = 7;
+const DOMINO_MAX_PIP = 6;
+const UNO_TURN_TIME_MS = 30_000;
+const UNO_HAND_SIZE = 7;
+const UNO_COLORS = Object.freeze(["red", "yellow", "green", "blue"]);
+const UNO_COLOR_LABELS = Object.freeze({ red: "أحمر", yellow: "أصفر", green: "أخضر", blue: "أزرق" });
+const UNO_COLOR_HEX = Object.freeze({ red: "#ef476f", yellow: "#f8c537", green: "#18b77a", blue: "#3f8cff" });
+const JACKAROO_TURN_TIME_MS = 15_000;
+const JACKAROO_HAND_SIZE = 4;
+const JACKAROO_BOARD_SIZE = 52;
+const JACKAROO_HOME_PROGRESS = 52;
+const JACKAROO_SUITS = Object.freeze(["hearts", "diamonds", "clubs", "spades"]);
+const JACKAROO_SUIT_LABELS = Object.freeze({ hearts: "قلوب", diamonds: "ماس", clubs: "نوادي", spades: "بستوني" });
+const JACKAROO_SUIT_SYMBOLS = Object.freeze({ hearts: "♥", diamonds: "♦", clubs: "♣", spades: "♠" });
+const JACKAROO_RANKS = Object.freeze(["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]);
+const JACKAROO_CARD_MOVES = Object.freeze({ A: 1, 2: 2, 3: 3, 4: -4, 5: 5, 6: 6, 7: 7, 8: 8, 9: 9, 10: 10, J: 11, Q: 12, K: 13 });
+const SNAKES_LADDERS = Object.freeze({
+  4: 14, 9: 31, 20: 38, 28: 84, 40: 59, 51: 67, 63: 81, 71: 91,
+  17: 7, 54: 34, 62: 19, 64: 60, 87: 24, 93: 73, 95: 75, 99: 78
+});
+
+// Questions stay on the server so clients cannot inspect the answer before
+// submitting. The bank is intentionally mixed and can later be moved to an
+// owner-managed MongoDB collection without changing the room protocol.
+const QUIZ_QUESTIONS = Object.freeze([
+  { id: "iq-capital", category: "عام", question: "ما عاصمة العراق؟", options: ["بغداد", "البصرة", "الموصل", "أربيل"], answer: 0 },
+  { id: "planet-red", category: "علوم", question: "أي كوكب يُعرف بالكوكب الأحمر؟", options: ["الزهرة", "المريخ", "المشتري", "عطارد"], answer: 1 },
+  { id: "water-formula", category: "علوم", question: "ما الصيغة الكيميائية للماء؟", options: ["CO2", "O2", "H2O", "NaCl"], answer: 2 },
+  { id: "week-days", category: "معلومات", question: "كم عدد أيام الأسبوع؟", options: ["5", "6", "7", "8"], answer: 2 },
+  { id: "largest-ocean", category: "جغرافية", question: "ما أكبر محيط على الأرض؟", options: ["الأطلسي", "الهندي", "المتجمد", "الهادئ"], answer: 3 },
+  { id: "arabic-letters", category: "لغة", question: "كم عدد حروف اللغة العربية؟", options: ["26", "28", "29", "30"], answer: 1 },
+  { id: "light-speed", category: "علوم", question: "أيٌّ من الآتي أسرع؟", options: ["الصوت", "الضوء", "الرياح", "السيارة"], answer: 1 },
+  { id: "iraq-river", category: "جغرافية", question: "أي نهر يمر بمدينة بغداد؟", options: ["دجلة", "النيل", "الفرات فقط", "الأردن"], answer: 0 },
+  { id: "month-days", category: "معلومات", question: "كم يوماً يكون الشهر غالباً؟", options: ["20", "28 أو 29 أو 30 أو 31", "35", "40"], answer: 1 },
+  { id: "first-number", category: "رياضيات", question: "ما أول عدد أولي؟", options: ["0", "1", "2", "3"], answer: 2 },
+  { id: "continents", category: "جغرافية", question: "كم عدد قارات العالم؟", options: ["5", "6", "7", "8"], answer: 2 },
+  { id: "cpu", category: "تقنية", question: "ما وظيفة المعالج في الحاسوب؟", options: ["تنفيذ التعليمات", "طباعة الأوراق", "تخزين الكهرباء", "تبريد الشاشة"], answer: 0 },
+  { id: "html", category: "تقنية", question: "ما الذي تُستخدم له HTML غالباً؟", options: ["بناء هيكل الصفحة", "تشفير القرص", "إدارة الشبكة", "ضغط الفيديو"], answer: 0 },
+  { id: "triangle", category: "رياضيات", question: "كم ضلعاً للمثلث؟", options: ["2", "3", "4", "5"], answer: 1 },
+  { id: "sun", category: "علوم", question: "الشمس تُعد ماذا؟", options: ["كوكباً", "قمراً", "نجماً", "مذنباً"], answer: 2 },
+  { id: "iraq-currency", category: "معلومات", question: "ما عملة العراق؟", options: ["الدينار العراقي", "الريال", "الليرة", "الدرهم"], answer: 0 },
+  { id: "square", category: "رياضيات", question: "كم زاوية قائمة للمربع؟", options: ["2", "3", "4", "5"], answer: 2 },
+  { id: "web-protocol", category: "تقنية", question: "ما البروتوكول المستخدم غالباً لتصفح المواقع؟", options: ["HTTP", "FTP فقط", "SMTP", "GPS"], answer: 0 },
+  { id: "largest-land", category: "جغرافية", question: "ما أكبر قارة من حيث المساحة؟", options: ["أفريقيا", "آسيا", "أوروبا", "أستراليا"], answer: 1 },
+  { id: "healthy", category: "معلومات", question: "أي خيار يُعد عادةً مصدراً جيداً للألياف؟", options: ["الخضراوات", "الماء فقط", "السكر", "الملح"], answer: 0 }
+]);
 
 const RPS_BEATS = Object.freeze({
   حجر: "مقص",
@@ -175,6 +284,245 @@ function clampText(value, max = 120) {
   return String(value == null ? "" : value).trim().slice(0, max);
 }
 
+function quizQuestionForPublic(question) {
+  if (!question) return null;
+  return {
+    id: question.id,
+    category: question.category,
+    question: question.question,
+    options: Array.isArray(question.options) ? question.options.slice() : []
+  };
+}
+
+function quizScoreMap(room) {
+  const scores = room?.quiz?.scores && typeof room.quiz.scores === "object" ? room.quiz.scores : {};
+  return Object.fromEntries((room?.players || []).map(username => [username, Math.max(0, integer(scores[username], 0))]));
+}
+
+function snakesPositions(room) {
+  const positions = room?.snakes?.positions && typeof room.snakes.positions === "object" ? room.snakes.positions : {};
+  return Object.fromEntries((room?.players || []).map(username => [username, Math.max(1, Math.min(SNAKES_BOARD_SIZE, integer(positions[username], 1)))]));
+}
+
+function dominoTilePublic(tile) {
+  if (!tile || !Number.isInteger(Number(tile.a)) || !Number.isInteger(Number(tile.b))) return null;
+  const a = Math.max(0, Math.min(DOMINO_MAX_PIP, integer(tile.a, 0)));
+  const b = Math.max(0, Math.min(DOMINO_MAX_PIP, integer(tile.b, 0)));
+  return { id: String(tile.id || `${a}-${b}`), a, b };
+}
+
+function dominoTilePips(tile) {
+  return Math.max(0, integer(tile?.a, 0)) + Math.max(0, integer(tile?.b, 0));
+}
+
+function createDominoTiles() {
+  const tiles = [];
+  for (let a = 0; a <= DOMINO_MAX_PIP; a += 1) {
+    for (let b = a; b <= DOMINO_MAX_PIP; b += 1) {
+      tiles.push({ id: `${a}-${b}`, a, b });
+    }
+  }
+  return tiles;
+}
+
+function shuffledDominoTiles() {
+  const tiles = createDominoTiles();
+  for (let index = tiles.length - 1; index > 0; index -= 1) {
+    const swapIndex = crypto.randomInt(0, index + 1);
+    [tiles[index], tiles[swapIndex]] = [tiles[swapIndex], tiles[index]];
+  }
+  return tiles;
+}
+
+function dominoTileSides(tile, leftEnd, rightEnd) {
+  if (!tile) return [];
+  const sides = [];
+  if (leftEnd == null || tile.a === leftEnd || tile.b === leftEnd) sides.push("left");
+  if (rightEnd == null || tile.a === rightEnd || tile.b === rightEnd) sides.push("right");
+  return sides;
+}
+
+function dominoLegalMoves(room, username) {
+  const state = room?.domino;
+  const hand = Array.isArray(state?.hands?.[username]) ? state.hands[username] : [];
+  if (!state || room?.status !== "playing" || room.players?.[integer(state.currentTurn, 0)] !== username) return [];
+  return hand.flatMap(tile => dominoTileSides(tile, state.leftEnd, state.rightEnd).map(side => ({ tile, side })));
+}
+
+function dominoHandPips(room) {
+  const state = room?.domino;
+  return Object.fromEntries((room?.players || []).map(username => [
+    username,
+    (Array.isArray(state?.hands?.[username]) ? state.hands[username] : []).reduce((total, tile) => total + dominoTilePips(tile), 0)
+  ]));
+}
+
+function unoCardPublic(card) {
+  if (!card || !card.id) return null;
+  return {
+    id: String(card.id),
+    color: UNO_COLORS.includes(card.color) ? card.color : "wild",
+    kind: String(card.kind || "number"),
+    value: Number.isInteger(card.value) ? card.value : null,
+    label: String(card.label || card.kind || "")
+  };
+}
+
+function unoCardPoints(card) {
+  if (!card) return 0;
+  if (card.kind === "number") return Math.max(0, integer(card.value, 0));
+  if (["wild", "wild_draw4"].includes(card.kind)) return 50;
+  return 20;
+}
+
+function createUnoDeck() {
+  const deck = [];
+  const add = (color, kind, value, copy, label) => deck.push({ id: `${color}-${kind}-${value ?? "x"}-${copy}`, color, kind, value, label });
+  for (const color of UNO_COLORS) {
+    add(color, "number", 0, 0, "0");
+    for (let value = 1; value <= 9; value += 1) {
+      add(color, "number", value, 0, String(value));
+      add(color, "number", value, 1, String(value));
+    }
+    for (const kind of ["skip", "reverse", "draw2"]) {
+      const label = kind === "skip" ? "skip" : kind === "reverse" ? "reverse" : "draw2";
+      add(color, kind, null, 0, label);
+      add(color, kind, null, 1, label);
+    }
+  }
+  for (let copy = 0; copy < 4; copy += 1) {
+    add("wild", "wild", null, copy, "wild");
+    add("wild", "wild_draw4", null, copy, "wild_draw4");
+  }
+  return deck;
+}
+
+function shuffledUnoDeck() {
+  const deck = createUnoDeck();
+  for (let index = deck.length - 1; index > 0; index -= 1) {
+    const swapIndex = crypto.randomInt(0, index + 1);
+    [deck[index], deck[swapIndex]] = [deck[swapIndex], deck[index]];
+  }
+  return deck;
+}
+
+function unoCardCanPlay(card, state, hand = []) {
+  if (!card || !state || state.pendingDraw > 0) return false;
+  const top = state.discard?.[state.discard.length - 1] || null;
+  if (card.kind === "wild") return true;
+  if (card.kind === "wild_draw4") {
+    return !hand.some(other => other.color === state.currentColor && other.color !== "wild");
+  }
+  const sameColor = card.color !== "wild" && card.color === state.currentColor;
+  const sameNumber = card.kind === "number"
+    && top?.kind === "number"
+    && Number(card.value) === Number(top.value);
+  const actionKinds = new Set(["skip", "reverse", "draw2"]);
+  const sameAction = top?.color !== "wild"
+    && actionKinds.has(card.kind)
+    && card.kind === top?.kind;
+  return Boolean(sameColor || sameNumber || sameAction);
+}
+
+function unoLegalCards(room, username) {
+  const state = room?.uno;
+  const hand = Array.isArray(state?.hands?.[username]) ? state.hands[username] : [];
+  if (!state || room?.status !== "playing" || room.players?.[integer(state.currentTurn, 0)] !== username || state.pendingDraw > 0) return [];
+  return hand.filter(card => unoCardCanPlay(card, state, hand));
+}
+
+function unoHandPoints(room) {
+  const state = room?.uno;
+  return Object.fromEntries((room?.players || []).map(username => [
+    username,
+    (Array.isArray(state?.hands?.[username]) ? state.hands[username] : []).reduce((total, card) => total + unoCardPoints(card), 0)
+  ]));
+}
+
+function jackarooCardPublic(card) {
+  if (!card || !card.id || !JACKAROO_SUITS.includes(card.suit) || !JACKAROO_RANKS.includes(card.rank)) return null;
+  return {
+    id: String(card.id),
+    suit: card.suit,
+    suitLabel: JACKAROO_SUIT_LABELS[card.suit] || card.suit,
+    symbol: JACKAROO_SUIT_SYMBOLS[card.suit] || "",
+    rank: card.rank,
+    label: `${card.rank}${JACKAROO_SUIT_SYMBOLS[card.suit] || ""}`
+  };
+}
+
+function createJackarooDeck() {
+  const deck = [];
+  for (const suit of JACKAROO_SUITS) {
+    for (const rank of JACKAROO_RANKS) {
+      deck.push({ id: `${suit}-${rank}`, suit, rank });
+    }
+  }
+  return deck;
+}
+
+function shuffledJackarooDeck() {
+  const deck = createJackarooDeck();
+  for (let index = deck.length - 1; index > 0; index -= 1) {
+    const swapIndex = crypto.randomInt(0, index + 1);
+    [deck[index], deck[swapIndex]] = [deck[swapIndex], deck[index]];
+  }
+  return deck;
+}
+
+function jackarooCardMove(card) {
+  return JACKAROO_CARD_MOVES[card?.rank] ?? null;
+}
+
+function jackarooTeamFor(room, username) {
+  if (room?.jackaroo?.teams?.team1?.includes(username)) return "team1";
+  if (room?.jackaroo?.teams?.team2?.includes(username)) return "team2";
+  return null;
+}
+
+function jackarooPlayerIndex(room, username) {
+  if (!Array.isArray(room?.players)) return -1;
+  const index = room.players.indexOf(username);
+  if (index < 0) return -1;
+  // With two players, place them opposite each other on the 52-cell track
+  // (0 and 26). Four-player games keep the original quartered layout.
+  return room.players.length === 2 ? index * 2 : index;
+}
+
+function jackarooCellFor(room, username, progress) {
+  const numericProgress = integer(progress, -1);
+  if (numericProgress < 0 || numericProgress >= JACKAROO_HOME_PROGRESS) return null;
+  const index = jackarooPlayerIndex(room, username);
+  if (index < 0) return null;
+  return (index * (JACKAROO_BOARD_SIZE / 4) + numericProgress) % JACKAROO_BOARD_SIZE;
+}
+
+function jackarooLegalMoves(room, username) {
+  const state = room?.jackaroo;
+  const hand = Array.isArray(state?.hands?.[username]) ? state.hands[username] : [];
+  if (!state || room?.status !== "playing" || room.players?.[integer(state.currentTurn, 0)] !== username) return [];
+  const marbles = Array.isArray(state.marbles?.[username]) ? state.marbles[username] : [];
+  const moves = [];
+  for (const card of hand) {
+    const steps = jackarooCardMove(card);
+    if (steps == null) continue;
+    for (const marble of marbles) {
+      const progress = integer(marble.progress, -1);
+      if (progress === JACKAROO_HOME_PROGRESS) continue;
+      if (progress < 0) {
+        if (["A", "K"].includes(card.rank)) {
+          moves.push({ card, marbleId: marble.id, mode: "start", steps: 1, from: -1, to: 0 });
+        }
+        continue;
+      }
+      const next = progress + steps;
+      if (next < 0 || next > JACKAROO_HOME_PROGRESS) continue;
+      moves.push({ card, marbleId: marble.id, mode: next === JACKAROO_HOME_PROGRESS ? "home" : "move", steps, from: progress, to: next });
+    }
+  }
+  return moves;
+}
+
 function dailyDateKey(date = new Date()) {
   try {
     const parts = new Intl.DateTimeFormat("en-CA", {
@@ -202,6 +550,10 @@ function ensureEconomyState(db) {
   }
   if (!db.gameInvites || typeof db.gameInvites !== "object" || Array.isArray(db.gameInvites)) {
     db.gameInvites = {};
+    changed = true;
+  }
+  if (!db.giftStats || typeof db.giftStats !== "object" || Array.isArray(db.giftStats)) {
+    db.giftStats = {};
     changed = true;
   }
   if (!Array.isArray(db.rouletteRounds)) {
@@ -333,12 +685,32 @@ function publicItem(item) {
     frameId: item.frameId || null,
     frameUrl: item.frameUrl || "",
     animated: Boolean(item.animated),
+    metadata: item.metadata && typeof item.metadata === "object" ? item.metadata : {},
     charismaValue: item.type === "gift" ? Math.max(1, integer(item.charismaValue, Math.max(1, Math.ceil(integer(item.price) / 5)))) : 0,
     stock: item.stock == null ? null : Math.max(0, integer(item.stock)),
     sold: Math.max(0, integer(item.sold)),
     createdAt: item.createdAt || null,
     updatedAt: item.updatedAt || null
   };
+}
+
+// Gift jackpot totals are intentionally public, while the King Gift's secret
+// number is kept on the server-only item record and is never included here.
+function publicShopItem(item, db, { includeAdmin = false } = {}) {
+  const result = publicItem(item);
+  if (!result) return null;
+  if (item.type === "gift") {
+    const stats = db?.giftStats?.[item.itemId] || {};
+    result.jackpotAmount = Math.max(0, integer(stats.coinsSpent, 0));
+    result.jackpotPurchases = Math.max(0, integer(stats.purchases, 0));
+    result.jackpotUpdatedAt = stats.updatedAt || null;
+    result.jackpotLastWonAt = stats.lastWonAt || null;
+  }
+  if (includeAdmin && item.itemId === KING_GIFT_ITEM_ID) {
+    // This field is sent only from the owner-only admin endpoint.
+    result.kingSecretNumber = Math.max(1, integer(item.kingSecretNumber, 1));
+  }
+  return result;
 }
 
 function publicInventoryEntry(entry, items) {
@@ -349,6 +721,7 @@ function publicInventoryEntry(entry, items) {
     type: entry?.type || item?.type || "custom",
     name: entry?.name || item?.name || "عنصر",
     description: entry?.description || item?.description || "",
+    price: Math.max(0, integer(entry?.price ?? item?.price, 0)),
     icon: entry?.icon || item?.icon || "fa-gift",
     imageUrl: entry?.imageUrl || item?.imageUrl || "",
     frameId: entry?.frameId || item?.frameId || null,
@@ -374,7 +747,9 @@ function publicGiftTransfer(entry) {
     fromUsername: entry?.fromUsername || "",
     toUsername: entry?.toUsername || "",
     charismaValue: Math.max(1, integer(entry?.charismaValue, 1)),
-    sentAt: entry?.sentAt || null
+    sentAt: entry?.sentAt || null,
+    price: Math.max(0, integer(entry?.price, 0)),
+    metadata: entry?.metadata && typeof entry.metadata === "object" ? entry.metadata : {}
   };
 }
 
@@ -396,11 +771,792 @@ function registerEconomyGames({
   const gameRate = new Map();
   let activeRouletteRound = null;
   let rouletteTimer = null;
+  let advancedGamesTimer = null;
 
   function dbState() {
     const db = getDb();
     ensureEconomyState(db);
     return db;
+  }
+
+  function isAdvancedRoom(room) {
+    return room?.gameType === "quiz" || room?.gameType === "snakes_ladders" || room?.gameType === "dominoes" || room?.gameType === "uno" || room?.gameType === "jackaroo";
+  }
+
+  function resetAdvancedRoom(room, { keepRoster = true } = {}) {
+    if (!room || !isAdvancedRoom(room)) return;
+    room.quiz = null;
+    room.snakes = null;
+    room.domino = null;
+    room.uno = null;
+    room.jackaroo = null;
+    room.lastResult = null;
+    room.round = 1;
+    room.status = keepRoster && room.players.length >= 2 ? "ready" : "waiting";
+    room.updatedAt = isoNow();
+  }
+
+  function startDominoRound(room) {
+    if (!room || room.gameType !== "dominoes" || !Array.isArray(room.players) || ![2, 4].includes(room.players.length)) return false;
+    const deck = shuffledDominoTiles();
+    const hands = Object.fromEntries(room.players.map(username => [username, deck.splice(0, DOMINO_HAND_SIZE)]));
+    let starterIndex = 0;
+    let starterTile = null;
+    let bestScore = -1;
+    room.players.forEach((username, playerIndex) => {
+      for (const tile of hands[username]) {
+        const score = tile.a === tile.b ? 100 + tile.a : tile.a + tile.b;
+        if (score > bestScore) {
+          bestScore = score;
+          starterIndex = playerIndex;
+          starterTile = tile;
+        }
+      }
+    });
+    if (!starterTile) return false;
+    const starterHand = hands[room.players[starterIndex]];
+    const starterTileIndex = starterHand.findIndex(tile => tile.id === starterTile.id);
+    starterHand.splice(starterTileIndex, 1);
+    const firstTile = { ...starterTile };
+    room.domino = {
+      hands,
+      boneyard: deck,
+      board: [firstTile],
+      leftEnd: firstTile.a,
+      rightEnd: firstTile.b,
+      currentTurn: (starterIndex + 1) % room.players.length,
+      turnDeadlineAt: Date.now() + DOMINO_TURN_TIME_MS,
+      lastMove: {
+        type: "start",
+        player: room.players[starterIndex],
+        tile: dominoTilePublic(firstTile),
+        automatic: true,
+        createdAt: isoNow()
+      },
+      winner: null,
+      winners: [],
+      passStreak: 0,
+      scores: Object.fromEntries(room.players.map(username => [username, 0]))
+    };
+    room.lastResult = null;
+    room.round = 1;
+    room.status = "playing";
+    room.updatedAt = isoNow();
+    return true;
+  }
+
+  function finishDominoRound(room, { blocked = false, winner = null } = {}) {
+    const state = room?.domino;
+    if (!room || room.gameType !== "dominoes" || !state || room.status !== "playing") return null;
+    const handPips = dominoHandPips(room);
+    const winners = winner
+      ? [winner]
+      : (() => {
+        const lowest = Math.min(...room.players.map(username => handPips[username]));
+        return room.players.filter(username => handPips[username] === lowest);
+      })();
+    const primaryWinner = winners[0] || null;
+    const awardPool = primaryWinner
+      ? room.players.filter(username => !winners.includes(username)).reduce((total, username) => total + handPips[username], 0)
+      : 0;
+    const award = winners.length ? Math.floor(awardPool / winners.length) : 0;
+    winners.forEach(username => {
+      state.scores[username] = Math.max(0, integer(state.scores?.[username], 0)) + award;
+    });
+    state.winner = primaryWinner;
+    state.winners = winners;
+    state.turnDeadlineAt = null;
+    state.passStreak = 0;
+    const result = {
+      gameType: "dominoes",
+      type: blocked ? "blocked" : "winner",
+      round: room.round,
+      winner: primaryWinner,
+      winners,
+      award,
+      handPips,
+      scores: Object.fromEntries(room.players.map(username => [username, Math.max(0, integer(state.scores?.[username], 0))])),
+      createdAt: isoNow()
+    };
+    room.lastResult = result;
+    room.round = integer(room.round, 1) + 1;
+    room.status = "finished";
+    room.updatedAt = isoNow();
+    return result;
+  }
+
+  function advanceDominoTurn(room, actor) {
+    const state = room.domino;
+    const currentIndex = Math.max(0, Math.min(room.players.length - 1, integer(state.currentTurn, 0)));
+    state.passStreak = Math.max(0, integer(state.passStreak, 0)) + 1;
+    if (state.passStreak >= room.players.length) return finishDominoRound(room, { blocked: true });
+    state.currentTurn = (currentIndex + 1) % room.players.length;
+    state.turnDeadlineAt = Date.now() + DOMINO_TURN_TIME_MS;
+    state.lastMove = {
+      type: "pass",
+      player: actor,
+      automatic: false,
+      createdAt: isoNow()
+    };
+    room.updatedAt = isoNow();
+    return state.lastMove;
+  }
+
+  function orientDominoTile(tile, side, leftEnd, rightEnd) {
+    if (side === "left") {
+      return tile.a === leftEnd ? { ...tile, a: tile.b, b: tile.a } : { ...tile };
+    }
+    return tile.a === rightEnd ? { ...tile } : { ...tile, a: tile.b, b: tile.a };
+  }
+
+  function applyDominoAction(room, actor, { action, tileId, side, automatic = false } = {}) {
+    const state = room?.domino;
+    if (!room || room.gameType !== "dominoes" || room.status !== "playing" || !state) return { ok: false, error: "لا توجد جولة دومنة مفتوحة حالياً" };
+    const currentIndex = Math.max(0, Math.min(room.players.length - 1, integer(state.currentTurn, 0)));
+    const expected = room.players[currentIndex];
+    if (actor !== expected) return { ok: false, error: "انتظر دورك في الدومنة" };
+    const hand = Array.isArray(state.hands?.[actor]) ? state.hands[actor] : [];
+    const legalMoves = dominoLegalMoves(room, actor);
+    if (action === "play") {
+      const tileIndex = hand.findIndex(tile => String(tile.id) === String(tileId));
+      if (tileIndex < 0) return { ok: false, error: "هذا الحجر غير موجود في يدك" };
+      const tile = hand[tileIndex];
+      const sides = dominoTileSides(tile, state.leftEnd, state.rightEnd);
+      const selectedSide = sides.includes(side) ? side : (automatic ? sides[0] : null);
+      if (!selectedSide) return { ok: false, error: "لا يمكن وضع هذا الحجر على الجهة المختارة" };
+      const oriented = orientDominoTile(tile, selectedSide, state.leftEnd, state.rightEnd);
+      hand.splice(tileIndex, 1);
+      if (selectedSide === "left") {
+        state.board.unshift(oriented);
+        state.leftEnd = oriented.a;
+      } else {
+        state.board.push(oriented);
+        state.rightEnd = oriented.b;
+      }
+      state.passStreak = 0;
+      state.lastMove = {
+        type: "play",
+        player: actor,
+        tile: dominoTilePublic(oriented),
+        side: selectedSide,
+        automatic: Boolean(automatic),
+        createdAt: isoNow()
+      };
+      if (!hand.length) {
+        const result = finishDominoRound(room, { winner: actor });
+        return { ok: true, result: result || state.lastMove };
+      }
+      state.currentTurn = (currentIndex + 1) % room.players.length;
+      state.turnDeadlineAt = Date.now() + DOMINO_TURN_TIME_MS;
+      room.updatedAt = isoNow();
+      return { ok: true, result: state.lastMove };
+    }
+    if (action === "draw") {
+      if (legalMoves.length) return { ok: false, error: "لديك حجر قابل للعب؛ اختره أولاً" };
+      if (state.boneyard.length) {
+        const drawn = state.boneyard.shift();
+        hand.push(drawn);
+        state.lastMove = { type: "draw", player: actor, tile: dominoTilePublic(drawn), automatic: Boolean(automatic), createdAt: isoNow() };
+        state.turnDeadlineAt = Date.now() + DOMINO_TURN_TIME_MS;
+        if (!dominoLegalMoves(room, actor).length && !state.boneyard.length) {
+          const passResult = advanceDominoTurn(room, actor);
+          return { ok: true, result: passResult || state.lastMove };
+        }
+        room.updatedAt = isoNow();
+        return { ok: true, result: state.lastMove };
+      }
+      if (dominoLegalMoves(room, actor).length) return { ok: false, error: "لديك حجر قابل للعب؛ اختره أولاً" };
+      const passResult = advanceDominoTurn(room, actor);
+      return { ok: true, result: passResult || state.lastMove };
+    }
+    if (action === "pass") {
+      if (legalMoves.length) return { ok: false, error: "لا يمكنك التمرير ما دام لديك حجر صالح" };
+      if (state.boneyard.length) return { ok: false, error: "اسحب حجراً من المخزون أولاً" };
+      const passResult = advanceDominoTurn(room, actor);
+      return { ok: true, result: passResult || state.lastMove };
+    }
+    return { ok: false, error: "حركة الدومنة غير صالحة" };
+  }
+
+  function dominoAutomaticAction(room) {
+    const actor = room.players[Math.max(0, Math.min(room.players.length - 1, integer(room.domino?.currentTurn, 0)))];
+    const moves = dominoLegalMoves(room, actor);
+    if (moves.length) return applyDominoAction(room, actor, { action: "play", tileId: moves[0].tile.id, side: moves[0].side, automatic: true });
+    if (room.domino?.boneyard?.length) return applyDominoAction(room, actor, { action: "draw", automatic: true });
+    return applyDominoAction(room, actor, { action: "pass", automatic: true });
+  }
+
+  function refillUnoDeck(state) {
+    if (!state || state.deck.length || state.discard.length <= 1) return;
+    const top = state.discard.pop();
+    const refill = state.discard.splice(0);
+    for (let index = refill.length - 1; index > 0; index -= 1) {
+      const swapIndex = crypto.randomInt(0, index + 1);
+      [refill[index], refill[swapIndex]] = [refill[swapIndex], refill[index]];
+    }
+    state.deck = refill;
+    state.discard = [top];
+  }
+
+  function drawUnoCards(state, count) {
+    const drawn = [];
+    for (let index = 0; index < count; index += 1) {
+      refillUnoDeck(state);
+      if (!state.deck.length) break;
+      drawn.push(state.deck.shift());
+    }
+    return drawn;
+  }
+
+  function startUnoRound(room) {
+    if (!room || room.gameType !== "uno" || !Array.isArray(room.players) || room.players.length < 2 || room.players.length > 8) return false;
+    const previousScores = room.uno?.scores && typeof room.uno.scores === "object" ? room.uno.scores : {};
+    const deck = shuffledUnoDeck();
+    const hands = Object.fromEntries(room.players.map(username => [username, deck.splice(0, UNO_HAND_SIZE)]));
+    const firstIndex = Math.max(0, deck.findIndex(card => card.kind === "number"));
+    const firstCard = deck.splice(firstIndex, 1)[0] || deck.shift();
+    if (!firstCard) return false;
+    room.uno = {
+      deck,
+      discard: [firstCard],
+      hands,
+      currentTurn: crypto.randomInt(0, room.players.length),
+      direction: 1,
+      currentColor: firstCard.color,
+      pendingDraw: 0,
+      turnDeadlineAt: Date.now() + UNO_TURN_TIME_MS,
+      lastMove: { type: "start", card: unoCardPublic(firstCard), automatic: true, createdAt: isoNow() },
+      winner: null,
+      scores: Object.fromEntries(room.players.map(username => [username, Math.max(0, integer(previousScores[username], 0))])),
+      unoCalled: {}
+    };
+    room.lastResult = null;
+    room.round = 1;
+    room.status = "playing";
+    room.updatedAt = isoNow();
+    return true;
+  }
+
+  function advanceUnoTurn(room, steps = 1) {
+    const state = room.uno;
+    const length = room.players.length;
+    const current = Math.max(0, Math.min(length - 1, integer(state.currentTurn, 0)));
+    const direction = state.direction === -1 ? -1 : 1;
+    state.currentTurn = ((current + direction * steps) % length + length) % length;
+    state.turnDeadlineAt = Date.now() + UNO_TURN_TIME_MS;
+  }
+
+  function finishUnoRound(room, winner) {
+    const state = room?.uno;
+    if (!room || room.gameType !== "uno" || !state || room.status !== "playing" || !winner) return null;
+    const handPoints = unoHandPoints(room);
+    const award = room.players.filter(username => username !== winner).reduce((total, username) => total + handPoints[username], 0);
+    state.scores[winner] = Math.max(0, integer(state.scores?.[winner], 0)) + award;
+    state.winner = winner;
+    state.turnDeadlineAt = null;
+    const result = {
+      gameType: "uno",
+      type: "winner",
+      round: room.round,
+      winner,
+      award,
+      handPoints,
+      scores: Object.fromEntries(room.players.map(username => [username, Math.max(0, integer(state.scores?.[username], 0))])),
+      createdAt: isoNow()
+    };
+    room.lastResult = result;
+    room.round = integer(room.round, 1) + 1;
+    room.status = "finished";
+    room.updatedAt = isoNow();
+    return result;
+  }
+
+  function bestUnoColor(hand) {
+    const counts = Object.fromEntries(UNO_COLORS.map(color => [color, 0]));
+    for (const card of hand || []) if (counts[card.color] !== undefined) counts[card.color] += 1;
+    return UNO_COLORS.slice().sort((a, b) => counts[b] - counts[a])[0] || UNO_COLORS[0];
+  }
+
+  function applyUnoAction(room, actor, { action, cardId, chosenColor, automatic = false } = {}) {
+    const state = room?.uno;
+    if (!room || room.gameType !== "uno" || room.status !== "playing" || !state) return { ok: false, error: "لا توجد جولة UNO مفتوحة حالياً" };
+    const currentIndex = Math.max(0, Math.min(room.players.length - 1, integer(state.currentTurn, 0)));
+    const hand = Array.isArray(state.hands?.[actor]) ? state.hands[actor] : [];
+    if (action === "uno") {
+      if (hand.length !== 1 || state.lastMove?.type !== "play" || state.lastMove?.player !== actor) return { ok: false, error: "اضغط UNO مباشرة بعد أن يبقى عندك كرت واحد" };
+      state.unoCalled[actor] = true;
+      state.lastMove = { type: "uno", player: actor, automatic: Boolean(automatic), createdAt: isoNow() };
+      room.updatedAt = isoNow();
+      return { ok: true, result: state.lastMove };
+    }
+    if (room.players[currentIndex] !== actor) return { ok: false, error: "انتظر دورك في UNO" };
+    if (state.pendingDraw > 0) {
+      if (action !== "draw") return { ok: false, error: `اسحب ${state.pendingDraw} بطاقات العقوبة أولاً` };
+      const amount = state.pendingDraw;
+      const drawn = drawUnoCards(state, amount);
+      hand.push(...drawn);
+      state.pendingDraw = 0;
+      state.lastMove = { type: "penalty", player: actor, amount: drawn.length, automatic: Boolean(automatic), createdAt: isoNow() };
+      advanceUnoTurn(room);
+      room.updatedAt = isoNow();
+      return { ok: true, result: state.lastMove };
+    }
+    if (action === "draw") {
+      const legal = unoLegalCards(room, actor);
+      if (legal.length) return { ok: false, error: "لديك بطاقة صالحة؛ العبها أولاً" };
+      const drawn = drawUnoCards(state, 1);
+      if (!drawn.length) {
+        advanceUnoTurn(room);
+        state.lastMove = { type: "pass", player: actor, automatic: Boolean(automatic), createdAt: isoNow() };
+        room.updatedAt = isoNow();
+        return { ok: true, result: state.lastMove };
+      }
+      hand.push(drawn[0]);
+      state.lastMove = { type: "draw", player: actor, amount: 1, automatic: Boolean(automatic), createdAt: isoNow() };
+      const canPlayDrawn = unoCardCanPlay(drawn[0], state, hand);
+      if (!canPlayDrawn) advanceUnoTurn(room);
+      else state.turnDeadlineAt = Date.now() + UNO_TURN_TIME_MS;
+      room.updatedAt = isoNow();
+      return { ok: true, result: state.lastMove };
+    }
+    if (action !== "play") return { ok: false, error: "حركة UNO غير صالحة" };
+    const index = hand.findIndex(card => String(card.id) === String(cardId));
+    if (index < 0) return { ok: false, error: "هذه البطاقة غير موجودة في يدك" };
+    const card = hand[index];
+    if (!unoCardCanPlay(card, state, hand)) return { ok: false, error: "لا يمكن لعب هذه البطاقة حالياً" };
+    let nextColor = card.color;
+    if (["wild", "wild_draw4"].includes(card.kind)) {
+      if (!UNO_COLORS.includes(chosenColor)) return { ok: false, error: "اختَر لوناً بعد لعب البطاقة البرية" };
+      nextColor = chosenColor;
+    }
+    hand.splice(index, 1);
+    state.discard.push(card);
+    state.currentColor = nextColor;
+    state.pendingDraw = card.kind === "draw2" ? 2 : card.kind === "wild_draw4" ? 4 : 0;
+    state.unoCalled[actor] = false;
+    state.lastMove = {
+      type: "play",
+      player: actor,
+      card: unoCardPublic(card),
+      chosenColor: nextColor,
+      automatic: Boolean(automatic),
+      createdAt: isoNow()
+    };
+    if (!hand.length) {
+      const result = finishUnoRound(room, actor);
+      return { ok: true, result: result || state.lastMove };
+    }
+    if (card.kind === "reverse") {
+      state.direction *= -1;
+      advanceUnoTurn(room, room.players.length === 2 ? 2 : 1);
+    } else if (card.kind === "skip") {
+      advanceUnoTurn(room, 2);
+    } else {
+      advanceUnoTurn(room, 1);
+    }
+    room.updatedAt = isoNow();
+    return { ok: true, result: state.lastMove };
+  }
+
+  function unoAutomaticAction(room) {
+    const actor = room.players[Math.max(0, Math.min(room.players.length - 1, integer(room.uno?.currentTurn, 0)))];
+    if (room.uno?.pendingDraw > 0) return applyUnoAction(room, actor, { action: "draw", automatic: true });
+    const legal = unoLegalCards(room, actor);
+    if (legal.length) {
+      const card = legal[0];
+      return applyUnoAction(room, actor, {
+        action: "play",
+        cardId: card.id,
+        chosenColor: ["wild", "wild_draw4"].includes(card.kind) ? bestUnoColor(room.uno.hands[actor]) : undefined,
+        automatic: true
+      });
+    }
+    return applyUnoAction(room, actor, { action: "draw", automatic: true });
+  }
+
+  function refillJackarooDeck(state) {
+    if (!state || state.deck.length || !Array.isArray(state.discard) || !state.discard.length) return;
+    state.deck = state.discard.splice(0);
+    for (let index = state.deck.length - 1; index > 0; index -= 1) {
+      const swapIndex = crypto.randomInt(0, index + 1);
+      [state.deck[index], state.deck[swapIndex]] = [state.deck[swapIndex], state.deck[index]];
+    }
+  }
+
+  function drawJackarooCards(state, count) {
+    const cards = [];
+    for (let index = 0; index < count; index += 1) {
+      refillJackarooDeck(state);
+      if (!state.deck.length) break;
+      cards.push(state.deck.shift());
+    }
+    return cards;
+  }
+
+  function dealJackarooHands(room) {
+    const state = room?.jackaroo;
+    if (!state) return;
+    for (const username of room.players) {
+      const hand = Array.isArray(state.hands?.[username]) ? state.hands[username] : (state.hands[username] = []);
+      hand.push(...drawJackarooCards(state, JACKAROO_HAND_SIZE));
+    }
+  }
+
+  function startJackarooRound(room) {
+    if (!room || room.gameType !== "jackaroo" || !Array.isArray(room.players) || ![2, 4].includes(room.players.length)) return false;
+    const previousScores = room.jackaroo?.scores && typeof room.jackaroo.scores === "object" ? room.jackaroo.scores : {};
+    const deck = shuffledJackarooDeck();
+    const hands = Object.fromEntries(room.players.map(username => [username, deck.splice(0, JACKAROO_HAND_SIZE)]));
+    const teams = room.players.length === 2
+      ? {
+          team1: [room.players[0]],
+          team2: [room.players[1]]
+        }
+      : {
+          team1: [room.players[0], room.players[2]],
+          team2: [room.players[1], room.players[3]]
+        };
+    const marbles = Object.fromEntries(room.players.map(username => [username, Array.from({ length: 4 }, (_, index) => ({ id: `m${index + 1}`, progress: -1 }))]));
+    room.jackaroo = {
+      deck,
+      discard: [],
+      hands,
+      marbles,
+      teams,
+      currentTurn: crypto.randomInt(0, room.players.length),
+      turnDeadlineAt: Date.now() + JACKAROO_TURN_TIME_MS,
+      lastMove: { type: "start", automatic: true, createdAt: isoNow() },
+      winnerTeam: null,
+      winnerPlayers: [],
+      scores: { team1: Math.max(0, integer(previousScores.team1, 0)), team2: Math.max(0, integer(previousScores.team2, 0)) }
+    };
+    room.lastResult = null;
+    room.round = 1;
+    room.status = "playing";
+    room.updatedAt = isoNow();
+    return true;
+  }
+
+  function jackarooTeamComplete(room, team) {
+    const state = room?.jackaroo;
+    const players = state?.teams?.[team] || [];
+    const expectedPlayers = room?.players?.length === 2 ? 1 : 2;
+    return players.length === expectedPlayers && players.every(username => (state.marbles?.[username] || []).every(marble => integer(marble.progress, -1) === JACKAROO_HOME_PROGRESS));
+  }
+
+  function finishJackarooRound(room, winnerTeam) {
+    const state = room?.jackaroo;
+    if (!room || room.gameType !== "jackaroo" || room.status !== "playing" || !state || !winnerTeam) return null;
+    state.winnerTeam = winnerTeam;
+    state.winnerPlayers = Array.isArray(state.teams?.[winnerTeam]) ? state.teams[winnerTeam].slice() : [];
+    state.scores[winnerTeam] = Math.max(0, integer(state.scores?.[winnerTeam], 0)) + 1;
+    state.turnDeadlineAt = null;
+    const result = {
+      gameType: "jackaroo",
+      type: "winner",
+      round: room.round,
+      winnerTeam,
+      winners: state.winnerPlayers,
+      scores: { team1: Math.max(0, integer(state.scores?.team1, 0)), team2: Math.max(0, integer(state.scores?.team2, 0)) },
+      createdAt: isoNow()
+    };
+    room.lastResult = result;
+    room.round = integer(room.round, 1) + 1;
+    room.status = "finished";
+    room.updatedAt = isoNow();
+    return result;
+  }
+
+  function advanceJackarooTurn(room) {
+    const state = room.jackaroo;
+    const length = room.players.length;
+    const current = Math.max(0, Math.min(length - 1, integer(state.currentTurn, 0)));
+    state.currentTurn = (current + 1) % length;
+    state.turnDeadlineAt = Date.now() + JACKAROO_TURN_TIME_MS;
+  }
+
+  function applyJackarooAction(room, actor, { action, cardId, marbleId, automatic = false } = {}) {
+    const state = room?.jackaroo;
+    if (!room || room.gameType !== "jackaroo" || room.status !== "playing" || !state) return { ok: false, error: "لا توجد جولة توميرو مفتوحة حالياً" };
+    if (![2, 4].includes(room.players.length)) return { ok: false, error: "توميرو تحتاج لاعبين أو أربعة لاعبين" };
+    const currentIndex = Math.max(0, Math.min(room.players.length - 1, integer(state.currentTurn, 0)));
+    if (room.players[currentIndex] !== actor) return { ok: false, error: "انتظر دورك في توميرو" };
+    const hand = Array.isArray(state.hands?.[actor]) ? state.hands[actor] : [];
+    const legal = jackarooLegalMoves(room, actor);
+    if (action === "pass") {
+      if (legal.length) return { ok: false, error: "لديك حركة صالحة؛ اختر بطاقة وحجرًا" };
+      if (!hand.length) {
+        dealJackarooHands(room);
+        advanceJackarooTurn(room);
+        return { ok: true, result: state.lastMove };
+      }
+      const discardIndex = hand.findIndex(card => String(card.id) === String(cardId));
+      const removed = hand.splice(discardIndex >= 0 ? discardIndex : 0, 1)[0];
+      state.discard.push(removed);
+      state.lastMove = { type: "pass", player: actor, card: jackarooCardPublic(removed), automatic: Boolean(automatic), createdAt: isoNow() };
+      if (room.players.every(username => !state.hands[username]?.length)) dealJackarooHands(room);
+      advanceJackarooTurn(room);
+      room.updatedAt = isoNow();
+      return { ok: true, result: state.lastMove };
+    }
+    if (action !== "play") return { ok: false, error: "حركة توميرو غير صالحة" };
+    const cardIndex = hand.findIndex(card => String(card.id) === String(cardId));
+    const card = cardIndex >= 0 ? hand[cardIndex] : null;
+    const matching = legal.find(move => String(move.card.id) === String(cardId) && String(move.marbleId) === String(marbleId));
+    const selected = matching || (automatic ? legal[0] : null);
+    if (!card || !selected) return { ok: false, error: "اختر بطاقة وحجرًا يمكن تحريكهما" };
+    const marble = state.marbles?.[actor]?.find(item => item.id === selected.marbleId);
+    if (!marble) return { ok: false, error: "الحجر غير موجود" };
+    const before = integer(marble.progress, -1);
+    marble.progress = integer(selected.to, before);
+    hand.splice(cardIndex, 1);
+    state.discard.push(card);
+    const captured = [];
+    const targetCell = jackarooCellFor(room, actor, marble.progress);
+    if (targetCell != null && marble.progress < JACKAROO_HOME_PROGRESS) {
+      for (const username of room.players) {
+        if (jackarooTeamFor(room, username) === jackarooTeamFor(room, actor)) continue;
+        for (const opponent of state.marbles?.[username] || []) {
+          if (opponent.progress >= 0 && opponent.progress < JACKAROO_HOME_PROGRESS && jackarooCellFor(room, username, opponent.progress) === targetCell) {
+            opponent.progress = -1;
+            captured.push({ username, marbleId: opponent.id });
+          }
+        }
+      }
+    }
+    state.lastMove = {
+      type: "play",
+      player: actor,
+      card: jackarooCardPublic(card),
+      marbleId: marble.id,
+      mode: selected.mode,
+      from: before,
+      to: marble.progress,
+      cell: targetCell,
+      captured,
+      automatic: Boolean(automatic),
+      createdAt: isoNow()
+    };
+    const team = jackarooTeamFor(room, actor);
+    if (team && jackarooTeamComplete(room, team)) {
+      const result = finishJackarooRound(room, team);
+      return { ok: true, result: result || state.lastMove };
+    }
+    if (room.players.every(username => !state.hands[username]?.length)) dealJackarooHands(room);
+    advanceJackarooTurn(room);
+    room.updatedAt = isoNow();
+    return { ok: true, result: state.lastMove };
+  }
+
+  function jackarooAutomaticAction(room) {
+    const actor = room.players[Math.max(0, Math.min(room.players.length - 1, integer(room.jackaroo?.currentTurn, 0)))];
+    const legal = jackarooLegalMoves(room, actor);
+    if (legal.length) {
+      const move = legal[0];
+      return applyJackarooAction(room, actor, { action: "play", cardId: move.card.id, marbleId: move.marbleId, automatic: true });
+    }
+    const card = room.jackaroo?.hands?.[actor]?.[0];
+    return applyJackarooAction(room, actor, { action: "pass", cardId: card?.id, automatic: true });
+  }
+
+  function startQuizRound(room) {
+    if (!room || room.gameType !== "quiz" || room.players.length < 2) return false;
+    if (!room.quiz || typeof room.quiz !== "object") {
+      room.quiz = { usedQuestionIds: [], scores: {}, answers: {}, current: null, deadlineAt: null, nextRoundAt: null };
+    }
+    const used = new Set(Array.isArray(room.quiz.usedQuestionIds) ? room.quiz.usedQuestionIds : []);
+    let available = QUIZ_QUESTIONS.filter(question => !used.has(question.id));
+    if (!available.length) {
+      used.clear();
+      available = QUIZ_QUESTIONS.slice();
+    }
+    const question = available[crypto.randomInt(0, available.length)];
+    used.add(question.id);
+    room.quiz.usedQuestionIds = [...used].slice(-QUIZ_QUESTIONS.length);
+    room.quiz.scores = Object.fromEntries(room.players.map(username => [
+      username,
+      Math.max(0, integer(room.quiz.scores?.[username], 0))
+    ]));
+    room.quiz.answers = {};
+    room.quiz.current = question;
+    room.quiz.roundStartedAt = Date.now();
+    room.quiz.deadlineAt = Date.now() + QUIZ_ROUND_TIME_MS;
+    room.quiz.nextRoundAt = null;
+    room.lastResult = null;
+    room.status = "playing";
+    room.updatedAt = isoNow();
+    return true;
+  }
+
+  function finishQuizRound(room, { timedOut = false } = {}) {
+    if (!room || room.gameType !== "quiz" || room.status !== "playing" || !room.quiz?.current) return null;
+    const question = room.quiz.current;
+    const answers = room.quiz.answers && typeof room.quiz.answers === "object" ? room.quiz.answers : {};
+    if (!room.quiz.scores || typeof room.quiz.scores !== "object") room.quiz.scores = {};
+    const elapsed = Math.max(0, Date.now() - Number(room.quiz.roundStartedAt || Date.now()));
+    const entries = room.players.map(username => {
+      const hasAnswer = Object.prototype.hasOwnProperty.call(answers, username);
+      const answer = hasAnswer ? integer(answers[username], -1) : null;
+      const correct = answer === question.answer;
+      const secondsLeft = Math.max(0, Math.ceil((QUIZ_ROUND_TIME_MS - elapsed) / 1000));
+      const points = correct ? 100 + Math.min(30, secondsLeft * 2) : 0;
+      if (points) room.quiz.scores[username] = Math.max(0, integer(room.quiz.scores[username], 0)) + points;
+      return { username, answer, correct, points, answered: hasAnswer };
+    });
+    const roundWinners = entries.filter(entry => entry.correct).map(entry => entry.username);
+    const scores = quizScoreMap(room);
+    const result = {
+      gameType: "quiz",
+      round: room.round,
+      question: quizQuestionForPublic(question),
+      correctAnswer: question.answer,
+      correctText: question.options[question.answer] || "",
+      entries,
+      roundWinners,
+      scores,
+      timedOut: Boolean(timedOut),
+      createdAt: isoNow()
+    };
+    room.lastResult = result;
+    room.round = integer(room.round, 1) + 1;
+    room.quiz.current = null;
+    room.quiz.answers = {};
+    room.quiz.deadlineAt = null;
+    room.quiz.nextRoundAt = Date.now() + QUIZ_RESULT_TIME_MS;
+    room.status = "results";
+    room.updatedAt = isoNow();
+    return result;
+  }
+
+  function initializeSnakesRoom(room) {
+    if (!room || room.gameType !== "snakes_ladders" || room.players.length < 2) return false;
+    room.snakes = {
+      positions: Object.fromEntries(room.players.map(username => [username, 1])),
+      currentTurn: 0,
+      turnDeadlineAt: Date.now() + SNAKES_TURN_TIME_MS,
+      lastRoll: null,
+      lastMove: null,
+      winner: null
+    };
+    room.lastResult = null;
+    room.round = 1;
+    room.status = "playing";
+    room.updatedAt = isoNow();
+    return true;
+  }
+
+  function applySnakesRoll(room, actor, { automatic = false } = {}) {
+    if (!room || room.gameType !== "snakes_ladders" || room.status !== "playing" || !room.snakes) return null;
+    const players = Array.isArray(room.players) ? room.players : [];
+    if (!room.snakes.positions || typeof room.snakes.positions !== "object") {
+      room.snakes.positions = Object.fromEntries(players.map(username => [username, 1]));
+    }
+    const turnIndex = Math.max(0, Math.min(players.length - 1, integer(room.snakes.currentTurn, 0)));
+    const expected = players[turnIndex];
+    if (!expected || actor !== expected) return null;
+    const roll = crypto.randomInt(1, 7);
+    const before = Math.max(1, integer(room.snakes.positions?.[actor], 1));
+    const attempted = before + roll;
+    const stepped = attempted <= SNAKES_BOARD_SIZE ? attempted : before;
+    const jumpTo = Object.prototype.hasOwnProperty.call(SNAKES_LADDERS, stepped)
+      ? SNAKES_LADDERS[stepped]
+      : null;
+    const after = jumpTo || stepped;
+    room.snakes.positions[actor] = after;
+    const finished = after >= SNAKES_BOARD_SIZE;
+    const extraTurn = !finished && roll === 6;
+    const result = {
+      gameType: "snakes_ladders",
+      round: room.round,
+      player: actor,
+      roll,
+      before,
+      stepped,
+      after,
+      jumpTo,
+      automatic: Boolean(automatic),
+      extraTurn,
+      winner: finished ? actor : null,
+      createdAt: isoNow()
+    };
+    room.snakes.lastRoll = roll;
+    room.snakes.lastMove = result;
+    room.round = integer(room.round, 1) + 1;
+    if (finished) {
+      room.snakes.winner = actor;
+      room.snakes.turnDeadlineAt = null;
+      room.status = "finished";
+    } else {
+      room.snakes.currentTurn = extraTurn ? turnIndex : ((turnIndex + 1) % players.length);
+      room.snakes.turnDeadlineAt = Date.now() + SNAKES_TURN_TIME_MS;
+      room.status = "playing";
+    }
+    room.lastResult = result;
+    room.updatedAt = isoNow();
+    return result;
+  }
+
+  function processAdvancedTimers() {
+    const db = dbState();
+    const now = Date.now();
+    let changed = false;
+    for (const room of Object.values(db.gameRooms || {})) {
+      if (!isAdvancedRoom(room) || !Array.isArray(room.players) || room.players.length < 2) continue;
+      if (room.gameType === "quiz") {
+        if (room.status === "playing" && room.quiz?.current && Number(room.quiz?.deadlineAt || 0) <= now) {
+          finishQuizRound(room, { timedOut: true });
+          changed = true;
+          emitGameState(room.roomId);
+          io.to(`game_${room.roomId}`).emit("game:advanced-result", room.lastResult);
+        } else if (room.status === "results" && Number(room.quiz?.nextRoundAt || 0) <= now) {
+          startQuizRound(room);
+          changed = true;
+          emitGameState(room.roomId);
+        }
+      } else if (room.gameType === "snakes_ladders"
+        && room.status === "playing"
+        && room.snakes?.turnDeadlineAt
+        && Number(room.snakes.turnDeadlineAt) <= now) {
+        const actor = room.players[Math.max(0, Math.min(room.players.length - 1, integer(room.snakes?.currentTurn, 0)))];
+        const result = applySnakesRoll(room, actor, { automatic: true });
+        if (result) {
+          changed = true;
+          emitGameState(room.roomId);
+          io.to(`game_${room.roomId}`).emit("game:advanced-result", result);
+        }
+      } else if (room.gameType === "dominoes"
+        && room.status === "playing"
+        && room.domino?.turnDeadlineAt
+        && Number(room.domino.turnDeadlineAt) <= now) {
+        const outcome = dominoAutomaticAction(room);
+        if (outcome?.ok) {
+          changed = true;
+          emitGameState(room.roomId);
+          io.to(`game_${room.roomId}`).emit("game:advanced-result", outcome.result);
+        }
+      } else if (room.gameType === "uno"
+        && room.status === "playing"
+        && room.uno?.turnDeadlineAt
+        && Number(room.uno.turnDeadlineAt) <= now) {
+        const outcome = unoAutomaticAction(room);
+        if (outcome?.ok) {
+          changed = true;
+          emitGameState(room.roomId);
+          io.to(`game_${room.roomId}`).emit("game:advanced-result", outcome.result);
+        }
+      } else if (room.gameType === "jackaroo"
+        && room.status === "playing"
+        && room.jackaroo?.turnDeadlineAt
+        && Number(room.jackaroo.turnDeadlineAt) <= now) {
+        const outcome = jackarooAutomaticAction(room);
+        if (outcome?.ok) {
+          changed = true;
+          emitGameState(room.roomId);
+          io.to(`game_${room.roomId}`).emit("game:advanced-result", outcome.result);
+        }
+      }
+    }
+    if (changed) persist();
   }
 
   function walletPayload(username, { claimDaily = false } = {}) {
@@ -447,14 +1603,55 @@ function registerEconomyGames({
     const db = dbState();
     let changed = false;
     const defaultItems = [
-      { itemId: "gift_heart", type: "gift", name: "هدية قلب", description: "هدية رقمية مميزة داخل محفظتك.", price: 25, charismaValue: 5, icon: "fa-heart", active: true },
-      { itemId: "gift_star", type: "gift", name: "هدية نجمة", description: "هدية رقمية لامعة.", price: 50, charismaValue: 10, icon: "fa-star", active: true },
-      { itemId: "gift_crown", type: "gift", name: "هدية تاج", description: "هدية خاصة للأصدقاء.", price: 100, charismaValue: 20, icon: "fa-crown", active: true }
+      { itemId: "gift_heart", type: "gift", name: "هدية قلب", description: "هدية رقمية مميزة داخل محفظتك.", price: 25, charismaValue: 5, icon: "fa-heart", metadata: { giftKind: "heart", iconEmoji: "💖" }, active: true },
+      { itemId: "gift_star", type: "gift", name: "هدية نجمة", description: "هدية رقمية لامعة.", price: 50, charismaValue: 10, icon: "fa-star", metadata: { giftKind: "star", iconEmoji: "🌟" }, active: true },
+      { itemId: "gift_crown", type: "gift", name: "هدية تاج", description: "هدية خاصة للأصدقاء.", price: 100, charismaValue: 20, icon: "fa-crown", metadata: { giftKind: "crown", iconEmoji: "👑" }, active: true },
+      { itemId: KING_GIFT_ITEM_ID, type: "gift", name: "ملك الهدايا", description: "هدية ملكية بمردود عشوائي وفرصة للفوز بصندوق الكوينز المتراكم.", price: 300, charismaValue: 60, icon: "fa-crown", metadata: { giftKind: "king", iconEmoji: "👑", luckyRange: 300 }, active: true },
+      { itemId: KING_GIFT_LUCKY_REWARD_ID, type: "gift", name: "هدية الحظ الملكية", description: "مكافأة نادرة من ملك الهدايا.", price: 0, charismaValue: 150, icon: "fa-gem", metadata: { giftKind: "king-lucky-reward", iconEmoji: "💎", rewardOnly: true }, active: false }
     ];
     for (const item of defaultItems) {
       if (!db.shopItems[item.itemId]) {
         db.shopItems[item.itemId] = { ...item, sold: 0, createdAt: isoNow(), updatedAt: isoNow() };
         changed = true;
+      }
+    }
+    for (const item of Object.values(db.shopItems)) {
+      if (!item || item.type !== "gift" || !item.itemId) continue;
+      if (!item.metadata || typeof item.metadata !== "object") {
+        item.metadata = { giftKind: item.itemId.replace(/^gift_/, ""), iconEmoji: item.itemId === KING_GIFT_ITEM_ID ? "👑" : "🎁" };
+        item.updatedAt = isoNow();
+        changed = true;
+      }
+      if (item.itemId === KING_GIFT_ITEM_ID) {
+        const price = Math.max(1, integer(item.price, 300));
+        const currentSecret = integer(item.kingSecretNumber, 0);
+        if (currentSecret < 1 || currentSecret > price) {
+          item.kingSecretNumber = crypto.randomInt(1, price + 1);
+          item.updatedAt = isoNow();
+          changed = true;
+        }
+      }
+      if (!db.giftStats[item.itemId] || typeof db.giftStats[item.itemId] !== "object") {
+        const seedTotal = Math.max(0, integer(item.sold, 0) * Math.max(0, integer(item.price, 0)));
+        db.giftStats[item.itemId] = {
+          coinsSpent: seedTotal,
+          purchases: Math.max(0, integer(item.sold, 0)),
+          totalSpent: seedTotal,
+          wins: 0,
+          updatedAt: isoNow()
+        };
+        changed = true;
+      } else {
+        const stats = db.giftStats[item.itemId];
+        const pool = Math.max(0, integer(stats.coinsSpent, 0));
+        if (stats.totalSpent == null || integer(stats.totalSpent, 0) < pool) {
+          stats.totalSpent = pool;
+          changed = true;
+        }
+        if (stats.wins == null) {
+          stats.wins = 0;
+          changed = true;
+        }
       }
     }
     for (const frame of Object.values(db.frames || {})) {
@@ -900,7 +2097,8 @@ function registerEconomyGames({
 
   app.get("/api/economy/shop", requireHttpAuth, (_req, res) => {
     try {
-      const items = ensureDefaultShopItems().filter(item => item.active !== false).map(publicItem);
+      const db = dbState();
+      const items = ensureDefaultShopItems().filter(item => item.active !== false).map(item => publicShopItem(item, db));
       res.json({ success: true, items });
     } catch (_) {
       res.status(500).json({ error: "تعذر تحميل المتجر" });
@@ -959,6 +2157,7 @@ function registerEconomyGames({
         type: item.type,
         name: item.name,
         description: item.description || "",
+        price,
         icon: item.icon || "fa-gift",
         imageUrl: item.imageUrl || "",
         frameId: item.frameId || null,
@@ -970,10 +2169,21 @@ function registerEconomyGames({
       };
       user.inventory.push(inventoryEntry);
       item.sold = Math.max(0, integer(item.sold)) + 1;
+      if (item.type === "gift") {
+        const stats = db.giftStats[item.itemId] && typeof db.giftStats[item.itemId] === "object"
+          ? db.giftStats[item.itemId]
+          : (db.giftStats[item.itemId] = { coinsSpent: 0, purchases: 0, totalSpent: 0, wins: 0 });
+        stats.coinsSpent = Math.max(0, integer(stats.coinsSpent, 0)) + price;
+        stats.purchases = Math.max(0, integer(stats.purchases, 0)) + 1;
+        stats.totalSpent = Math.max(0, integer(stats.totalSpent, 0)) + price;
+        stats.updatedAt = isoNow();
+      }
       item.updatedAt = isoNow();
       persist();
       emitWallet(req.authUser);
-      res.json({ success: true, message: "تم الشراء وإضافة العنصر إلى محفظتك", purchased: publicInventoryEntry(inventoryEntry, db.shopItems), wallet: walletPayload(req.authUser) });
+      const shopItem = publicShopItem(item, db);
+      io.emit("economy-shop-updated", { item: shopItem });
+      res.json({ success: true, message: "تم الشراء وإضافة العنصر إلى محفظتك", purchased: publicInventoryEntry(inventoryEntry, db.shopItems), shopItem, wallet: walletPayload(req.authUser) });
     } catch (error) {
       console.error("economy purchase:", error.message);
       res.status(500).json({ error: "تعذر إكمال الشراء" });
@@ -1006,7 +2216,18 @@ function registerEconomyGames({
       if ((entry.type || item?.type) !== "gift") return res.status(400).json({ error: "هذا العنصر ليس هدية قابلة للإرسال" });
 
       sender.inventory.splice(inventoryIndex, 1);
-      const charismaValue = itemCharismaValue({ ...item, ...entry }, item?.price);
+      const giftPrice = Math.max(0, integer(entry.price ?? item?.price, 0));
+      const refundAmount = giftPrice > 0 ? crypto.randomInt(1, giftPrice + 1) : 0;
+      if (refundAmount > 0) {
+        sender.coins = Math.min(MAX_COIN_BALANCE, integer(sender.coins, 0) + refundAmount);
+        createTransaction(sender, {
+          delta: refundAmount,
+          type: "gift_lucky_refund",
+          reason: `مردود عشوائي من ${entry.name || item?.name || "الهدية"}`,
+          metadata: { itemId: entry.itemId, price: giftPrice, refundAmount }
+        });
+      }
+      const charismaValue = itemCharismaValue({ ...item, ...entry }, giftPrice);
       const gift = {
         giftId: randomId("gift"),
         itemId: entry.itemId,
@@ -1014,6 +2235,8 @@ function registerEconomyGames({
         icon: entry.icon || item?.icon || "fa-gift",
         imageUrl: entry.imageUrl || item?.imageUrl || "",
         animated: Boolean(entry.animated ?? item?.animated),
+        price: giftPrice,
+        metadata: entry.metadata && typeof entry.metadata === "object" ? entry.metadata : (item?.metadata || {}),
         fromUsername: senderKey,
         toUsername: targetKey,
         charismaValue,
@@ -1026,6 +2249,62 @@ function registerEconomyGames({
         reason: `استلام ${gift.name} من ${senderKey}`,
         metadata: { giftId: gift.giftId, fromUsername: senderKey, charismaValue }
       });
+      const reward = {
+        kind: "refund",
+        refundAmount,
+        price: giftPrice,
+        luckyNumber: null,
+        lucky: false,
+        secretMatched: false,
+        jackpotAmount: 0,
+        jackpotPool: 0,
+        mysteryOpened: false,
+        mysteryAmount: 0,
+        rewardItem: null,
+        message: refundAmount > 0
+          ? `رجعلك ${refundAmount.toLocaleString("en-US")} كوينز من الهدية.`
+          : "ماكو مردود لهذه الهدية."
+      };
+      if (entry.itemId === KING_GIFT_ITEM_ID || item?.metadata?.giftKind === "king") {
+        // The owner-configured number is deliberately never returned to a
+        // client. The sender only sees whether their random refund matched it.
+        const secretNumber = Math.max(0, integer(item?.kingSecretNumber, 0));
+        const secretMatched = secretNumber > 0 && refundAmount === secretNumber;
+        reward.secretMatched = secretMatched;
+        reward.lucky = secretMatched;
+        const stats = db.giftStats?.[KING_GIFT_ITEM_ID] && typeof db.giftStats[KING_GIFT_ITEM_ID] === "object"
+          ? db.giftStats[KING_GIFT_ITEM_ID]
+          : (db.giftStats[KING_GIFT_ITEM_ID] = { coinsSpent: 0, purchases: 0, totalSpent: 0, wins: 0 });
+        const pool = Math.max(0, integer(stats.coinsSpent, 0));
+        reward.jackpotPool = pool;
+        if (secretMatched) {
+          const available = Math.max(0, MAX_COIN_BALANCE - integer(sender.coins, 0));
+          const jackpotAmount = Math.min(pool, available);
+          if (jackpotAmount > 0) {
+            sender.coins += jackpotAmount;
+            createTransaction(sender, {
+              delta: jackpotAmount,
+              type: "gift_king_jackpot",
+              reason: "جائزة ملك الهدايا",
+              metadata: { itemId: KING_GIFT_ITEM_ID, jackpotAmount, poolBefore: pool, refundAmount }
+            });
+            stats.coinsSpent = Math.max(0, pool - jackpotAmount);
+            if (stats.coinsSpent === 0) stats.purchases = 0;
+            stats.wins = Math.max(0, integer(stats.wins, 0)) + 1;
+            stats.lastWinner = senderKey;
+            stats.lastWonAt = isoNow();
+            stats.updatedAt = isoNow();
+          }
+          reward.jackpotAmount = jackpotAmount;
+          reward.message = jackpotAmount > 0
+            ? `تطابق الرقم الغامض! ربحت ${jackpotAmount.toLocaleString("en-US")} كوينز من الصندوق المتراكم.`
+            : "تطابق الرقم الغامض، لكن الصندوق المتراكم فارغ حاليًا.";
+        } else {
+          reward.message = refundAmount > 0
+            ? `رجعلك ${refundAmount.toLocaleString("en-US")} كوينز، لكن الرقم الغامض لم يتطابق.`
+            : "ماكو مردود لهذه الهدية، والرقم الغامض لم يتطابق.";
+        }
+      }
       recipient.receivedGifts.unshift(gift);
       recipient.receivedGifts = recipient.receivedGifts.slice(0, 100);
       sender.sentGifts.unshift(gift);
@@ -1034,7 +2313,7 @@ function registerEconomyGames({
         delta: 0,
         type: "gift_sent",
         reason: `إرسال ${gift.name} إلى ${targetKey}`,
-        metadata: { giftId: gift.giftId, itemId: gift.itemId, toUsername: targetKey, charismaValue }
+        metadata: { giftId: gift.giftId, itemId: gift.itemId, toUsername: targetKey, charismaValue, refundAmount }
       });
       createTransaction(recipient, {
         delta: 0,
@@ -1045,6 +2324,9 @@ function registerEconomyGames({
       persist();
       emitWallet(senderKey);
       if (targetKey !== senderKey) emitWallet(targetKey);
+      if (entry.itemId === KING_GIFT_ITEM_ID || item?.metadata?.giftKind === "king") {
+        io.emit("economy-shop-updated", { item: publicShopItem(db.shopItems?.[KING_GIFT_ITEM_ID], db) });
+      }
       const recipientProfile = publicUserProfile(targetKey);
       io.emit("profile-updated", recipientProfile);
       io.to(`user_${targetKey}`).emit("gift-received", {
@@ -1053,8 +2335,9 @@ function registerEconomyGames({
       });
       res.json({
         success: true,
-        message: targetKey === senderKey ? "تم إرسال الهدية إلى نفسك ورفع كارزمتك" : `تم إرسال الهدية إلى ${targetKey}`,
+        message: `${targetKey === senderKey ? "تم إرسال الهدية إلى نفسك ورفع كارزمتك" : `تم إرسال الهدية إلى ${targetKey}`}. ${reward.message}`,
         gift: publicGiftTransfer(gift),
+        reward,
         recipient: recipientProfile,
         wallet: walletPayload(senderKey)
       });
@@ -1321,7 +2604,8 @@ function registerEconomyGames({
 
   app.get("/api/economy/admin/items", requireHttpAuth, (req, res) => {
     if (!onlyOwner(req, res)) return;
-    res.json({ success: true, items: ensureDefaultShopItems().map(publicItem) });
+    const db = dbState();
+    res.json({ success: true, items: ensureDefaultShopItems().map(item => publicShopItem(item, db, { includeAdmin: true })) });
   });
 
   app.post("/api/economy/admin/items", requireHttpAuth, (req, res) => {
@@ -1354,26 +2638,43 @@ function registerEconomyGames({
     };
     db.shopItems[item.itemId] = item;
     persist();
-    res.json({ success: true, item: publicItem(item) });
+    res.json({ success: true, item: publicShopItem(item, db, { includeAdmin: true }) });
   });
 
   app.patch("/api/economy/admin/items/:itemId", requireHttpAuth, (req, res) => {
     if (!onlyOwner(req, res)) return;
     const db = dbState();
+    ensureDefaultShopItems();
     const item = db.shopItems[req.params.itemId];
     if (!item) return res.status(404).json({ error: "العنصر غير موجود" });
+    const nextPrice = req.body.price === undefined
+      ? Math.max(0, integer(item.price, 0))
+      : Math.max(0, Math.min(10_000_000, integer(req.body.price, item.price)));
+    if (item.itemId === KING_GIFT_ITEM_ID && nextPrice < 1) return res.status(400).json({ error: "سعر ملك الهدايا يجب أن يكون أكبر من صفر" });
+    let nextSecret = Math.max(0, integer(item.kingSecretNumber, 0));
+    if (item.itemId === KING_GIFT_ITEM_ID && req.body.kingSecretNumber !== undefined) {
+      const requestedSecret = integer(req.body.kingSecretNumber, 0);
+      if (requestedSecret < 1 || requestedSecret > Math.max(1, nextPrice)) {
+        return res.status(400).json({ error: "الرقم الغامض يجب أن يكون بين 1 وسعر الهدية" });
+      }
+      nextSecret = requestedSecret;
+    }
+    if (item.itemId === KING_GIFT_ITEM_ID && nextSecret > Math.max(1, nextPrice)) {
+      return res.status(400).json({ error: "السعر الجديد أصغر من الرقم الغامض الحالي؛ غيّر الرقم الغامض أولًا" });
+    }
     if (req.body.name !== undefined) item.name = clampText(req.body.name, 80) || item.name;
     if (req.body.description !== undefined) item.description = clampText(req.body.description, 240);
     if (req.body.icon !== undefined) item.icon = clampText(req.body.icon || "fa-gift", 50) || "fa-gift";
     if (req.body.imageUrl !== undefined) item.imageUrl = clampText(req.body.imageUrl, 500);
     if (req.body.animated !== undefined) item.animated = Boolean(req.body.animated);
-    if (req.body.price !== undefined) item.price = Math.max(0, Math.min(10_000_000, integer(req.body.price, item.price)));
+    item.price = nextPrice;
+    if (item.itemId === KING_GIFT_ITEM_ID) item.kingSecretNumber = nextSecret;
     if (req.body.charismaValue !== undefined && item.type === "gift") item.charismaValue = Math.max(1, Math.min(1_000_000, integer(req.body.charismaValue, item.charismaValue || 1)));
     if (req.body.active !== undefined) item.active = Boolean(req.body.active);
     if (req.body.stock !== undefined) item.stock = req.body.stock === null || req.body.stock === "" ? null : Math.max(0, integer(req.body.stock));
     item.updatedAt = isoNow();
     persist();
-    res.json({ success: true, item: publicItem(item) });
+    res.json({ success: true, item: publicShopItem(item, db, { includeAdmin: true }) });
   });
 
   app.delete("/api/economy/admin/items/:itemId", requireHttpAuth, (req, res) => {
@@ -1410,9 +2711,209 @@ function registerEconomyGames({
     return { ...profile, username, isOnline: activeOnlineUsers?.has(username) || false };
   }
 
+  function publicDominoState(room) {
+    const state = room?.domino;
+    const currentTurn = Math.max(0, integer(state?.currentTurn, 0));
+    const handCounts = Object.fromEntries((room?.players || []).map(username => [
+      username,
+      Array.isArray(state?.hands?.[username]) ? state.hands[username].length : 0
+    ]));
+    return {
+      board: Array.isArray(state?.board) ? state.board.map(dominoTilePublic).filter(Boolean) : [],
+      leftEnd: state?.leftEnd ?? null,
+      rightEnd: state?.rightEnd ?? null,
+      currentTurn,
+      currentPlayer: room?.players?.[currentTurn] || null,
+      turnDeadlineAt: Number(state?.turnDeadlineAt || 0) || null,
+      handCounts,
+      boneyardCount: Array.isArray(state?.boneyard) ? state.boneyard.length : 0,
+      lastMove: state?.lastMove || null,
+      winner: state?.winner || null,
+      winners: Array.isArray(state?.winners) ? state.winners : [],
+      scores: Object.fromEntries((room?.players || []).map(username => [username, Math.max(0, integer(state?.scores?.[username], 0))]))
+    };
+  }
+
+  function privateDominoState(room, username) {
+    const state = room?.domino;
+    const hand = Array.isArray(state?.hands?.[username]) ? state.hands[username] : [];
+    const moves = dominoLegalMoves(room, username);
+    const isTurn = room?.status === "playing" && room?.players?.[integer(state?.currentTurn, 0)] === username;
+    return {
+      roomId: room?.roomId,
+      gameType: "dominoes",
+      hand: hand.map(dominoTilePublic).filter(Boolean),
+      legalTileIds: [...new Set(moves.map(move => move.tile.id))],
+      legalMoves: moves.map(move => ({ tileId: move.tile.id, side: move.side })),
+      isTurn,
+      canDraw: Boolean(isTurn && !moves.length && state?.boneyard?.length),
+      canPass: Boolean(isTurn && !moves.length && !state?.boneyard?.length),
+      turnDeadlineAt: Number(state?.turnDeadlineAt || 0) || null
+    };
+  }
+
+  function emitDominoPrivateState(roomId) {
+    const db = dbState();
+    const room = db.gameRooms?.[roomId];
+    if (!room || room.gameType !== "dominoes" || !io?.sockets?.sockets?.forEach) return;
+    io.sockets.sockets.forEach(socket => {
+      if (!socket.rooms?.has(`game_${roomId}`)) return;
+      const actor = gameActor(socket);
+      if (actor && room.players.includes(actor)) socket.emit("game:domino-private", privateDominoState(room, actor));
+    });
+  }
+
+  function publicUnoState(room) {
+    const state = room?.uno;
+    const currentTurn = Math.max(0, integer(state?.currentTurn, 0));
+    const top = state?.discard?.[state.discard.length - 1] || null;
+    return {
+      topCard: unoCardPublic(top),
+      currentColor: UNO_COLORS.includes(state?.currentColor) ? state.currentColor : null,
+      currentColorLabel: UNO_COLOR_LABELS[state?.currentColor] || "",
+      direction: state?.direction === -1 ? "counterclockwise" : "clockwise",
+      currentTurn,
+      currentPlayer: room?.players?.[currentTurn] || null,
+      turnDeadlineAt: Number(state?.turnDeadlineAt || 0) || null,
+      handCounts: Object.fromEntries((room?.players || []).map(username => [
+        username,
+        Array.isArray(state?.hands?.[username]) ? state.hands[username].length : 0
+      ])),
+      deckCount: Array.isArray(state?.deck) ? state.deck.length : 0,
+      discardCount: Array.isArray(state?.discard) ? state.discard.length : 0,
+      pendingDraw: Math.max(0, integer(state?.pendingDraw, 0)),
+      lastMove: state?.lastMove || null,
+      winner: state?.winner || null,
+      scores: Object.fromEntries((room?.players || []).map(username => [username, Math.max(0, integer(state?.scores?.[username], 0))]))
+    };
+  }
+
+  function privateUnoState(room, username) {
+    const state = room?.uno;
+    const hand = Array.isArray(state?.hands?.[username]) ? state.hands[username] : [];
+    const legal = unoLegalCards(room, username);
+    const isTurn = room?.status === "playing" && room?.players?.[integer(state?.currentTurn, 0)] === username;
+    return {
+      roomId: room?.roomId,
+      gameType: "uno",
+      hand: hand.map(unoCardPublic).filter(Boolean),
+      legalCardIds: legal.map(card => card.id),
+      isTurn,
+      pendingDraw: Math.max(0, integer(state?.pendingDraw, 0)),
+      canDraw: Boolean(isTurn && (state?.pendingDraw > 0 || !legal.length)),
+      canCallUno: Boolean(room?.status === "playing" && hand.length === 1 && state?.lastMove?.type === "play" && state.lastMove.player === username && !state?.unoCalled?.[username]),
+      turnDeadlineAt: Number(state?.turnDeadlineAt || 0) || null,
+      colors: UNO_COLORS.map(color => ({ id: color, label: UNO_COLOR_LABELS[color], hex: UNO_COLOR_HEX[color] }))
+    };
+  }
+
+  function emitUnoPrivateState(roomId) {
+    const db = dbState();
+    const room = db.gameRooms?.[roomId];
+    if (!room || room.gameType !== "uno" || !io?.sockets?.sockets?.forEach) return;
+    io.sockets.sockets.forEach(socket => {
+      if (!socket.rooms?.has(`game_${roomId}`)) return;
+      const actor = gameActor(socket);
+      if (actor && room.players.includes(actor)) socket.emit("game:uno-private", privateUnoState(room, actor));
+    });
+  }
+
+  function publicJackarooState(room) {
+    const state = room?.jackaroo;
+    const currentTurn = Math.max(0, integer(state?.currentTurn, 0));
+    const tokens = [];
+    for (const username of room?.players || []) {
+      const team = jackarooTeamFor(room, username);
+      const playerIndex = (room?.players || []).indexOf(username);
+      for (const marble of state?.marbles?.[username] || []) {
+        const progress = integer(marble.progress, -1);
+        const cell = jackarooCellFor(room, username, progress);
+        tokens.push({
+          username,
+          playerIndex,
+          marbleId: marble.id,
+          team,
+          progress,
+          cell,
+          status: progress < 0 ? "base" : progress >= JACKAROO_HOME_PROGRESS ? "home" : "board"
+        });
+      }
+    }
+    const cellTokens = Object.fromEntries(Array.from({ length: JACKAROO_BOARD_SIZE }, (_, cell) => [cell, tokens.filter(token => token.cell === cell)]));
+    return {
+      boardSize: JACKAROO_BOARD_SIZE,
+      tokens,
+      cellTokens,
+      currentTurn,
+      currentPlayer: room?.players?.[currentTurn] || null,
+      turnDeadlineAt: Number(state?.turnDeadlineAt || 0) || null,
+      handCounts: Object.fromEntries((room?.players || []).map(username => [username, Array.isArray(state?.hands?.[username]) ? state.hands[username].length : 0])),
+      deckCount: Array.isArray(state?.deck) ? state.deck.length : 0,
+      discardCount: Array.isArray(state?.discard) ? state.discard.length : 0,
+      discardTop: jackarooCardPublic(state?.discard?.[state.discard.length - 1]),
+      teams: state?.teams || { team1: [], team2: [] },
+      scores: { team1: Math.max(0, integer(state?.scores?.team1, 0)), team2: Math.max(0, integer(state?.scores?.team2, 0)) },
+      winnerTeam: state?.winnerTeam || null,
+      winnerPlayers: Array.isArray(state?.winnerPlayers) ? state.winnerPlayers : [],
+      lastMove: state?.lastMove || null
+    };
+  }
+
+  function privateJackarooState(room, username) {
+    const state = room?.jackaroo;
+    const hand = Array.isArray(state?.hands?.[username]) ? state.hands[username] : [];
+    const legal = jackarooLegalMoves(room, username);
+    const isTurn = room?.status === "playing" && room?.players?.[integer(state?.currentTurn, 0)] === username;
+    return {
+      roomId: room?.roomId,
+      gameType: "jackaroo",
+      hand: hand.map(jackarooCardPublic).filter(Boolean),
+      legalMoves: legal.map(move => ({ cardId: move.card.id, marbleId: move.marbleId, mode: move.mode, steps: move.steps, from: move.from, to: move.to })),
+      legalCardIds: [...new Set(legal.map(move => move.card.id))],
+      isTurn,
+      canPass: Boolean(isTurn && !legal.length && hand.length),
+      turnDeadlineAt: Number(state?.turnDeadlineAt || 0) || null,
+      team: jackarooTeamFor(room, username),
+      teams: state?.teams || { team1: [], team2: [] }
+    };
+  }
+
+  function emitJackarooPrivateState(roomId) {
+    const db = dbState();
+    const room = db.gameRooms?.[roomId];
+    if (!room || room.gameType !== "jackaroo" || !io?.sockets?.sockets?.forEach) return;
+    io.sockets.sockets.forEach(socket => {
+      if (!socket.rooms?.has(`game_${roomId}`)) return;
+      const actor = gameActor(socket);
+      if (actor && room.players.includes(actor)) socket.emit("game:jackaroo-private", privateJackarooState(room, actor));
+    });
+  }
+
   function publicGameRoom(room, db) {
     if (!room) return null;
     const spec = GAME_SPECS[room.gameType] || GAME_SPECS.number_battle;
+    const advanced = spec.advanced || null;
+    const quiz = advanced === "quiz" ? {
+      question: quizQuestionForPublic(room.quiz?.current),
+      category: room.quiz?.current?.category || "",
+      deadlineAt: Number(room.quiz?.deadlineAt || 0) || null,
+      answeredPlayers: Object.keys(room.quiz?.answers || {}),
+      scores: quizScoreMap(room),
+      lastResult: room.lastResult?.gameType === "quiz" ? room.lastResult : null
+    } : null;
+    const snakes = advanced === "snakes_ladders" ? {
+      positions: snakesPositions(room),
+      currentTurn: Math.max(0, integer(room.snakes?.currentTurn, 0)),
+      currentPlayer: room.players?.[Math.max(0, integer(room.snakes?.currentTurn, 0))] || null,
+      turnDeadlineAt: Number(room.snakes?.turnDeadlineAt || 0) || null,
+      lastRoll: room.snakes?.lastRoll || null,
+      lastMove: room.snakes?.lastMove || null,
+      winner: room.snakes?.winner || null,
+      ladders: SNAKES_LADDERS
+    } : null;
+    const domino = advanced === "dominoes" ? publicDominoState(room) : null;
+    const uno = advanced === "uno" ? publicUnoState(room) : null;
+    const jackaroo = advanced === "jackaroo" ? publicJackarooState(room) : null;
     return {
       roomId: room.roomId,
       name: room.name,
@@ -1421,6 +2922,7 @@ function registerEconomyGames({
       gameIcon: spec.icon,
       action: spec.action,
       actionLabel: spec.actionLabel,
+      advanced,
       choices: Array.isArray(spec.choices) ? spec.choices : null,
       maxValue: Math.max(1, integer(spec.maxValue, 100)),
       randomChoice: Boolean(spec.randomChoice),
@@ -1432,9 +2934,24 @@ function registerEconomyGames({
       updatedAt: room.updatedAt,
       players: (room.players || []).map(username => ({
         ...playerProfile(username, db),
-        ready: Boolean(room.actions?.[username])
+        ready: advanced === "quiz"
+          ? Object.prototype.hasOwnProperty.call(room.quiz?.answers || {}, username)
+          : advanced === "snakes_ladders"
+            ? username === room.players?.[Math.max(0, integer(room.snakes?.currentTurn, 0))]
+            : advanced === "dominoes"
+              ? username === room.players?.[Math.max(0, integer(room.domino?.currentTurn, 0))]
+              : advanced === "uno"
+                ? username === room.players?.[Math.max(0, integer(room.uno?.currentTurn, 0))]
+                : advanced === "jackaroo"
+                  ? username === room.players?.[Math.max(0, integer(room.jackaroo?.currentTurn, 0))]
+                : Boolean(room.actions?.[username])
       })),
       lastResult: room.lastResult || null,
+      quiz,
+      snakes,
+      domino,
+      uno,
+      jackaroo,
       bannedUsers: []
     };
   }
@@ -1455,6 +2972,9 @@ function registerEconomyGames({
     const db = dbState();
     const room = db.gameRooms?.[roomId];
     if (room) io.to(`game_${roomId}`).emit("game:state", publicGameRoom(room, db));
+    if (room?.gameType === "dominoes") emitDominoPrivateState(roomId);
+    if (room?.gameType === "uno") emitUnoPrivateState(roomId);
+    if (room?.gameType === "jackaroo") emitJackarooPrivateState(roomId);
     emitGameRooms();
   }
 
@@ -1533,6 +3053,36 @@ function registerEconomyGames({
       socket.emit("game:invites", invites.map(invite => ({ ...invite, room: publicGameRoom(db.gameRooms[invite.roomId], db) })));
     });
 
+    socket.on("game:start", ({ roomId } = {}) => {
+      const actor = gameActor(socket);
+      const db = dbState();
+      const room = db.gameRooms?.[clampText(roomId, 140)];
+      const spec = roomSpec(room);
+      if (!actor || !room || !spec?.advanced || room.owner !== actor) {
+        return gameError(socket, "مالك الغرفة فقط يستطيع بدء هذه اللعبة");
+      }
+      if (room.players.length < 2) return gameError(socket, "تحتاج اللعبة إلى لاعبين على الأقل");
+      if (spec.advanced === "dominoes" && !spec.allowedPlayers.includes(room.players.length)) {
+        return gameError(socket, "الدومنة تبدأ بلاعبين أو أربعة لاعبين فقط");
+      }
+      if (spec.advanced === "jackaroo" && ![2, 4].includes(room.players.length)) {
+        return gameError(socket, "توميرو تبدأ بلاعبين أو أربعة لاعبين فقط");
+      }
+      if (room.status === "playing" || room.status === "results") return gameError(socket, "اللعبة بدأت بالفعل");
+      const started = spec.advanced === "quiz"
+        ? startQuizRound(room)
+        : spec.advanced === "snakes_ladders"
+          ? initializeSnakesRoom(room)
+          : spec.advanced === "dominoes"
+            ? startDominoRound(room)
+            : spec.advanced === "uno"
+              ? startUnoRound(room)
+              : startJackarooRound(room);
+      if (!started) return gameError(socket, "تعذر بدء اللعبة حالياً");
+      persist();
+      emitGameState(room.roomId);
+    });
+
     socket.on("game:create-room", ({ gameType, maxPlayers, name } = {}) => {
       const actor = gameActor(socket);
       if (!actor) return gameError(socket, "يجب تسجيل الدخول أولاً");
@@ -1551,6 +3101,11 @@ function registerEconomyGames({
         actions: {},
         round: 1,
         status: "waiting",
+        quiz: null,
+        snakes: null,
+        domino: null,
+        uno: null,
+        jackaroo: null,
         lastResult: null,
         createdAt: isoNow(),
         updatedAt: isoNow()
@@ -1569,8 +3124,12 @@ function registerEconomyGames({
       if (!room) return gameError(socket, "غرفة اللعبة غير موجودة");
       if (Array.isArray(room.bannedUsers) && room.bannedUsers.includes(actor)) return gameError(socket, "تم منعك من هذه الغرفة");
       if (!room.players.includes(actor) && room.players.length >= room.maxPlayers) return gameError(socket, "الغرفة ممتلئة");
+      if (!room.players.includes(actor) && isAdvancedRoom(room) && room.status !== "waiting" && room.status !== "ready") {
+        return gameError(socket, "اللعبة بدأت؛ لا يمكن الانضمام الآن");
+      }
       if (!room.players.includes(actor)) room.players.push(actor);
-      room.status = room.players.length >= 2 ? "ready" : "waiting";
+      if (!isAdvancedRoom(room)) room.status = room.players.length >= 2 ? "ready" : "waiting";
+      else if (room.status === "waiting" && room.players.length >= 2) room.status = "ready";
       room.updatedAt = isoNow();
       removeInvite(db, actor, room.roomId);
       persist();
@@ -1588,19 +3147,123 @@ function registerEconomyGames({
       socket.leave(`game_${room.roomId}`);
       if (room.owner === actor) room.owner = room.players[0] || null;
       if (!room.players.length) delete db.gameRooms[room.roomId];
+      else if (isAdvancedRoom(room)) resetAdvancedRoom(room);
       else { room.status = room.players.length >= 2 ? "ready" : "waiting"; room.updatedAt = isoNow(); }
       persist();
       socket.emit("game:left", { roomId: room.roomId });
       if (db.gameRooms[room.roomId]) emitGameState(room.roomId); else emitGameRooms();
     });
 
-    socket.on("game:action", ({ roomId, value, choice } = {}) => {
+    socket.on("game:action", ({ roomId, value, choice, action, answer, tileId, side, cardId, chosenColor, marbleId } = {}) => {
       const actor = gameActor(socket);
       const db = dbState();
       const room = db.gameRooms?.[clampText(roomId, 140)];
       const spec = roomSpec(room);
       if (!actor || !room || !spec || !room.players.includes(actor)) return gameError(socket, "لا تملك صلاحية اللعب في هذه الغرفة");
       if (room.players.length < 2) return gameError(socket, "انتظر انضمام لاعب آخر");
+
+      if (spec.advanced === "quiz") {
+        if (room.status !== "playing" || !room.quiz?.current) return gameError(socket, "لا توجد جولة أسئلة مفتوحة حالياً");
+        if (Date.now() >= Number(room.quiz.deadlineAt || 0)) {
+          const result = finishQuizRound(room, { timedOut: true });
+          persist();
+          emitGameState(room.roomId);
+          if (result) io.to(`game_${room.roomId}`).emit("game:advanced-result", result);
+          return gameError(socket, "انتهى وقت السؤال");
+        }
+        if (Object.prototype.hasOwnProperty.call(room.quiz.answers || {}, actor)) return gameError(socket, "سجلت إجابتك لهذه الجولة بالفعل");
+        const cleanAnswer = integer(answer ?? value, -1);
+        if (!Number.isInteger(cleanAnswer) || cleanAnswer < 0 || cleanAnswer >= room.quiz.current.options.length) {
+          return gameError(socket, "اختيار الإجابة غير صالح");
+        }
+        room.quiz.answers[actor] = cleanAnswer;
+        socket.emit("game:action-result", { roomId: room.roomId, gameType: room.gameType, value: cleanAnswer, round: room.round });
+        const allAnswered = room.players.every(username => Object.prototype.hasOwnProperty.call(room.quiz.answers, username));
+        const result = allAnswered ? finishQuizRound(room) : null;
+        room.updatedAt = isoNow();
+        persist();
+        emitGameState(room.roomId);
+        if (result) io.to(`game_${room.roomId}`).emit("game:advanced-result", result);
+        return;
+      }
+
+      if (spec.advanced === "uno") {
+        const cleanAction = action === "play" || action === "draw" || action === "uno" ? action : "";
+        const outcome = applyUnoAction(room, actor, {
+          action: cleanAction,
+          cardId: clampText(cardId, 80),
+          chosenColor: UNO_COLORS.includes(chosenColor) ? chosenColor : "",
+          automatic: false
+        });
+        if (!outcome.ok) return gameError(socket, outcome.error);
+        socket.emit("game:action-result", {
+          roomId: room.roomId,
+          gameType: room.gameType,
+          value: outcome.result?.type || cleanAction,
+          round: room.round
+        });
+        persist();
+        emitGameState(room.roomId);
+        io.to(`game_${room.roomId}`).emit("game:advanced-result", outcome.result);
+        return;
+      }
+
+      if (spec.advanced === "dominoes") {
+        const cleanAction = action === "play" || action === "draw" || action === "pass" ? action : "";
+        const outcome = applyDominoAction(room, actor, {
+          action: cleanAction,
+          tileId: clampText(tileId, 20),
+          side: side === "left" || side === "right" ? side : "",
+          automatic: false
+        });
+        if (!outcome.ok) return gameError(socket, outcome.error);
+        socket.emit("game:action-result", {
+          roomId: room.roomId,
+          gameType: room.gameType,
+          value: outcome.result?.type || cleanAction,
+          round: room.round
+        });
+        persist();
+        emitGameState(room.roomId);
+        io.to(`game_${room.roomId}`).emit("game:advanced-result", outcome.result);
+        return;
+      }
+
+      if (spec.advanced === "jackaroo") {
+        const cleanAction = action === "play" || action === "pass" ? action : "";
+        const outcome = applyJackarooAction(room, actor, {
+          action: cleanAction,
+          cardId: clampText(cardId, 80),
+          marbleId: clampText(marbleId, 30),
+          automatic: false
+        });
+        if (!outcome.ok) return gameError(socket, outcome.error);
+        socket.emit("game:action-result", {
+          roomId: room.roomId,
+          gameType: room.gameType,
+          value: outcome.result?.type || cleanAction,
+          round: room.round
+        });
+        persist();
+        emitGameState(room.roomId);
+        io.to(`game_${room.roomId}`).emit("game:advanced-result", outcome.result);
+        return;
+      }
+
+      if (spec.advanced === "snakes_ladders") {
+        if (room.status !== "playing" || !room.snakes) return gameError(socket, "ابدأ اللعبة أولاً");
+        const expected = room.players[Math.max(0, Math.min(room.players.length - 1, integer(room.snakes.currentTurn, 0)))];
+        if (actor !== expected) return gameError(socket, "انتظر دورك");
+        if (action && action !== "roll") return gameError(socket, "الحركة غير صالحة");
+        const result = applySnakesRoll(room, actor);
+        if (!result) return gameError(socket, "تعذر تنفيذ رمية النرد");
+        socket.emit("game:action-result", { roomId: room.roomId, gameType: room.gameType, value: result.roll, round: result.round });
+        persist();
+        emitGameState(room.roomId);
+        io.to(`game_${room.roomId}`).emit("game:advanced-result", result);
+        return;
+      }
+
       if (room.actions?.[actor]) return gameError(socket, "أرسلت اختيارك لهذه الجولة بالفعل");
       let cleanValue;
       if (spec.action === "roll") cleanValue = crypto.randomInt(1, 7);
@@ -1648,8 +3311,11 @@ function registerEconomyGames({
       if (!room.players.includes(target) || target === actor) return gameError(socket, "اللاعب غير موجود");
       room.players = room.players.filter(username => username !== target);
       delete room.actions?.[target];
-      room.updatedAt = isoNow();
-      room.status = room.players.length >= 2 ? "ready" : "waiting";
+      if (isAdvancedRoom(room)) resetAdvancedRoom(room);
+      else {
+        room.updatedAt = isoNow();
+        room.status = room.players.length >= 2 ? "ready" : "waiting";
+      }
       persist();
       io.to(`user_${target}`).emit("game:kicked", { roomId: room.roomId, message: "تم إخراجك من غرفة اللعبة" });
       emitGameState(room.roomId);
@@ -1686,6 +3352,8 @@ function registerEconomyGames({
   }
 
   ensureRouletteRound();
+  advancedGamesTimer = setInterval(processAdvancedTimers, 1_000);
+  advancedGamesTimer.unref?.();
   return { registerGameSocketHandlers, claimDailyForUser };
 }
 

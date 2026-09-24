@@ -76,9 +76,9 @@ function createObjectStorage() {
   );
   const downloadUrlTtlSeconds = boundedInteger(
     process.env.R2_PRESIGNED_DOWNLOAD_TTL_SECONDS,
-    15 * 60,
+    24 * 60 * 60,
     60,
-    60 * 60
+    24 * 60 * 60
   );
 
   const client = configured

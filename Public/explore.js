@@ -3,7 +3,7 @@
 
   const $ = id => document.getElementById(id);
   const socket = typeof io === "function" ? io({ autoConnect: false }) : null;
-  const state = { username: "", isOwner: false, canReview: false, type: "note", feed: [], queue: [], loading: false };
+  const state = { username: "", isOwner: false, canReview: false, canDelete: false, type: "note", feed: [], queue: [], loading: false };
 
   function toast(message, error = false) {
     const box = $("toast");
@@ -65,6 +65,81 @@
     text.append(name, username);
     wrap.append(image, text);
     return wrap;
+  }
+
+  function makeComment(comment = {}) {
+    const row = document.createElement("div");
+    row.className = "comment-row";
+    const avatar = document.createElement("img");
+    avatar.className = "comment-avatar";
+    avatar.alt = "";
+    avatar.src = comment.avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(comment.displayName || comment.username || "T")}&background=30294a&color=fff`;
+    avatar.onerror = () => { avatar.onerror = null; avatar.src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='16' fill='%2330294a'/%3E%3Ctext x='50%25' y='58%25' text-anchor='middle' font-size='15' fill='%23d8caff'%3ET%3C/text%3E%3C/svg%3E"; };
+    const copy = document.createElement("div");
+    copy.className = "comment-copy";
+    const head = document.createElement("div");
+    head.className = "comment-head";
+    const name = document.createElement("strong");
+    name.textContent = comment.displayName || comment.username || "مستخدم TOMI";
+    const time = document.createElement("small");
+    time.textContent = dateLabel(comment.createdAt);
+    head.append(name, time);
+    const text = document.createElement("p");
+    text.textContent = comment.text || "";
+    copy.append(head, text);
+    row.append(avatar, copy);
+    return row;
+  }
+
+  async function togglePostLike(post, button) {
+    if (!post || !button) return;
+    button.disabled = true;
+    try {
+      const data = await request(`/api/explore/posts/${encodeURIComponent(post.id)}/like`, { method: "POST", body: "{}" });
+      post.likedByMe = Boolean(data.liked);
+      post.likeCount = Number(data.likeCount || 0);
+      const icon = button.querySelector("i");
+      if (icon) icon.className = post.likedByMe ? "fa-solid fa-heart" : "fa-regular fa-heart";
+      button.classList.toggle("active", post.likedByMe);
+      const count = button.querySelector("b");
+      if (count) count.textContent = String(post.likeCount);
+    } catch (error) {
+      toast(error.message, true);
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  async function deletePost(post, button) {
+    if (!post || !state.canDelete || !confirm("حذف هذا المنشور من اكسبلور؟")) return;
+    button.disabled = true;
+    try {
+      const data = await request(`/api/explore/posts/${encodeURIComponent(post.id)}`, { method: "DELETE" });
+      toast(data.message || "تم حذف المنشور");
+      await loadPage({ queue: false });
+    } catch (error) {
+      toast(error.message, true);
+      button.disabled = false;
+    }
+  }
+
+  async function addPostComment(post, input, button) {
+    const text = String(input?.value || "").trim();
+    if (!text) return toast("اكتب تعليقًا أولاً", true);
+    button.disabled = true;
+    try {
+      const data = await request(`/api/explore/posts/${encodeURIComponent(post.id)}/comments`, {
+        method: "POST",
+        body: JSON.stringify({ text })
+      });
+      post.comments = [...(Array.isArray(post.comments) ? post.comments : []), data.comment].slice(-200);
+      input.value = "";
+      renderFeed();
+    } catch (error) {
+      toast(error.message, true);
+    } finally {
+      button.disabled = false;
+    }
   }
 
   function emptyBox(message) {
@@ -225,6 +300,44 @@
       timeText.textContent = dateLabel(post.createdAt);
       time.appendChild(timeText);
       card.appendChild(time);
+      const social = document.createElement("div");
+      social.className = "post-social";
+      const socialActions = document.createElement("div");
+      socialActions.className = "post-social-actions";
+      const likeButton = document.createElement("button");
+      likeButton.type = "button";
+      likeButton.className = `like-btn${post.likedByMe ? " active" : ""}`;
+      likeButton.innerHTML = `<i class="${post.likedByMe ? "fa-solid" : "fa-regular"} fa-heart" aria-hidden="true"></i><span>إعجاب</span> <b>${Number(post.likeCount || 0)}</b>`;
+      likeButton.addEventListener("click", () => togglePostLike(post, likeButton));
+      socialActions.appendChild(likeButton);
+      if (state.canDelete) {
+        const deleteButton = document.createElement("button");
+        deleteButton.type = "button";
+        deleteButton.className = "post-delete-btn";
+        deleteButton.innerHTML = '<i class="fa-solid fa-trash" aria-hidden="true"></i> حذف';
+        deleteButton.addEventListener("click", () => deletePost(post, deleteButton));
+        socialActions.appendChild(deleteButton);
+      }
+      social.appendChild(socialActions);
+      const comments = document.createElement("div");
+      comments.className = "comment-list";
+      (Array.isArray(post.comments) ? post.comments : []).slice(-20).forEach(comment => comments.appendChild(makeComment(comment)));
+      if (comments.childElementCount) social.appendChild(comments);
+      const commentForm = document.createElement("form");
+      commentForm.className = "comment-form";
+      const commentInput = document.createElement("input");
+      commentInput.type = "text";
+      commentInput.maxLength = 500;
+      commentInput.placeholder = "اكتب تعليقًا...";
+      commentInput.setAttribute("aria-label", "تعليق على المنشور");
+      const commentButton = document.createElement("button");
+      commentButton.type = "submit";
+      commentButton.innerHTML = '<i class="fa-solid fa-paper-plane"></i>';
+      commentButton.setAttribute("aria-label", "إرسال التعليق");
+      commentForm.append(commentInput, commentButton);
+      commentForm.addEventListener("submit", event => { event.preventDefault(); void addPostComment(post, commentInput, commentButton); });
+      social.appendChild(commentForm);
+      card.appendChild(social);
       if (state.canReview) {
         const pinActions = document.createElement("div");
         pinActions.className = "post-pin-row";
@@ -358,6 +471,7 @@
       state.feed = Array.isArray(data.posts) ? data.posts : [];
       state.isOwner = Boolean(data.isOwner);
       state.canReview = Boolean(data.canReview);
+      state.canDelete = Boolean(data.canDelete || data.isOwner);
       $("composerDescription").textContent = state.isOwner
         ? "اختر ملاحظة قصيرة أو فيديو حتى 150 ميغابايت؛ منشورات المالك تظهر مباشرة."
         : "اختر ملاحظة قصيرة أو فيديو حتى 150 ميغابايت؛ منشورك ينتظر موافقة المالك أو المشرف.";

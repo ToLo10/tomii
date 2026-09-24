@@ -13,6 +13,7 @@
   let lastShownResultRoundId = '';
   let wheelRotation = 0;
   let recentRouletteBet = null;
+  let pendingRouletteBets = 0;
   let toastTimer = null;
 
   const DEFAULT_ROULETTE_SLOTS = [
@@ -55,14 +56,51 @@
     if ($('topCoins')) $('topCoins').textContent = value;
   }
 
+  function giftEmoji(item = {}) {
+    const kind = String(item.metadata?.giftKind || item.itemId || item.name || '').toLowerCase();
+    if (kind.includes('king-lucky') || kind.includes('lucky')) return '💎';
+    if (kind.includes('king') || kind.includes('crown') || kind.includes('ملك')) return '👑';
+    if (kind.includes('heart') || kind.includes('قلب')) return '💖';
+    if (kind.includes('star') || kind.includes('نجمة')) return '🌟';
+    if (kind.includes('rose') || kind.includes('ورد')) return '🌹';
+    if (kind.includes('chest') || kind.includes('box') || kind.includes('صندوق')) return '🎁';
+    return item.metadata?.iconEmoji || '🎁';
+  }
+
   function itemVisual(item) {
     if (item.imageUrl || item.frameUrl) return `<img src="${escapeHtml(item.imageUrl || item.frameUrl)}" alt=""${item.animated ? ' class="animated-gift"' : ''}>`;
-    return `<i class="fa-solid ${escapeHtml(item.icon || 'fa-gift')}"></i>`;
+    return `<span class="gift-art gift-art-${escapeHtml(item.metadata?.giftKind || 'default')}"><span aria-hidden="true">${escapeHtml(giftEmoji(item))}</span><i class="fa-solid ${escapeHtml(item.icon || 'fa-gift')}" aria-hidden="true"></i></span>`;
   }
 
   function giftVisual(gift) {
     if (gift.imageUrl) return `<img src="${escapeHtml(gift.imageUrl)}" alt=""${gift.animated ? ' class="animated-gift"' : ''}>`;
-    return `<i class="fa-solid ${escapeHtml(gift.icon || 'fa-gift')}"></i>`;
+    return `<span class="gift-art gift-art-${escapeHtml(gift.metadata?.giftKind || 'default')}"><span aria-hidden="true">${escapeHtml(giftEmoji(gift))}</span><i class="fa-solid ${escapeHtml(gift.icon || 'fa-gift')}" aria-hidden="true"></i></span>`;
+  }
+
+  function showGiftReward(data) {
+    const reward = data?.reward;
+    if (!reward) return;
+    const secretMatched = Boolean(reward.secretMatched || reward.lucky);
+    const old = document.querySelector('.gift-reward-popover');
+    old?.remove();
+    const panel = document.createElement('div');
+    panel.className = `gift-reward-popover${secretMatched ? ' is-lucky' : reward.mysteryOpened ? ' is-mystery' : ''}`;
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'gift-reward-close';
+    close.textContent = '×';
+    close.setAttribute('aria-label', 'إغلاق');
+    const icon = document.createElement('div');
+    icon.className = 'gift-reward-icon';
+    icon.textContent = secretMatched ? '🏆' : reward.mysteryOpened ? '🎁' : '🪙';
+    const title = document.createElement('strong');
+    title.textContent = secretMatched ? 'تطابق الرقم الغامض!' : reward.mysteryOpened ? 'الصندوق الغامض انفتح' : 'مردود الهدية';
+    const text = document.createElement('p');
+    text.textContent = reward.message || `المردود: ${Number(reward.refundAmount || 0).toLocaleString('en-US')} كوينز`;
+    panel.append(close, icon, title, text);
+    document.body.appendChild(panel);
+    close.addEventListener('click', () => panel.remove());
+    setTimeout(() => panel.remove(), 7000);
   }
 
   function charismaIcon(charisma) { return escapeHtml(charisma?.icon || ''); }
@@ -101,11 +139,14 @@
     const definitions = rouletteSlots();
     const sector = 360 / Math.max(1, definitions.length);
     const wheelSize = wheel.clientWidth || 360;
-    const cardWidth = Math.max(68, Math.min(124, wheelSize * 0.22));
-    const cardHeight = Math.max(82, Math.min(116, wheelSize * 0.205));
-    const frameHeight = Math.max(40, cardHeight * 0.48);
-    const iconSize = Math.max(32, Math.min(48, wheelSize * 0.09));
-    const radius = Math.max(58, wheelSize / 2 - Math.max(cardWidth, cardHeight) / 2 - 8);
+    // Compact physical cards leave a clear angular gap between neighbouring
+    // slots. They sit slightly outside the inner rim so the pointer and the
+    // result remain readable even on a phone-sized wheel.
+    const cardWidth = Math.max(58, Math.min(112, wheelSize * 0.17));
+    const cardHeight = Math.max(72, Math.min(116, wheelSize * 0.17));
+    const frameHeight = Math.max(34, cardHeight * 0.46);
+    const iconSize = Math.max(28, Math.min(44, wheelSize * 0.075));
+    const radius = Math.max(82, wheelSize / 2 - cardHeight / 2 - 14);
     host.innerHTML = definitions.map((item, position) => {
       const slotId = Number(item.slot);
       const bet = rouletteBetFor(slotId);
@@ -283,11 +324,11 @@
     rouletteResultsAutoCloseTimer = setTimeout(() => overlay.classList.add('hidden'), remaining);
   }
 
-  function applyRouletteState(incoming) {
+  function applyRouletteState(incoming, {authoritativeOwnBets = false} = {}) {
     if (!incoming) return;
     const previous = rouletteState;
     const next = {...incoming};
-    if ((!Array.isArray(next.ownBets) || !next.ownBets.length) && previous?.roundId === next.roundId && previous.ownBets?.length) next.ownBets = previous.ownBets;
+    if (!authoritativeOwnBets && (!Array.isArray(next.ownBets) || !next.ownBets.length) && previous?.roundId === next.roundId && previous.ownBets?.length) next.ownBets = previous.ownBets;
     const slotsChanged = JSON.stringify((previous?.slots || []).map(item => [item.slot, item.icon, item.label, item.multiplier])) !== JSON.stringify((next.slots || []).map(item => [item.slot, item.icon, item.label, item.multiplier]));
     rouletteState = next;
     if (slotsChanged) {
@@ -314,16 +355,55 @@
   function connectRouletteSocket() {
     if (typeof io !== 'function') return;
     rouletteSocket = io({transports:['websocket','polling']});
-    rouletteSocket.on('connect', () => rouletteSocket.emit('roulette:subscribe'));
-    ['roulette:state', 'roulette:round-started', 'roulette:spin-started', 'roulette:results-started', 'roulette:control-updated'].forEach(eventName => rouletteSocket.on(eventName, applyRouletteState));
+    rouletteSocket.on('connect', () => {
+      pendingRouletteBets = 0;
+      rouletteSocket.emit('roulette:subscribe');
+    });
+    ['roulette:state', 'roulette:round-started', 'roulette:spin-started', 'roulette:results-started', 'roulette:control-updated'].forEach(eventName => rouletteSocket.on(eventName, state => applyRouletteState(state, {authoritativeOwnBets:eventName === 'roulette:state'})));
     rouletteSocket.on('roulette:bet-result', result => {
-      if (!result?.success) return showToast(result?.error || 'تعذر وضع الرهان', true);
+      if (!result?.success) {
+        pendingRouletteBets = 0;
+        showToast(result?.error || 'تعذر وضع الرهان', true);
+        void resyncRouletteAfterBetFailure();
+        return;
+      }
+      pendingRouletteBets = Math.max(0, pendingRouletteBets - 1);
       if (result.wallet) { wallet = result.wallet; renderWallet(); }
-      if (result.state) applyRouletteState(result.state);
+      if (result.state) applyRouletteState(result.state, {authoritativeOwnBets:true});
     });
     rouletteSocket.on('roulette:daily-awards', award => { if (award?.winners?.length) showToast(`تم توزيع جوائز اليوم على ${award.winners.length} فائز`); });
     rouletteSocket.on('wallet-updated', data => { if (data?.username && data.username === wallet?.username) { wallet = data; renderWallet(); renderRouletteState(); } });
+    rouletteSocket.on('economy-shop-updated', data => { if (!data?.item?.itemId) return; shopItems = shopItems.map(item => item.itemId === data.item.itemId ? data.item : item); renderShop(); });
     rouletteSocket.on('connect_error', () => showToast('تعذر الاتصال بسيرفر العجلة، أعد المحاولة بعد لحظة', true));
+  }
+
+  function addOptimisticRouletteBet(slotId, amount) {
+    if (!rouletteState || rouletteState.status !== 'betting') return;
+    if (!Array.isArray(rouletteState.ownBets)) rouletteState.ownBets = [];
+    const slot = Number(slotId);
+    const value = Number(amount);
+    const existing = rouletteState.ownBets.find(row => Number(row.slot) === slot);
+    if (existing) existing.amount = Number(existing.amount || 0) + value;
+    else rouletteState.ownBets.push({ slot, amount: value });
+    pendingRouletteBets += 1;
+    // Paint the chip locally before the round-trip to the server. The server
+    // state still replaces this optimistic value as soon as the acknowledgement
+    // arrives, so a rejected bet cannot remain visible.
+    buildRoulette();
+    renderRouletteControls();
+    renderRouletteState();
+  }
+
+  async function resyncRouletteAfterBetFailure() {
+    try {
+      const [me, state] = await Promise.all([
+        request('/api/economy/me'),
+        request('/api/economy/roulette/state')
+      ]);
+      if (me?.wallet) wallet = me.wallet;
+      if (state?.state) applyRouletteState(state.state, {authoritativeOwnBets:true});
+      else renderWallet();
+    } catch (_) {}
   }
 
   async function placeRouletteBet(denomination, slotId = selectedSlot) {
@@ -331,24 +411,25 @@
     const amount = Number(denomination);
     const targetSlot = Number(slotId);
     selectedSlot = targetSlot;
+    addOptimisticRouletteBet(targetSlot, amount);
     renderRouletteControls();
     animateRouletteBet(targetSlot, amount);
     if (rouletteSocket?.connected) return rouletteSocket.emit('roulette:bet', {slot:targetSlot, denomination:amount});
-    try { const data = await request('/api/economy/roulette/bet', {method:'POST', body:JSON.stringify({slot:targetSlot, denomination:amount})}); wallet = data.wallet || wallet; renderWallet(); applyRouletteState(data.state); }
-    catch (error) { showToast(error.message, true); }
+    try { const data = await request('/api/economy/roulette/bet', {method:'POST', body:JSON.stringify({slot:targetSlot, denomination:amount})}); pendingRouletteBets = Math.max(0, pendingRouletteBets - 1); wallet = data.wallet || wallet; renderWallet(); applyRouletteState(data.state, {authoritativeOwnBets:true}); }
+    catch (error) { pendingRouletteBets = 0; showToast(error.message, true); await resyncRouletteAfterBetFailure(); }
   }
 
   async function repeatRouletteBet() {
     if (!wallet?.rouletteLastBets?.length) return showToast('لا يوجد رهان محفوظ للتكرار', true);
     if (rouletteSocket?.connected) return rouletteSocket.emit('roulette:repeat');
-    try { const data = await request('/api/economy/roulette/repeat', {method:'POST', body:'{}'}); wallet = data.wallet || wallet; renderWallet(); applyRouletteState(data.state); }
+    try { const data = await request('/api/economy/roulette/repeat', {method:'POST', body:'{}'}); wallet = data.wallet || wallet; renderWallet(); applyRouletteState(data.state, {authoritativeOwnBets:true}); }
     catch (error) { showToast(error.message, true); }
   }
 
   function renderShop() {
     const host = $('shopGrid');
     if (!shopItems.length) { host.innerHTML = '<div class="empty-box">المتجر فارغ حاليًا.</div>'; return; }
-    host.innerHTML = shopItems.map(item => `<article class="shop-item"><div class="item-visual">${itemVisual(item)}</div><div class="item-name">${escapeHtml(item.name)}</div><div class="item-description">${escapeHtml(item.description || 'عنصر من متجر TOMI')}${item.type === 'gift' ? `<br><span class="charisma-mini"><span class="charisma-mini-icon">⭐</span> +${Number(item.charismaValue || 1).toLocaleString('en-US')} كارزما للمستلم</span>` : ''}</div><div class="item-footer"><span class="price"><i class="fa-solid fa-coins coin"></i> ${Number(item.price || 0).toLocaleString('en-US')}</span><button class="primary buy-btn" type="button" data-item-id="${escapeHtml(item.itemId)}">شراء</button></div></article>`).join('');
+    host.innerHTML = shopItems.map(item => `<article class="shop-item"><div class="item-visual">${itemVisual(item)}</div><div class="item-name">${escapeHtml(item.name)}</div><div class="item-description">${escapeHtml(item.description || 'عنصر من متجر TOMI')}${item.type === 'gift' ? `<br><span class="charisma-mini"><span class="charisma-mini-icon">⭐</span> +${Number(item.charismaValue || 1).toLocaleString('en-US')} كارزما للمستلم</span>` : ''}${item.itemId === 'gift_king' ? `<br><span class="gift-jackpot"><i class="fa-solid fa-box-open"></i> الصندوق المتراكم: ${Number(item.jackpotAmount || 0).toLocaleString('en-US')} كوينز</span>` : ''}</div><div class="item-footer"><span class="price"><i class="fa-solid fa-coins coin"></i> ${Number(item.price || 0).toLocaleString('en-US')}</span><button class="primary buy-btn" type="button" data-item-id="${escapeHtml(item.itemId)}">شراء</button></div></article>`).join('');
   }
 
   function renderInventory() {
@@ -410,7 +491,7 @@
       const data = await request('/api/economy/admin/items');
       const host = $('adminItems');
       const items = data.items || [];
-      host.innerHTML = items.length ? items.map(item => `<div class="admin-item"><span class="admin-item-visual">${itemVisual(item)}</span><span class="admin-item-name">${escapeHtml(item.name)}${item.animated ? ' • متحرك' : ''}</span><input class="input admin-edit-icon" value="${escapeHtml(item.icon || 'fa-gift')}" data-item-id="${escapeHtml(item.itemId)}" aria-label="أيقونة العنصر"><input class="input admin-edit-price" type="number" min="0" value="${Number(item.price || 0)}" data-item-id="${escapeHtml(item.itemId)}" aria-label="سعر العنصر"><input class="input admin-edit-charisma" type="number" min="1" value="${Number(item.charismaValue || 1)}" data-item-id="${escapeHtml(item.itemId)}" aria-label="كارزما الهدية" ${item.type === 'gift' ? '' : 'disabled'}><input class="input admin-edit-image" type="url" value="${escapeHtml(item.imageUrl || '')}" data-item-id="${escapeHtml(item.itemId)}" aria-label="رابط صورة الهدية"><label class="admin-edit-check"><input class="admin-edit-animated" type="checkbox" data-item-id="${escapeHtml(item.itemId)}" ${item.animated ? 'checked' : ''}> متحرك</label><small class="muted">${item.active === false ? 'متوقف' : 'فعال'}</small><button class="secondary save-item" data-item-id="${escapeHtml(item.itemId)}">حفظ</button><button class="secondary toggle-item" data-item-id="${escapeHtml(item.itemId)}" data-active="${item.active !== false}">${item.active === false ? 'تفعيل' : 'إيقاف'}</button></div>`).join('') : '<div class="empty-box">لا توجد عناصر.</div>';
+      host.innerHTML = items.length ? items.map(item => `<div class="admin-item"><span class="admin-item-visual">${itemVisual(item)}</span><span class="admin-item-name">${escapeHtml(item.name)}${item.animated ? ' • متحرك' : ''}</span><input class="input admin-edit-icon" value="${escapeHtml(item.icon || 'fa-gift')}" data-item-id="${escapeHtml(item.itemId)}" aria-label="أيقونة العنصر"><input class="input admin-edit-price" type="number" min="0" value="${Number(item.price || 0)}" data-item-id="${escapeHtml(item.itemId)}" aria-label="سعر العنصر"><input class="input admin-edit-charisma" type="number" min="1" value="${Number(item.charismaValue || 1)}" data-item-id="${escapeHtml(item.itemId)}" aria-label="كارزما الهدية" ${item.type === 'gift' ? '' : 'disabled'}><input class="input admin-edit-image" type="url" value="${escapeHtml(item.imageUrl || '')}" data-item-id="${escapeHtml(item.itemId)}" aria-label="رابط صورة الهدية">${item.itemId === 'gift_king' ? `<input class="input admin-edit-secret" type="number" min="1" max="${Number(item.price || 1)}" value="${Number(item.kingSecretNumber || 1)}" data-item-id="${escapeHtml(item.itemId)}" aria-label="الرقم الغامض" placeholder="الرقم الغامض" title="رقم الفوز السري (من 1 إلى سعر الهدية)"><small class="muted admin-jackpot">الصندوق: ${Number(item.jackpotAmount || 0).toLocaleString('en-US')} كوينز</small>` : ''}<label class="admin-edit-check"><input class="admin-edit-animated" type="checkbox" data-item-id="${escapeHtml(item.itemId)}" ${item.animated ? 'checked' : ''}> متحرك</label><small class="muted">${item.active === false ? 'متوقف' : 'فعال'}</small><button class="secondary save-item" data-item-id="${escapeHtml(item.itemId)}">حفظ</button><button class="secondary toggle-item" data-item-id="${escapeHtml(item.itemId)}" data-active="${item.active !== false}">${item.active === false ? 'تفعيل' : 'إيقاف'}</button></div>`).join('') : '<div class="empty-box">لا توجد عناصر.</div>';
     } catch (error) { showToast(error.message, true); }
   }
 
@@ -445,7 +526,7 @@
   }
 
   async function buy(itemId) {
-    try { const data = await request('/api/economy/shop/purchase', {method:'POST', body:JSON.stringify({itemId})}); wallet = data.wallet; renderWallet(); showToast(data.message || 'تم الشراء'); }
+    try { const data = await request('/api/economy/shop/purchase', {method:'POST', body:JSON.stringify({itemId})}); wallet = data.wallet; if (data.shopItem) { shopItems = shopItems.map(item => item.itemId === data.shopItem.itemId ? data.shopItem : item); renderShop(); } renderWallet(); showToast(data.message || 'تم الشراء'); }
     catch (error) { showToast(error.message, true); }
   }
 
@@ -476,7 +557,7 @@
     const toUsername = recipientMode === 'self' ? wallet?.username : $('giftRecipient').value.trim();
     if (!inventoryId || (recipientMode === 'user' && !toUsername)) return showToast('اختَر الهدية واكتب اسم المستلم', true);
     $('sendGiftBtn').disabled = true;
-    try { const data = await request('/api/economy/gifts/send', {method:'POST', body:JSON.stringify({inventoryId, recipientMode, toUsername})}); wallet = data.wallet; renderWallet(); $('giftRecipient').value = ''; showToast(data.message || 'تم إرسال الهدية'); }
+    try { const data = await request('/api/economy/gifts/send', {method:'POST', body:JSON.stringify({inventoryId, recipientMode, toUsername})}); wallet = data.wallet; renderWallet(); $('giftRecipient').value = ''; showToast(data.message || 'تم إرسال الهدية'); showGiftReward(data); }
     catch (error) { showToast(error.message, true); }
     finally { $('sendGiftBtn').disabled = !(wallet?.inventory || []).some(item => item.type === 'gift' && item.transferable !== false); }
   });
@@ -550,7 +631,10 @@
       const icon = findAdminField('admin-edit-icon');
       const image = findAdminField('admin-edit-image');
       const animated = findAdminField('admin-edit-animated');
-      try { await request('/api/economy/admin/items/' + encodeURIComponent(itemId), {method:'PATCH', body:JSON.stringify({icon:icon?.value || 'fa-gift', price:Number(price?.value || 0), charismaValue:Number(charisma?.value || 1), imageUrl:image?.value || '', animated:Boolean(animated?.checked)})}); await load(); showToast('تم حفظ سعر وكارزما وشكل الهدية'); }
+      const secret = findAdminField('admin-edit-secret');
+      const payload = {icon:icon?.value || 'fa-gift', price:Number(price?.value || 0), charismaValue:Number(charisma?.value || 1), imageUrl:image?.value || '', animated:Boolean(animated?.checked)};
+      if (secret) payload.kingSecretNumber = Number(secret.value || 0);
+      try { await request('/api/economy/admin/items/' + encodeURIComponent(itemId), {method:'PATCH', body:JSON.stringify(payload)}); await load(); showToast(secret ? 'تم حفظ الرقم الغامض وسعر وشكل الهدية' : 'تم حفظ سعر وكارزما وشكل الهدية'); }
       catch (error) { showToast(error.message, true); }
       return;
     }
