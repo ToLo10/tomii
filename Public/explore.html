@@ -60,6 +60,11 @@
                 <label class="field-label" for="videoFile">اختر فيديو</label>
                 <input id="videoFile" type="file" accept="video/*,.mp4,.m4v,.mov,.webm,.mkv,.avi,.3gp,.3g2,.mpeg,.mpg,.ogv,.wmv">
                 <p id="videoName" class="field-hint">MP4 أو صيغة فيديو مدعومة • الحد 150 ميغابايت</p>
+                <label class="field-label" for="videoQuality">جودة الفيديو</label>
+                <select id="videoQuality" class="text-input">
+                  <option value="360">360p — مجاني</option>
+                  <option value="720">720p — 2,000 كوينز TOMI</option>
+                </select>
                 <label class="field-label" for="videoCaption">وصف قصير (اختياري)</label>
                 <input id="videoCaption" class="text-input" maxlength="180" placeholder="اكتب وصفاً للفيديو">
                 <p class="field-hint">سيشاهد المراجع الفيديو قبل نشره.</p>
@@ -88,6 +93,6 @@
       </section>
     </main>
   </div>
-  <script src="/explore.js?v=20260923-social-delete1"></script>
+  <script src="/explore.js?v=20260925-video-quality-fees"></script>
 </body>
 </html>

@@ -30,6 +30,8 @@ const ROULETTE_SALAD_MIN_DELAY_MS = 2 * 60 * 60 * 1000;
 const ROULETTE_SALAD_MAX_DELAY_MS = 6 * 60 * 60 * 1000;
 const KING_GIFT_ITEM_ID = "gift_king";
 const KING_GIFT_LUCKY_REWARD_ID = "gift_king_lucky_reward";
+const GAME_ENTRY_FEES = Object.freeze([80, 100, 200]);
+const GAME_PLATFORM_COMMISSION = 20;
 
 function randomRouletteSaladDelayMs() {
   return crypto.randomInt(ROULETTE_SALAD_MIN_DELAY_MS, ROULETTE_SALAD_MAX_DELAY_MS + 1);
@@ -120,13 +122,14 @@ const GAME_SPECS = Object.freeze({
   quiz: {
     id: "quiz",
     name: "تحدي الأسئلة",
-    description: "أسئلة عشوائية بين 2 و8 لاعبين مع وقت ونقاط.",
+    description: "أسئلة عشوائية بين 2 و8 لاعبين، بجولات محددة ونقاط متراكمة.",
     icon: "fa-circle-question",
     action: "quiz",
     advanced: "quiz",
     allowedPlayers: [2, 3, 4, 5, 6, 7, 8],
     actionLabel: "اختَر الإجابة",
-    roundTimeMs: 15_000
+    roundTimeMs: 15_000,
+    roundOptions: [3, 5, 10, 15, 20]
   },
   snakes_ladders: {
     id: "snakes_ladders",
@@ -176,6 +179,9 @@ const GAME_SPECS = Object.freeze({
 
 const QUIZ_ROUND_TIME_MS = 15_000;
 const QUIZ_RESULT_TIME_MS = 3_500;
+const QUIZ_DEFAULT_ROUNDS = 10;
+const QUIZ_MIN_ROUNDS = 3;
+const QUIZ_MAX_ROUNDS = 30;
 const SNAKES_TURN_TIME_MS = 30_000;
 const SNAKES_BOARD_SIZE = 100;
 const DOMINO_TURN_TIME_MS = 30_000;
@@ -199,6 +205,17 @@ const SNAKES_LADDERS = Object.freeze({
   4: 14, 9: 31, 20: 38, 28: 84, 40: 59, 51: 67, 63: 81, 71: 91,
   17: 7, 54: 34, 62: 19, 64: 60, 87: 24, 93: 73, 95: 75, 99: 78
 });
+
+// Resolve a jump only after the dice movement has landed on the visible
+// ladder bottom or snake head. Keeping this in one helper prevents the public
+// board, animation payload, and authoritative position from drifting apart.
+function resolveSnakesJump(cell) {
+  const from = integer(cell, 0);
+  const destination = Number(SNAKES_LADDERS[String(from)]);
+  return Number.isSafeInteger(destination) && destination >= 1 && destination <= SNAKES_BOARD_SIZE && destination !== from
+    ? destination
+    : null;
+}
 
 // Questions stay on the server so clients cannot inspect the answer before
 // submitting. The bank is intentionally mixed and can later be moved to an
@@ -280,6 +297,10 @@ function integer(value, fallback = 0) {
   return Number.isFinite(number) ? Math.trunc(number) : fallback;
 }
 
+function normalizeQuizRounds(value) {
+  return Math.max(QUIZ_MIN_ROUNDS, Math.min(QUIZ_MAX_ROUNDS, integer(value, QUIZ_DEFAULT_ROUNDS)));
+}
+
 function clampText(value, max = 120) {
   return String(value == null ? "" : value).trim().slice(0, max);
 }
@@ -297,6 +318,14 @@ function quizQuestionForPublic(question) {
 function quizScoreMap(room) {
   const scores = room?.quiz?.scores && typeof room.quiz.scores === "object" ? room.quiz.scores : {};
   return Object.fromEntries((room?.players || []).map(username => [username, Math.max(0, integer(scores[username], 0))]));
+}
+
+function quizFinalRanking(room) {
+  const scores = quizScoreMap(room);
+  return (room?.players || []).map(username => ({
+    username,
+    score: Number(scores[username] || 0)
+  })).sort((a, b) => b.score - a.score || String(a.username).localeCompare(String(b.username)));
 }
 
 function snakesPositions(room) {
@@ -779,6 +808,139 @@ function registerEconomyGames({
     return db;
   }
 
+  function normalizeGameEntryFee(value) {
+    const fee = integer(value, GAME_ENTRY_FEES[0]);
+    return GAME_ENTRY_FEES.includes(fee) ? fee : GAME_ENTRY_FEES[0];
+  }
+
+  function chargeCoinsForVideo(username, amount = 2_000, metadata = {}) {
+    const db = dbState();
+    const user = db.users?.[username];
+    const cost = Math.max(0, integer(amount, 0));
+    if (!user) return { ok: false, error: "المستخدم غير موجود" };
+    ensureEconomyUser(user);
+    if (integer(user.coins, 0) < cost) {
+      return { ok: false, error: `تحتاج ${cost.toLocaleString("en-US")} كوينز لرفع الفيديو بهذه الجودة`, code: "INSUFFICIENT_COINS" };
+    }
+    if (cost > 0) {
+      user.coins -= cost;
+      createTransaction(user, {
+        delta: -cost,
+        type: "video_quality_fee",
+        reason: "رفع فيديو بجودة 720p",
+        metadata: { ...metadata, cost }
+      });
+    }
+    persist();
+    emitWallet(username);
+    return { ok: true, amount: cost, balance: user.coins };
+  }
+
+  function refundCoins(username, amount, metadata = {}) {
+    const db = dbState();
+    const user = db.users?.[username];
+    const value = Math.max(0, integer(amount, 0));
+    if (!user || value <= 0) return { ok: false };
+    ensureEconomyUser(user);
+    const credited = Math.min(value, Math.max(0, MAX_COIN_BALANCE - integer(user.coins, 0)));
+    if (!credited) return { ok: false };
+    user.coins += credited;
+    createTransaction(user, {
+      delta: credited,
+      type: "video_quality_refund",
+      reason: "إرجاع رسوم رفع الفيديو",
+      metadata: { ...metadata, amount: credited }
+    });
+    persist();
+    emitWallet(username);
+    return { ok: true, amount: credited, balance: user.coins };
+  }
+
+  function collectGameEntryFees(room) {
+    if (!room || !Array.isArray(room.players) || room.players.length < 2) {
+      return { ok: false, error: "تحتاج اللعبة إلى لاعبين على الأقل" };
+    }
+    if (room.fee?.collected && !room.fee?.settled) return { ok: true, fee: room.fee };
+    const entryFee = normalizeGameEntryFee(room.entryFee);
+    const players = [...new Set(room.players.filter(Boolean))];
+    const db = dbState();
+    const missing = players.find(username => !db.users?.[username]);
+    if (missing) return { ok: false, error: "أحد اللاعبين لم يعد متاحاً" };
+    const unable = players.find(username => integer(db.users[username].coins, 0) < entryFee);
+    if (unable) {
+      return { ok: false, error: `اللاعب ${unable} لا يملك ${entryFee.toLocaleString("en-US")} كوينز لبدء اللعبة` };
+    }
+    const collectedAt = isoNow();
+    players.forEach(username => {
+      const user = db.users[username];
+      ensureEconomyUser(user);
+      user.coins -= entryFee;
+      createTransaction(user, {
+        delta: -entryFee,
+        type: "game_entry_fee",
+        reason: `رسوم دخول لعبة ${room.name || room.gameType}`,
+        metadata: { roomId: room.roomId, gameType: room.gameType, entryFee }
+      });
+    });
+    room.fee = {
+      collected: true,
+      settled: false,
+      entryFee,
+      players,
+      totalPot: entryFee * players.length,
+      commission: 0,
+      prizePool: 0,
+      payouts: [],
+      collectedAt,
+      settledAt: null
+    };
+    persist();
+    players.forEach(emitWallet);
+    return { ok: true, fee: room.fee };
+  }
+
+  function settleGameEntryFees(room, winnerList) {
+    if (!room?.fee?.collected || room.fee.settled) return room?.fee?.settled ? room.fee : null;
+    const db = dbState();
+    const players = Array.isArray(room.fee.players) ? room.fee.players : room.players || [];
+    const winners = [...new Set((Array.isArray(winnerList) ? winnerList : []).filter(username => players.includes(username)))];
+    if (!winners.length) return null;
+    const totalPot = Math.max(0, integer(room.fee.totalPot, normalizeGameEntryFee(room.entryFee) * players.length));
+    const commission = Math.min(GAME_PLATFORM_COMMISSION, totalPot);
+    const prizePool = Math.max(0, totalPot - commission);
+    const base = Math.floor(prizePool / winners.length);
+    let remainder = prizePool - (base * winners.length);
+    const payouts = winners.map(username => {
+      const payout = base + (remainder > 0 ? 1 : 0);
+      if (remainder > 0) remainder -= 1;
+      const user = db.users?.[username];
+      if (user && payout > 0) {
+        ensureEconomyUser(user);
+        user.coins = Math.min(MAX_COIN_BALANCE, integer(user.coins, 0) + payout);
+        createTransaction(user, {
+          delta: payout,
+          type: "game_prize",
+          reason: `جائزة الفوز في ${room.name || room.gameType}`,
+          metadata: { roomId: room.roomId, gameType: room.gameType, totalPot, commission, payout }
+        });
+      }
+      return { username, amount: payout };
+    });
+    room.fee = {
+      ...room.fee,
+      settled: true,
+      winners,
+      totalPot,
+      commission,
+      prizePool,
+      payouts,
+      settledAt: isoNow()
+    };
+    persist();
+    winners.forEach(emitWallet);
+    return room.fee;
+  }
+
   function isAdvancedRoom(room) {
     return room?.gameType === "quiz" || room?.gameType === "snakes_ladders" || room?.gameType === "dominoes" || room?.gameType === "uno" || room?.gameType === "jackaroo";
   }
@@ -791,6 +953,7 @@ function registerEconomyGames({
     room.uno = null;
     room.jackaroo = null;
     room.lastResult = null;
+    room.fee = null;
     room.round = 1;
     room.status = keepRoster && room.players.length >= 2 ? "ready" : "waiting";
     room.updatedAt = isoNow();
@@ -878,6 +1041,7 @@ function registerEconomyGames({
       scores: Object.fromEntries(room.players.map(username => [username, Math.max(0, integer(state.scores?.[username], 0))])),
       createdAt: isoNow()
     };
+    result.entryFee = settleGameEntryFees(room, winners);
     room.lastResult = result;
     room.round = integer(room.round, 1) + 1;
     room.status = "finished";
@@ -1064,6 +1228,7 @@ function registerEconomyGames({
       scores: Object.fromEntries(room.players.map(username => [username, Math.max(0, integer(state.scores?.[username], 0))])),
       createdAt: isoNow()
     };
+    result.entryFee = settleGameEntryFees(room, [winner]);
     room.lastResult = result;
     room.round = integer(room.round, 1) + 1;
     room.status = "finished";
@@ -1260,6 +1425,7 @@ function registerEconomyGames({
       scores: { team1: Math.max(0, integer(state.scores?.team1, 0)), team2: Math.max(0, integer(state.scores?.team2, 0)) },
       createdAt: isoNow()
     };
+    result.entryFee = settleGameEntryFees(room, state.winnerPlayers);
     room.lastResult = result;
     room.round = integer(room.round, 1) + 1;
     room.status = "finished";
@@ -1359,11 +1525,14 @@ function registerEconomyGames({
     return applyJackarooAction(room, actor, { action: "pass", cardId: card?.id, automatic: true });
   }
 
-  function startQuizRound(room) {
+  function startQuizRound(room, { resetScores = false } = {}) {
     if (!room || room.gameType !== "quiz" || room.players.length < 2) return false;
-    if (!room.quiz || typeof room.quiz !== "object") {
-      room.quiz = { usedQuestionIds: [], scores: {}, answers: {}, current: null, deadlineAt: null, nextRoundAt: null };
+    const totalRounds = normalizeQuizRounds(room.quizRounds);
+    if (!room.quiz || typeof room.quiz !== "object" || resetScores) {
+      room.quiz = { usedQuestionIds: [], scores: {}, answers: {}, current: null, deadlineAt: null, nextRoundAt: null, totalRounds };
     }
+    room.quiz.totalRounds = totalRounds;
+    if (resetScores) room.round = 1;
     const used = new Set(Array.isArray(room.quiz.usedQuestionIds) ? room.quiz.usedQuestionIds : []);
     let available = QUIZ_QUESTIONS.filter(question => !used.has(question.id));
     if (!available.length) {
@@ -1405,25 +1574,38 @@ function registerEconomyGames({
     });
     const roundWinners = entries.filter(entry => entry.correct).map(entry => entry.username);
     const scores = quizScoreMap(room);
+    const totalRounds = normalizeQuizRounds(room.quizRounds || room.quiz.totalRounds);
+    const finalRound = Number(room.round || 1) >= totalRounds;
+    const finalRankings = quizFinalRanking(room);
+    const highestScore = finalRankings[0]?.score ?? 0;
+    const finalWinners = finalRankings.filter(entry => entry.score === highestScore).map(entry => entry.username);
     const result = {
       gameType: "quiz",
       round: room.round,
+      totalRounds,
+      finalRound,
       question: quizQuestionForPublic(question),
       correctAnswer: question.answer,
       correctText: question.options[question.answer] || "",
       entries,
       roundWinners,
       scores,
+      finalRankings,
+      finalWinners,
+      winner: finalRound ? (finalWinners[0] || null) : null,
       timedOut: Boolean(timedOut),
       createdAt: isoNow()
     };
+    result.entryFee = finalRound ? settleGameEntryFees(room, finalWinners) : null;
     room.lastResult = result;
-    room.round = integer(room.round, 1) + 1;
+    room.round = finalRound ? totalRounds : integer(room.round, 1) + 1;
     room.quiz.current = null;
     room.quiz.answers = {};
     room.quiz.deadlineAt = null;
-    room.quiz.nextRoundAt = Date.now() + QUIZ_RESULT_TIME_MS;
-    room.status = "results";
+    room.quiz.nextRoundAt = finalRound ? null : Date.now() + QUIZ_RESULT_TIME_MS;
+    room.quiz.finalRankings = finalRound ? finalRankings : [];
+    room.quiz.finalWinners = finalRound ? finalWinners : [];
+    room.status = finalRound ? "finished" : "results";
     room.updatedAt = isoNow();
     return result;
   }
@@ -1458,10 +1640,12 @@ function registerEconomyGames({
     const before = Math.max(1, integer(room.snakes.positions?.[actor], 1));
     const attempted = before + roll;
     const stepped = attempted <= SNAKES_BOARD_SIZE ? attempted : before;
-    const jumpTo = Object.prototype.hasOwnProperty.call(SNAKES_LADDERS, stepped)
-      ? SNAKES_LADDERS[stepped]
-      : null;
-    const after = jumpTo || stepped;
+    // Resolve the board rule only after the dice movement has landed.  The
+    // keys are the visible ladder bottoms and snake heads; there are no
+    // hidden coloured control squares involved in the rule itself.
+    const jumpTo = resolveSnakesJump(stepped);
+    const after = jumpTo == null ? stepped : jumpTo;
+    const jumpType = jumpTo == null ? null : (jumpTo > stepped ? "ladder" : "snake");
     room.snakes.positions[actor] = after;
     const finished = after >= SNAKES_BOARD_SIZE;
     const extraTurn = !finished && roll === 6;
@@ -1474,11 +1658,14 @@ function registerEconomyGames({
       stepped,
       after,
       jumpTo,
+      jumpType,
+      landedOn: stepped,
       automatic: Boolean(automatic),
       extraTurn,
       winner: finished ? actor : null,
       createdAt: isoNow()
     };
+    result.entryFee = finished ? settleGameEntryFees(room, [actor]) : null;
     room.snakes.lastRoll = roll;
     room.snakes.lastMove = result;
     room.round = integer(room.round, 1) + 1;
@@ -1699,6 +1886,149 @@ function registerEconomyGames({
   function emitWallet(username) {
     if (!username) return;
     io.to(`user_${username}`).emit("wallet-updated", walletPayload(username, { claimDaily: false }));
+  }
+
+  // Deliver one or more already-purchased gift entries in one atomic request.
+  // Each gift keeps its own refund/jackpot roll and charisma record, while the
+  // caller can return a compact batch summary to the browser.
+  function deliverGiftEntries({ db, senderKey, targetKey, entries }) {
+    const sender = db.users?.[senderKey];
+    const recipient = db.users?.[targetKey];
+    if (!sender || !recipient) throw new Error("المستخدم المستلم غير موجود");
+    const gifts = [];
+    const rewards = [];
+    let totalRefund = 0;
+    let totalPrice = 0;
+    let totalCharisma = 0;
+    let totalJackpot = 0;
+
+    for (const entry of entries) {
+      const item = db.shopItems?.[entry.itemId] || null;
+      const giftPrice = Math.max(0, integer(entry.price ?? item?.price, 0));
+      const refundAmount = giftPrice > 0 ? crypto.randomInt(1, giftPrice + 1) : 0;
+      totalPrice += giftPrice;
+      totalRefund += refundAmount;
+      const refundOwner = targetKey === senderKey ? sender : recipient;
+      const refundOwnerKey = targetKey === senderKey ? senderKey : targetKey;
+      if (refundAmount > 0) {
+        refundOwner.coins = Math.min(MAX_COIN_BALANCE, integer(refundOwner.coins, 0) + refundAmount);
+        createTransaction(refundOwner, {
+          delta: refundAmount,
+          type: "gift_lucky_refund",
+          reason: `مردود عشوائي من ${entry.name || item?.name || "الهدية"}`,
+          metadata: { itemId: entry.itemId, price: giftPrice, refundAmount, recipient: refundOwnerKey }
+        });
+      }
+
+      const charismaValue = itemCharismaValue({ ...(item || {}), ...entry }, giftPrice);
+      totalCharisma += charismaValue;
+      const gift = {
+        giftId: randomId("gift"),
+        itemId: entry.itemId,
+        name: entry.name || item?.name || "هدية",
+        icon: entry.icon || item?.icon || "fa-gift",
+        imageUrl: entry.imageUrl || item?.imageUrl || "",
+        animated: Boolean(entry.animated ?? item?.animated),
+        price: giftPrice,
+        metadata: entry.metadata && typeof entry.metadata === "object" ? entry.metadata : (item?.metadata || {}),
+        fromUsername: senderKey,
+        toUsername: targetKey,
+        charismaValue,
+        sentAt: isoNow()
+      };
+      recipient.charisma = Math.min(MAX_CHARISMA, integer(recipient.charisma) + charismaValue);
+      createCharismaEntry(recipient, {
+        delta: charismaValue,
+        type: "gift_received",
+        reason: `استلام ${gift.name} من ${senderKey}`,
+        metadata: { giftId: gift.giftId, fromUsername: senderKey, charismaValue }
+      });
+
+      const reward = {
+        kind: "refund",
+        refundAmount,
+        price: giftPrice,
+        luckyNumber: null,
+        lucky: false,
+        secretMatched: false,
+        jackpotAmount: 0,
+        jackpotPool: 0,
+        mysteryOpened: false,
+        mysteryAmount: 0,
+        rewardItem: null,
+        refundRecipient: refundOwnerKey,
+        message: refundAmount > 0
+          ? (targetKey === senderKey
+            ? `رجعلك ${refundAmount.toLocaleString("en-US")} كوينز من الهدية.`
+            : `وصل للمستلم ${targetKey} مردود ${refundAmount.toLocaleString("en-US")} كوينز.`)
+          : (targetKey === senderKey ? "ماكو مردود لهذه الهدية." : `ماكو مردود للمستلم ${targetKey} لهذه الهدية.`)
+      };
+      if (entry.itemId === KING_GIFT_ITEM_ID || item?.metadata?.giftKind === "king") {
+        // The owner's number never leaves the server. Only the match result is
+        // returned, even when several King Gifts are sent in one batch.
+        const secretNumber = Math.max(0, integer(item?.kingSecretNumber, 0));
+        const secretMatched = secretNumber > 0 && refundAmount === secretNumber;
+        reward.secretMatched = secretMatched;
+        reward.lucky = secretMatched;
+        const stats = db.giftStats?.[KING_GIFT_ITEM_ID] && typeof db.giftStats[KING_GIFT_ITEM_ID] === "object"
+          ? db.giftStats[KING_GIFT_ITEM_ID]
+          : (db.giftStats[KING_GIFT_ITEM_ID] = { coinsSpent: 0, purchases: 0, totalSpent: 0, wins: 0 });
+        const pool = Math.max(0, integer(stats.coinsSpent, 0));
+        reward.jackpotPool = pool;
+        if (secretMatched) {
+          const available = Math.max(0, MAX_COIN_BALANCE - integer(sender.coins, 0));
+          const jackpotAmount = Math.min(pool, available);
+          if (jackpotAmount > 0) {
+            sender.coins += jackpotAmount;
+            createTransaction(sender, {
+              delta: jackpotAmount,
+              type: "gift_king_jackpot",
+              reason: "جائزة ملك الهدايا",
+              metadata: { itemId: KING_GIFT_ITEM_ID, jackpotAmount, poolBefore: pool, refundAmount }
+            });
+            stats.coinsSpent = Math.max(0, pool - jackpotAmount);
+            if (stats.coinsSpent === 0) stats.purchases = 0;
+            stats.wins = Math.max(0, integer(stats.wins, 0)) + 1;
+            stats.lastWinner = senderKey;
+            stats.lastWonAt = isoNow();
+            stats.updatedAt = isoNow();
+          }
+          totalJackpot += jackpotAmount;
+          reward.jackpotAmount = jackpotAmount;
+          reward.message = jackpotAmount > 0
+            ? `تطابق الرقم الغامض! ربحت ${jackpotAmount.toLocaleString("en-US")} كوينز من الصندوق المتراكم.`
+            : "تطابق الرقم الغامض، لكن الصندوق المتراكم فارغ حاليًا.";
+        } else {
+          reward.message = refundAmount > 0
+            ? (targetKey === senderKey
+              ? `رجعلك ${refundAmount.toLocaleString("en-US")} كوينز، لكن الرقم الغامض لم يتطابق.`
+              : `وصل للمستلم ${targetKey} مردود ${refundAmount.toLocaleString("en-US")} كوينز، لكن الرقم الغامض لم يتطابق.`)
+            : (targetKey === senderKey
+              ? "ماكو مردود لهذه الهدية، والرقم الغامض لم يتطابق."
+              : `ماكو مردود للمستلم ${targetKey}، والرقم الغامض لم يتطابق.`);
+        }
+      }
+
+      recipient.receivedGifts.unshift(gift);
+      recipient.receivedGifts = recipient.receivedGifts.slice(0, 100);
+      sender.sentGifts.unshift(gift);
+      sender.sentGifts = sender.sentGifts.slice(0, 100);
+      createTransaction(sender, {
+        delta: 0,
+        type: "gift_sent",
+        reason: `إرسال ${gift.name} إلى ${targetKey}`,
+        metadata: { giftId: gift.giftId, itemId: gift.itemId, toUsername: targetKey, charismaValue, refundAmount }
+      });
+      createTransaction(recipient, {
+        delta: 0,
+        type: "gift_received",
+        reason: `استلام ${gift.name} من ${senderKey}`,
+        metadata: { giftId: gift.giftId, itemId: gift.itemId, fromUsername: senderKey, charismaValue }
+      });
+      gifts.push(gift);
+      rewards.push(reward);
+    }
+    return { gifts, rewards, totalRefund, totalPrice, totalCharisma, totalJackpot };
   }
 
   function rouletteSlot(slotId) {
@@ -2139,19 +2469,21 @@ function registerEconomyGames({
       const db = dbState();
       ensureDefaultShopItems();
       const itemId = clampText(req.body.itemId, 120);
+      const quantity = Math.max(1, Math.min(100, integer(req.body?.quantity, 1)));
       const item = db.shopItems[itemId];
       const user = db.users[req.authUser];
       if (!item || item.active === false) return res.status(404).json({ error: "العنصر غير موجود أو غير متاح" });
       if (!user) return res.status(401).json({ error: "الحساب غير موجود" });
       ensureEconomyUser(user);
-      if (item.stock != null && integer(item.sold) >= integer(item.stock)) return res.status(400).json({ error: "نفدت كمية هذا العنصر" });
+      if (item.stock != null && integer(item.sold) + quantity > integer(item.stock)) return res.status(400).json({ error: "الكمية المطلوبة غير متوفرة" });
       const price = Math.max(0, integer(item.price));
-      if (user.coins < price) return res.status(400).json({ error: "رصيدك من كوينز TOMI غير كافٍ" });
+      const totalPrice = price * quantity;
+      if (user.coins < totalPrice) return res.status(400).json({ error: "رصيدك من كوينز TOMI غير كافٍ" });
       if (item.type === "frame" && (!item.frameId || !db.frames?.[item.frameId])) return res.status(400).json({ error: "الإطار غير متوفر حاليًا" });
 
-      user.coins -= price;
-      createTransaction(user, { delta: -price, type: "purchase", reason: `شراء ${item.name}`, metadata: { itemId: item.itemId, price } });
-      const inventoryEntry = {
+      user.coins -= totalPrice;
+      createTransaction(user, { delta: -totalPrice, type: "purchase", reason: quantity > 1 ? `شراء ${item.name} ×${quantity}` : `شراء ${item.name}`, metadata: { itemId: item.itemId, price, quantity, totalPrice } });
+      const purchasedEntries = Array.from({ length: quantity }, () => ({
         inventoryId: randomId("inv"),
         itemId: item.itemId,
         type: item.type,
@@ -2166,16 +2498,16 @@ function registerEconomyGames({
         charismaValue: item.type === "gift" ? itemCharismaValue(item, price) : 0,
         metadata: item.metadata && typeof item.metadata === "object" ? item.metadata : {},
         purchasedAt: isoNow()
-      };
-      user.inventory.push(inventoryEntry);
-      item.sold = Math.max(0, integer(item.sold)) + 1;
+      }));
+      user.inventory.push(...purchasedEntries);
+      item.sold = Math.max(0, integer(item.sold)) + quantity;
       if (item.type === "gift") {
         const stats = db.giftStats[item.itemId] && typeof db.giftStats[item.itemId] === "object"
           ? db.giftStats[item.itemId]
           : (db.giftStats[item.itemId] = { coinsSpent: 0, purchases: 0, totalSpent: 0, wins: 0 });
-        stats.coinsSpent = Math.max(0, integer(stats.coinsSpent, 0)) + price;
-        stats.purchases = Math.max(0, integer(stats.purchases, 0)) + 1;
-        stats.totalSpent = Math.max(0, integer(stats.totalSpent, 0)) + price;
+        stats.coinsSpent = Math.max(0, integer(stats.coinsSpent, 0)) + totalPrice;
+        stats.purchases = Math.max(0, integer(stats.purchases, 0)) + quantity;
+        stats.totalSpent = Math.max(0, integer(stats.totalSpent, 0)) + totalPrice;
         stats.updatedAt = isoNow();
       }
       item.updatedAt = isoNow();
@@ -2183,7 +2515,7 @@ function registerEconomyGames({
       emitWallet(req.authUser);
       const shopItem = publicShopItem(item, db);
       io.emit("economy-shop-updated", { item: shopItem });
-      res.json({ success: true, message: "تم الشراء وإضافة العنصر إلى محفظتك", purchased: publicInventoryEntry(inventoryEntry, db.shopItems), shopItem, wallet: walletPayload(req.authUser) });
+      res.json({ success: true, message: quantity > 1 ? `تم شراء ${item.name} ×${quantity} وإضافتها إلى محفظتك` : "تم الشراء وإضافة العنصر إلى محفظتك", purchased: publicInventoryEntry(purchasedEntries[0], db.shopItems), purchasedCount: quantity, shopItem, wallet: walletPayload(req.authUser) });
     } catch (error) {
       console.error("economy purchase:", error.message);
       res.status(500).json({ error: "تعذر إكمال الشراء" });
@@ -2203,141 +2535,67 @@ function registerEconomyGames({
         ? senderKey
         : findUserKey(db, req.body?.toUsername || req.body?.username);
       const inventoryId = clampText(req.body?.inventoryId, 160);
+      const itemId = clampText(req.body?.itemId, 120);
+      const quantity = Math.max(1, Math.min(100, integer(req.body?.quantity, 1)));
       const sender = db.users?.[senderKey];
       const recipient = targetKey ? db.users?.[targetKey] : null;
       if (!sender || !recipient) return res.status(404).json({ error: "المستخدم المستلم غير موجود" });
       ensureEconomyUser(sender);
       ensureEconomyUser(recipient);
 
-      const inventoryIndex = sender.inventory.findIndex(entry => entry?.inventoryId === inventoryId);
-      if (inventoryIndex < 0) return res.status(404).json({ error: "الهدية غير موجودة في محفظتك" });
-      const entry = sender.inventory[inventoryIndex];
-      const item = db.shopItems?.[entry.itemId] || null;
-      if ((entry.type || item?.type) !== "gift") return res.status(400).json({ error: "هذا العنصر ليس هدية قابلة للإرسال" });
-
-      sender.inventory.splice(inventoryIndex, 1);
-      const giftPrice = Math.max(0, integer(entry.price ?? item?.price, 0));
-      const refundAmount = giftPrice > 0 ? crypto.randomInt(1, giftPrice + 1) : 0;
-      if (refundAmount > 0) {
-        sender.coins = Math.min(MAX_COIN_BALANCE, integer(sender.coins, 0) + refundAmount);
-        createTransaction(sender, {
-          delta: refundAmount,
-          type: "gift_lucky_refund",
-          reason: `مردود عشوائي من ${entry.name || item?.name || "الهدية"}`,
-          metadata: { itemId: entry.itemId, price: giftPrice, refundAmount }
-        });
+      const selectedIndexes = [];
+      if (inventoryId) {
+        const firstIndex = sender.inventory.findIndex(entry => entry?.inventoryId === inventoryId);
+        if (firstIndex < 0) return res.status(404).json({ error: "الهدية غير موجودة في محفظتك" });
+        const selectedItemId = sender.inventory[firstIndex]?.itemId;
+        for (let index = 0; index < sender.inventory.length && selectedIndexes.length < quantity; index += 1) {
+          const entry = sender.inventory[index];
+          if (entry?.itemId === selectedItemId && (entry.type || db.shopItems?.[entry.itemId]?.type) === "gift") selectedIndexes.push(index);
+        }
+      } else if (itemId) {
+        for (let index = 0; index < sender.inventory.length && selectedIndexes.length < quantity; index += 1) {
+          const entry = sender.inventory[index];
+          if (entry?.itemId === itemId && (entry.type || db.shopItems?.[entry.itemId]?.type) === "gift") selectedIndexes.push(index);
+        }
       }
-      const charismaValue = itemCharismaValue({ ...item, ...entry }, giftPrice);
-      const gift = {
-        giftId: randomId("gift"),
-        itemId: entry.itemId,
-        name: entry.name || item?.name || "هدية",
-        icon: entry.icon || item?.icon || "fa-gift",
-        imageUrl: entry.imageUrl || item?.imageUrl || "",
-        animated: Boolean(entry.animated ?? item?.animated),
-        price: giftPrice,
-        metadata: entry.metadata && typeof entry.metadata === "object" ? entry.metadata : (item?.metadata || {}),
-        fromUsername: senderKey,
-        toUsername: targetKey,
-        charismaValue,
-        sentAt: isoNow()
-      };
-      recipient.charisma = Math.min(MAX_CHARISMA, integer(recipient.charisma) + charismaValue);
-      createCharismaEntry(recipient, {
-        delta: charismaValue,
-        type: "gift_received",
-        reason: `استلام ${gift.name} من ${senderKey}`,
-        metadata: { giftId: gift.giftId, fromUsername: senderKey, charismaValue }
-      });
-      const reward = {
-        kind: "refund",
-        refundAmount,
-        price: giftPrice,
+      if (!selectedIndexes.length) return res.status(404).json({ error: "لا توجد هدايا من هذا النوع في محفظتك" });
+      if (selectedIndexes.length < quantity) return res.status(400).json({ error: `المتاح من هذه الهدية ${selectedIndexes.length} فقط` });
+      const entries = selectedIndexes.map(index => sender.inventory[index]);
+      if (entries.some(entry => (entry.type || db.shopItems?.[entry.itemId]?.type) !== "gift")) return res.status(400).json({ error: "هذا العنصر ليس هدية قابلة للإرسال" });
+      selectedIndexes.sort((a, b) => b - a).forEach(index => sender.inventory.splice(index, 1));
+      const result = deliverGiftEntries({ db, senderKey, targetKey, entries });
+      const rewards = result.rewards;
+      const reward = rewards.length === 1 ? rewards[0] : {
+        kind: "batch",
+        refundAmount: result.totalRefund,
+        price: result.totalPrice,
         luckyNumber: null,
-        lucky: false,
-        secretMatched: false,
-        jackpotAmount: 0,
-        jackpotPool: 0,
+        lucky: rewards.some(row => row.lucky),
+        secretMatched: rewards.some(row => row.secretMatched),
+        jackpotAmount: result.totalJackpot,
+        jackpotPool: rewards[rewards.length - 1]?.jackpotPool || 0,
         mysteryOpened: false,
         mysteryAmount: 0,
         rewardItem: null,
-        message: refundAmount > 0
-          ? `رجعلك ${refundAmount.toLocaleString("en-US")} كوينز من الهدية.`
-          : "ماكو مردود لهذه الهدية."
+        message: `تم إرسال ${result.gifts.length} هدايا. مجموع المردود: ${result.totalRefund.toLocaleString("en-US")} كوينز.`
       };
-      if (entry.itemId === KING_GIFT_ITEM_ID || item?.metadata?.giftKind === "king") {
-        // The owner-configured number is deliberately never returned to a
-        // client. The sender only sees whether their random refund matched it.
-        const secretNumber = Math.max(0, integer(item?.kingSecretNumber, 0));
-        const secretMatched = secretNumber > 0 && refundAmount === secretNumber;
-        reward.secretMatched = secretMatched;
-        reward.lucky = secretMatched;
-        const stats = db.giftStats?.[KING_GIFT_ITEM_ID] && typeof db.giftStats[KING_GIFT_ITEM_ID] === "object"
-          ? db.giftStats[KING_GIFT_ITEM_ID]
-          : (db.giftStats[KING_GIFT_ITEM_ID] = { coinsSpent: 0, purchases: 0, totalSpent: 0, wins: 0 });
-        const pool = Math.max(0, integer(stats.coinsSpent, 0));
-        reward.jackpotPool = pool;
-        if (secretMatched) {
-          const available = Math.max(0, MAX_COIN_BALANCE - integer(sender.coins, 0));
-          const jackpotAmount = Math.min(pool, available);
-          if (jackpotAmount > 0) {
-            sender.coins += jackpotAmount;
-            createTransaction(sender, {
-              delta: jackpotAmount,
-              type: "gift_king_jackpot",
-              reason: "جائزة ملك الهدايا",
-              metadata: { itemId: KING_GIFT_ITEM_ID, jackpotAmount, poolBefore: pool, refundAmount }
-            });
-            stats.coinsSpent = Math.max(0, pool - jackpotAmount);
-            if (stats.coinsSpent === 0) stats.purchases = 0;
-            stats.wins = Math.max(0, integer(stats.wins, 0)) + 1;
-            stats.lastWinner = senderKey;
-            stats.lastWonAt = isoNow();
-            stats.updatedAt = isoNow();
-          }
-          reward.jackpotAmount = jackpotAmount;
-          reward.message = jackpotAmount > 0
-            ? `تطابق الرقم الغامض! ربحت ${jackpotAmount.toLocaleString("en-US")} كوينز من الصندوق المتراكم.`
-            : "تطابق الرقم الغامض، لكن الصندوق المتراكم فارغ حاليًا.";
-        } else {
-          reward.message = refundAmount > 0
-            ? `رجعلك ${refundAmount.toLocaleString("en-US")} كوينز، لكن الرقم الغامض لم يتطابق.`
-            : "ماكو مردود لهذه الهدية، والرقم الغامض لم يتطابق.";
-        }
-      }
-      recipient.receivedGifts.unshift(gift);
-      recipient.receivedGifts = recipient.receivedGifts.slice(0, 100);
-      sender.sentGifts.unshift(gift);
-      sender.sentGifts = sender.sentGifts.slice(0, 100);
-      createTransaction(sender, {
-        delta: 0,
-        type: "gift_sent",
-        reason: `إرسال ${gift.name} إلى ${targetKey}`,
-        metadata: { giftId: gift.giftId, itemId: gift.itemId, toUsername: targetKey, charismaValue, refundAmount }
-      });
-      createTransaction(recipient, {
-        delta: 0,
-        type: "gift_received",
-        reason: `استلام ${gift.name} من ${senderKey}`,
-        metadata: { giftId: gift.giftId, itemId: gift.itemId, fromUsername: senderKey, charismaValue }
-      });
       persist();
       emitWallet(senderKey);
       if (targetKey !== senderKey) emitWallet(targetKey);
-      if (entry.itemId === KING_GIFT_ITEM_ID || item?.metadata?.giftKind === "king") {
+      if (entries.some(entry => entry.itemId === KING_GIFT_ITEM_ID || db.shopItems?.[entry.itemId]?.metadata?.giftKind === "king")) {
         io.emit("economy-shop-updated", { item: publicShopItem(db.shopItems?.[KING_GIFT_ITEM_ID], db) });
       }
       const recipientProfile = publicUserProfile(targetKey);
       io.emit("profile-updated", recipientProfile);
-      io.to(`user_${targetKey}`).emit("gift-received", {
-        gift: publicGiftTransfer(gift),
-        profile: recipientProfile
-      });
+      result.gifts.forEach(gift => io.to(`user_${targetKey}`).emit("gift-received", { gift: publicGiftTransfer(gift), profile: recipientProfile }));
       res.json({
         success: true,
         message: `${targetKey === senderKey ? "تم إرسال الهدية إلى نفسك ورفع كارزمتك" : `تم إرسال الهدية إلى ${targetKey}`}. ${reward.message}`,
-        gift: publicGiftTransfer(gift),
+        gift: result.gifts.length === 1 ? publicGiftTransfer(result.gifts[0]) : null,
+        gifts: result.gifts.map(publicGiftTransfer),
+        quantity: result.gifts.length,
         reward,
+        rewards,
         recipient: recipientProfile,
         wallet: walletPayload(senderKey)
       });
@@ -2899,6 +3157,9 @@ function registerEconomyGames({
       deadlineAt: Number(room.quiz?.deadlineAt || 0) || null,
       answeredPlayers: Object.keys(room.quiz?.answers || {}),
       scores: quizScoreMap(room),
+      totalRounds: normalizeQuizRounds(room.quizRounds || room.quiz?.totalRounds),
+      finalRankings: Array.isArray(room.quiz?.finalRankings) ? room.quiz.finalRankings : [],
+      finalWinners: Array.isArray(room.quiz?.finalWinners) ? room.quiz.finalWinners : [],
       lastResult: room.lastResult?.gameType === "quiz" ? room.lastResult : null
     } : null;
     const snakes = advanced === "snakes_ladders" ? {
@@ -2947,6 +3208,19 @@ function registerEconomyGames({
                 : Boolean(room.actions?.[username])
       })),
       lastResult: room.lastResult || null,
+      entryFee: normalizeGameEntryFee(room.entryFee),
+      fee: room.fee && typeof room.fee === "object" ? {
+        collected: Boolean(room.fee.collected),
+        settled: Boolean(room.fee.settled),
+        entryFee: normalizeGameEntryFee(room.fee.entryFee || room.entryFee),
+        totalPot: Math.max(0, integer(room.fee.totalPot, 0)),
+        commission: Math.max(0, integer(room.fee.commission, 0)),
+        prizePool: Math.max(0, integer(room.fee.prizePool, 0)),
+        winners: Array.isArray(room.fee.winners) ? room.fee.winners.slice() : [],
+        payouts: Array.isArray(room.fee.payouts) ? room.fee.payouts.slice() : [],
+        collectedAt: room.fee.collectedAt || null,
+        settledAt: room.fee.settledAt || null
+      } : null,
       quiz,
       snakes,
       domino,
@@ -3029,6 +3303,7 @@ function registerEconomyGames({
       tied: winners.length !== 1,
       createdAt: isoNow()
     };
+    result.entryFee = settleGameEntryFees(room, winners);
     room.lastResult = result;
     room.round = integer(room.round, 1) + 1;
     room.actions = {};
@@ -3070,7 +3345,7 @@ function registerEconomyGames({
       }
       if (room.status === "playing" || room.status === "results") return gameError(socket, "اللعبة بدأت بالفعل");
       const started = spec.advanced === "quiz"
-        ? startQuizRound(room)
+        ? startQuizRound(room, { resetScores: room.status === "finished" })
         : spec.advanced === "snakes_ladders"
           ? initializeSnakesRoom(room)
           : spec.advanced === "dominoes"
@@ -3079,11 +3354,17 @@ function registerEconomyGames({
               ? startUnoRound(room)
               : startJackarooRound(room);
       if (!started) return gameError(socket, "تعذر بدء اللعبة حالياً");
+      const feeResult = collectGameEntryFees(room);
+      if (!feeResult.ok) {
+        resetAdvancedRoom(room);
+        persist();
+        return gameError(socket, feeResult.error);
+      }
       persist();
       emitGameState(room.roomId);
     });
 
-    socket.on("game:create-room", ({ gameType, maxPlayers, name } = {}) => {
+    socket.on("game:create-room", ({ gameType, maxPlayers, name, quizRounds, entryFee } = {}) => {
       const actor = gameActor(socket);
       if (!actor) return gameError(socket, "يجب تسجيل الدخول أولاً");
       const db = dbState();
@@ -3097,6 +3378,9 @@ function registerEconomyGames({
         name: clampText(name || spec.name, 70) || spec.name,
         owner: actor,
         maxPlayers: capacity,
+        entryFee: normalizeGameEntryFee(entryFee),
+        fee: null,
+        quizRounds: spec.id === "quiz" ? normalizeQuizRounds(quizRounds) : null,
         players: [actor],
         actions: {},
         round: 1,
@@ -3161,6 +3445,10 @@ function registerEconomyGames({
       const spec = roomSpec(room);
       if (!actor || !room || !spec || !room.players.includes(actor)) return gameError(socket, "لا تملك صلاحية اللعب في هذه الغرفة");
       if (room.players.length < 2) return gameError(socket, "انتظر انضمام لاعب آخر");
+      if ((room.status === "playing" || room.status === "ready") && (!room.fee?.collected || room.fee?.settled)) {
+        const feeResult = collectGameEntryFees(room);
+        if (!feeResult.ok) return gameError(socket, feeResult.error);
+      }
 
       if (spec.advanced === "quiz") {
         if (room.status !== "playing" || !room.quiz?.current) return gameError(socket, "لا توجد جولة أسئلة مفتوحة حالياً");
@@ -3354,7 +3642,12 @@ function registerEconomyGames({
   ensureRouletteRound();
   advancedGamesTimer = setInterval(processAdvancedTimers, 1_000);
   advancedGamesTimer.unref?.();
-  return { registerGameSocketHandlers, claimDailyForUser };
+  return {
+    registerGameSocketHandlers,
+    claimDailyForUser,
+    chargeCoinsForVideo,
+    refundCoins
+  };
 }
 
 module.exports = {
@@ -3367,5 +3660,7 @@ module.exports = {
   ROULETTE_SLOTS,
   ROULETTE_DENOMINATIONS,
   ROULETTE_HISTORY_LIMIT,
-  ROULETTE_DAILY_PRIZES
+  ROULETTE_DAILY_PRIZES,
+  GAME_ENTRY_FEES,
+  GAME_PLATFORM_COMMISSION
 };

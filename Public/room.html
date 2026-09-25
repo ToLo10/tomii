@@ -6324,6 +6324,12 @@
             };
         }
 
+        function chooseVideoQuality(fileType) {
+            if (String(fileType || '').toLowerCase() !== 'video') return '360';
+            const answer = window.prompt('اختر جودة الفيديو: اكتب 360 للرفع المجاني أو 720 مقابل 2000 كوينز', '360');
+            return String(answer || '360').trim() === '720' ? '720' : '360';
+        }
+
         function getUploadSessionStatus(sessionId) {
             return fetch('/api/upload/session/' + encodeURIComponent(sessionId), {
                 credentials: 'same-origin', cache: 'no-store'
@@ -6480,6 +6486,7 @@
                 fileSize: Number(file.size || 0),
                 mimeType: file.type || 'application/octet-stream',
                 clientFileType,
+                videoQuality: options.videoQuality || '360',
                 forceServerUpload: Boolean(options.forceServerUpload),
                 ...uploadMessageMetadata(messageMeta)
             };
@@ -6692,6 +6699,7 @@
                 form.append('file', file, file.name || ('file-' + Date.now()));
                 form.append('context', context);
                 if (clientFileType) form.append('clientFileType', clientFileType);
+                if (clientFileType === 'video' || uploadType === 'video') form.append('videoQuality', options.videoQuality || '360');
                 if (targetRoomId) form.append('roomId', targetRoomId);
                 if (context === 'chat' && targetRoomId && messageMeta) {
                     form.append('publishToChat', '1');
@@ -6837,7 +6845,7 @@
             throw lastError || new Error('تعذر رفع الملف');
         }
 
-        async function uploadAndSendChatFile(file, replySnapshot = null, pickerKind = 'file', extraMessageMeta = null, detectedFileType = '') {
+        async function uploadAndSendChatFile(file, replySnapshot = null, pickerKind = 'file', extraMessageMeta = null, detectedFileType = '', videoQuality = '360') {
             if (chatRestriction) {
                 showChatRestrictionNotice();
                 return;
@@ -6860,6 +6868,7 @@
                     targetRoomId: uploadRoomId,
                     progressUI,
                     clientFileType: detectedFileType || inferClientUploadType(file, pickerKind),
+                    videoQuality,
                     messageMeta: {
                         msgId: localMsgId,
                         time: messageTime,
@@ -6933,7 +6942,7 @@
                         retryBtn.disabled = true;
                         progressUI.item.remove();
                         pendingUploads.delete(localMsgId);
-                        queueChatUpload(file, replySnapshot, pickerKind, extraMessageMeta).catch(() => {});
+                        queueChatUpload(file, replySnapshot, pickerKind, extraMessageMeta, videoQuality).catch(() => {});
                     });
                     progressUI.item.querySelector('.upload-item')?.appendChild(retryBtn);
                 }
@@ -6970,7 +6979,7 @@
                 const largeJob = isLargeChatUploadJob(job);
                 activeChatUploadJobs += 1;
                 if (largeJob) activeLargeChatUploadJobs += 1;
-                uploadAndSendChatFile(job.file, job.replySnapshot, job.pickerKind, job.extraMessageMeta, job.fileType)
+                uploadAndSendChatFile(job.file, job.replySnapshot, job.pickerKind, job.extraMessageMeta, job.fileType, job.videoQuality)
                     .then(job.resolve, job.reject)
                     .finally(() => {
                         activeChatUploadJobs = Math.max(0, activeChatUploadJobs - 1);
@@ -6980,8 +6989,11 @@
             }
         }
 
-        async function queueChatUpload(file, replySnapshot = null, pickerKind = 'file', extraMessageMeta = null) {
+        async function queueChatUpload(file, replySnapshot = null, pickerKind = 'file', extraMessageMeta = null, requestedVideoQuality = '') {
             const fileType = await detectClientUploadType(file, pickerKind);
+            const videoQuality = requestedVideoQuality === '720' || requestedVideoQuality === '360'
+                ? requestedVideoQuality
+                : chooseVideoQuality(fileType);
             return new Promise((resolve, reject) => {
                 chatUploadQueue.push({
                     file,
@@ -6989,6 +7001,7 @@
                     replySnapshot,
                     pickerKind,
                     extraMessageMeta,
+                    videoQuality,
                     resolve,
                     reject
                 });
@@ -7033,6 +7046,7 @@
         let voiceAudioContext = null;
         let voiceAnalyser = null;
         let voiceWaveformSamples = [];
+        let voiceRecordingGeneration = 0;
         const voiceRecordingBar = document.getElementById('voiceRecordingBar');
         const voiceRecordingTime = document.getElementById('voiceRecordingTime');
         const cancelVoiceRecordingBtn = document.getElementById('cancelVoiceRecordingBtn');
@@ -7071,14 +7085,17 @@
             } catch (_) {}
         }
 
-        async function stopVoiceWaveformCapture() {
-            clearInterval(voiceWaveformTimer);
-            voiceWaveformTimer = null;
-            voiceAnalyser = null;
-            if (voiceAudioContext) {
-                try { await voiceAudioContext.close(); } catch (_) {}
+        async function stopVoiceWaveformCapture(capture = null) {
+            const timer = capture ? capture.timer : voiceWaveformTimer;
+            const analyser = capture ? capture.analyser : voiceAnalyser;
+            const context = capture ? capture.context : voiceAudioContext;
+            clearInterval(timer);
+            if (!capture || voiceWaveformTimer === timer) voiceWaveformTimer = null;
+            if (!capture || voiceAnalyser === analyser) voiceAnalyser = null;
+            if (context) {
+                try { await context.close(); } catch (_) {}
             }
-            voiceAudioContext = null;
+            if (!capture || voiceAudioContext === context) voiceAudioContext = null;
         }
 
         function compressVoiceWaveform(samples, target = 44) {
@@ -7181,43 +7198,66 @@
                 }
                 audioChunks = [];
                 voiceRecordingShouldSend = false;
+                const recorder = mediaRecorder;
+                const generation = ++voiceRecordingGeneration;
 
-                mediaRecorder.onerror = () => {
-                    voiceRecordingShouldSend = false;
-                    sendStatus('');
-                    if (voiceRecordingBar) voiceRecordingBar.style.display = 'none';
+                recorder.onerror = () => {
+                    if (generation === voiceRecordingGeneration) {
+                        voiceRecordingShouldSend = false;
+                        sendStatus('');
+                        if (voiceRecordingBar) voiceRecordingBar.style.display = 'none';
+                    }
                     alert('تعذر تسجيل الصوت من المتصفح. جرّب السماح بالمايكروفون أو حدّث الصفحة.');
                 };
-                mediaRecorder.ondataavailable = event => {
+                recorder.ondataavailable = event => {
                     if (event.data && event.data.size > 0) audioChunks.push(event.data);
                 };
 
-                mediaRecorder.onstop = async function() {
-                    sendStatus('');
-                    recordBtn.classList.remove('recording-active');
-                    recordBtn.innerHTML = '<i class="fa-solid fa-wave-square"></i>';
-                    if (voiceRecordingBar) voiceRecordingBar.style.display = 'none';
+                recorder.onstop = async function() {
+                    // Snapshot every recorder-specific value before the first await.
+                    // A new recording may start while this one is being uploaded;
+                    // it must never overwrite the previous chunks or waveform.
+                    const sendRequested = Boolean(voiceRecordingShouldSend);
+                    const startedAt = voiceRecordingStartedAt;
+                    const recordedDurationMs = startedAt ? Math.max(0, Date.now() - startedAt) : 0;
+                    const recordedWaveform = compressVoiceWaveform(voiceWaveformSamples.slice());
+                    const recordedChunks = audioChunks.slice();
+                    const capturedStream = recordingStream;
+                    const capturedMimeType = String(recorder.mimeType || selectedMime || 'audio/webm').trim().toLowerCase();
+                    const capturedWaveform = {
+                        timer: voiceWaveformTimer,
+                        analyser: voiceAnalyser,
+                        context: voiceAudioContext
+                    };
                     clearInterval(voiceRecordingTimer);
                     voiceRecordingTimer = null;
-                    const recordedDurationMs = voiceRecordingStartedAt ? Math.max(0, Date.now() - voiceRecordingStartedAt) : 0;
-                    const recordedWaveform = compressVoiceWaveform(voiceWaveformSamples);
-                    await stopVoiceWaveformCapture();
-                    voiceRecordingStartedAt = 0;
+                    voiceWaveformTimer = null;
+                    voiceAnalyser = null;
+                    voiceAudioContext = null;
+                    if (mediaRecorder === recorder) mediaRecorder = null;
+                    if (recordingStream === capturedStream) recordingStream = null;
+                    if (generation === voiceRecordingGeneration) {
+                        voiceRecordingStartedAt = 0;
+                        audioChunks = [];
+                        voiceWaveformSamples = [];
+                        voiceRecordingShouldSend = false;
+                        sendStatus('');
+                        recordBtn.classList.remove('recording-active');
+                        recordBtn.innerHTML = '<i class="fa-solid fa-wave-square"></i>';
+                        if (voiceRecordingBar) voiceRecordingBar.style.display = 'none';
+                    }
+                    await stopVoiceWaveformCapture(capturedWaveform);
 
-                    const recordedMimeType = String(mediaRecorder.mimeType || selectedMime || 'audio/webm').trim().toLowerCase();
-                    const mimeBase = recordedMimeType.split(';', 1)[0].trim() || 'audio/webm';
-                    const audioBlob = new Blob(audioChunks.slice(), { type: mimeBase || recordedMimeType || 'audio/webm' });
+                    const mimeBase = capturedMimeType.split(';', 1)[0].trim() || 'audio/webm';
+                    const audioBlob = new Blob(recordedChunks, { type: mimeBase || capturedMimeType || 'audio/webm' });
                     const extension = mimeBase.includes('ogg') ? 'ogg'
                         : (mimeBase.includes('mp4') || mimeBase.includes('m4a') ? 'm4a' : 'webm');
-                    const file = new File([audioBlob], 'voice-' + Date.now() + '.' + extension, { type: mimeBase || recordedMimeType || 'audio/webm' });
+                    const file = new File([audioBlob], 'voice-' + Date.now() + '.' + extension, { type: mimeBase || capturedMimeType || 'audio/webm' });
                     const replySnapshot = activeReplyData ? { ...activeReplyData } : null;
 
-                    if (recordingStream) {
-                        recordingStream.getTracks().forEach(track => track.stop());
-                        recordingStream = null;
-                    }
+                    if (capturedStream) capturedStream.getTracks().forEach(track => track.stop());
 
-                    if (voiceRecordingShouldSend && audioBlob.size > 0) {
+                    if (sendRequested && audioBlob.size > 0) {
                         try {
                             await queueChatUpload(file, replySnapshot, 'audio', {
                                 voiceDurationMs: recordedDurationMs,
@@ -7227,12 +7267,9 @@
                         } catch (error) {
                             alert(error?.message || 'تعذر إرسال الرسالة الصوتية. حاول مرة أخرى.');
                         }
-                    } else if (voiceRecordingShouldSend) {
+                    } else if (sendRequested) {
                         alert('التسجيل فارغ؛ اضغط مطولاً أو سجّل أكثر من لحظة ثم أرسله.');
                     }
-                    audioChunks = [];
-                    voiceWaveformSamples = [];
-                    voiceRecordingShouldSend = false;
                 };
 
                 mediaRecorder.start(250);

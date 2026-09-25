@@ -1859,6 +1859,17 @@ const AUDIO_RECORDING_BITRATE = Math.min(
   256000,
   Math.max(64000, Number(process.env.AUDIO_RECORDING_BITRATE || 160000) || 160000)
 );
+const VIDEO_HIGH_QUALITY_COST = 2_000;
+const VIDEO_QUALITY_HEIGHTS = Object.freeze({ "360": 360, "720": 720 });
+
+function normalizeVideoQuality(value, fileType) {
+  if (fileType !== "video") return "360";
+  return String(value || "360").trim() === "720" ? "720" : "360";
+}
+
+function videoQualityCost(videoQuality, fileType = "video") {
+  return fileType === "video" && videoQuality === "720" ? VIDEO_HIGH_QUALITY_COST : 0;
+}
 // Large media is sent in resumable pieces. Eight megabytes reduces HTTP
 // round-trip overhead for normal videos; a failed mobile request still loses
 // only the current bounded chunk and resumes from the confirmed offset.
@@ -1915,6 +1926,9 @@ function resumableUploadRecord(session) {
     replyTo: session.replyTo && typeof session.replyTo === "object" ? session.replyTo : null,
     voiceDurationMs: Number(session.voiceDurationMs || 0) || 0,
     voiceWaveform: Array.isArray(session.voiceWaveform) ? session.voiceWaveform.slice(0, 80) : [],
+    videoQuality: session.videoQuality || "360",
+    videoQualityCost: Math.max(0, Number(session.videoQualityCost || 0)),
+    videoQualityCharged: Boolean(session.videoQualityCharged),
     status: session.status || "uploading",
     createdAt: session.createdAt || new Date().toISOString(),
     expiresAt: Number(session.expiresAt || (Date.now() + UPLOAD_SESSION_TTL_MS))
@@ -1965,6 +1979,10 @@ function restorePersistedR2UploadSessions() {
           r2DeleteQueued: false
         });
       }
+      // A 720p fee is reserved when the session is created.  If the process
+      // restarts before the client can call DELETE, return that reservation
+      // while removing the expired persisted session.
+      refundAbandonedVideoQualityCharge(record, "session_expired");
       delete records[sessionId];
       changed = true;
       continue;
@@ -1974,6 +1992,8 @@ function restorePersistedR2UploadSessions() {
     const session = {
       ...record,
       id: sessionId,
+      videoQuality: normalizeVideoQuality(record.videoQuality, record.fileType),
+      videoQualityCost: Number(record.videoQualityCost || videoQualityCost(normalizeVideoQuality(record.videoQuality, record.fileType), record.fileType) || 0),
       status: record.status === "completing" ? "uploading" : (record.status || "uploading"),
       r2Parts: new Map(parts
         .map(part => [Number(part?.partNumber), {
@@ -2026,10 +2046,10 @@ const MEDIA_LOCAL_CACHE_MAX_FILE_BYTES = Math.max(
 // running ffmpeg. Keep it opt-in so direct-R2 uploads never create a second
 // full-size local copy or a memory/CPU spike on a small Render instance.
 const VIDEO_COMPATIBILITY_REQUESTED = String(
-  process.env.VIDEO_COMPATIBILITY_ENABLED || "false"
+  process.env.VIDEO_COMPATIBILITY_ENABLED || "true"
 ).toLowerCase() !== "false";
 const VIDEO_COMPATIBILITY_SERVER_WORKER_ALLOWED = String(
-  process.env.VIDEO_COMPATIBILITY_ALLOW_SERVER_WORKER || "false"
+  process.env.VIDEO_COMPATIBILITY_ALLOW_SERVER_WORKER || "true"
 ).toLowerCase() === "true";
 const VIDEO_COMPATIBILITY_ENABLED = VIDEO_COMPATIBILITY_REQUESTED
   && (!objectStorage.isConfigured() || VIDEO_COMPATIBILITY_SERVER_WORKER_ALLOWED);
@@ -2566,7 +2586,7 @@ function runMediaCommand(command, args, { timeoutMs = VIDEO_COMPATIBILITY_TIMEOU
 async function inspectVideoForBrowserCompatibility(inputPath, record) {
   const result = await runMediaCommand(FFPROBE_PATH, [
     "-v", "error",
-    "-show_entries", "stream=codec_type,codec_name,pix_fmt:format=format_name",
+    "-show_entries", "stream=codec_type,codec_name,pix_fmt,width,height:format=format_name",
     "-of", "json",
     inputPath
   ], { timeoutMs: 60_000 });
@@ -2591,6 +2611,8 @@ async function inspectVideoForBrowserCompatibility(inputPath, record) {
   const videoCodec = String(video.codec_name || "").toLowerCase();
   const audioCodec = String(audio?.codec_name || "").toLowerCase();
   const pixelFormat = String(video.pix_fmt || "").toLowerCase();
+  const width = Math.max(0, Number(video.width || 0) || 0);
+  const height = Math.max(0, Number(video.height || 0) || 0);
   const safeVideoCodec = videoCodec === "h264" && !/(10|12|14)le?$/.test(pixelFormat);
   const safeAudioCodec = !audio || ["aac", "mp3"].includes(audioCodec);
 
@@ -2600,6 +2622,8 @@ async function inspectVideoForBrowserCompatibility(inputPath, record) {
     videoCodec,
     audioCodec,
     pixelFormat,
+    width,
+    height,
     format: formatNames[0] || ""
   };
 }
@@ -2673,6 +2697,7 @@ function emitVideoCompatibilityStatus(record, status, extra = {}) {
   const payload = {
     fileId: record.fileId,
     status,
+    videoQuality: record.videoQuality || null,
     ...extra
   };
   io.to(record.roomId).emit("media-playback-status", payload);
@@ -2686,6 +2711,7 @@ async function processVideoCompatibilityJob(fileId) {
   if (!VIDEO_COMPATIBILITY_ENABLED) {
     record.playbackStatus = "disabled";
     record.playbackMode = "original";
+    record.playbackQuality = record.videoQuality || "360";
     return;
   }
   if (Number(record.size || 0) > VIDEO_COMPATIBILITY_MAX_BYTES) {
@@ -2708,9 +2734,12 @@ async function processVideoCompatibilityJob(fileId) {
   try {
     input = await materializeVideoInput(record);
     const probe = await inspectVideoForBrowserCompatibility(input.path, record);
-    if (probe.compatible) {
+    const requestedHeight = VIDEO_QUALITY_HEIGHTS[normalizeVideoQuality(record.videoQuality, "video")];
+    const needsQualityResize = Boolean(requestedHeight && probe.height > requestedHeight + 2);
+    if (probe.compatible && !needsQualityResize) {
       record.playbackStatus = "ready";
       record.playbackMode = "original";
+      record.playbackQuality = record.videoQuality || "360";
       record.playbackReadyAt = new Date().toISOString();
       record.playbackError = null;
       saveDB(db);
@@ -2732,7 +2761,9 @@ async function processVideoCompatibilityJob(fileId) {
       "-map", "0:v:0",
       "-map", "0:a:0?",
       "-sn", "-dn",
-      "-vf", "scale=w='min(1920,iw)':h=-2:flags=lanczos",
+      "-vf", requestedHeight
+        ? `scale=-2:${requestedHeight}:force_original_aspect_ratio=decrease`
+        : "scale=w='min(1920,iw)':h=-2:flags=lanczos",
       "-c:v", "libx264",
       "-preset", "veryfast",
       "-crf", "23",
@@ -2785,6 +2816,7 @@ async function processVideoCompatibilityJob(fileId) {
     record.playbackCacheExpiresAt = cloudFile.cacheExpiresAt || null;
     record.playbackGridFsId = cloudFile.gridFsId || null;
     record.playbackMimeType = "video/mp4";
+    record.playbackQuality = record.videoQuality || "360";
     record.playbackSize = outputStat.size;
     record.playbackCreatedAt = new Date().toISOString();
     record.playbackReadyAt = record.playbackCreatedAt;
@@ -4951,6 +4983,8 @@ function publishStoredUploadMessage({ actor, roomIdOrCode, fileId, msgId, time, 
     fileType: file.fileType,
     mimeType: file.mimeType,
     fileSize: file.size,
+    videoQuality: file.fileType === "video" ? (file.videoQuality || "360") : null,
+    videoQualityCost: file.fileType === "video" ? Math.max(0, Number(file.videoQualityCost || 0)) : 0,
     playbackStatus: file.fileType === "video"
       ? (file.playbackStatus || (VIDEO_COMPATIBILITY_ENABLED ? "queued" : "disabled"))
       : null,
@@ -5067,6 +5101,8 @@ function uploadSessionPublicResult(session, record, message = null, extra = {}) 
       && record.playbackMode === "compatibility"
       ? `/api/files/${encodeURIComponent(fileId)}?playback=compatible`
       : null,
+    videoQuality: record?.fileType === "video" ? (record.videoQuality || session.videoQuality || "360") : null,
+    videoQualityCost: record?.fileType === "video" ? Math.max(0, Number(record.videoQualityCost || session.videoQualityCost || 0)) : 0,
     message,
     ...extra
   };
@@ -5096,14 +5132,30 @@ function uploadSessionState(session) {
     received: Number(session.received || 0),
     fileSize: Number(session.fileSize || 0),
     status: session.status,
+    videoQuality: session.fileType === "video" ? (session.videoQuality || "360") : null,
+    videoQualityCost: session.fileType === "video" ? Math.max(0, Number(session.videoQualityCost || 0)) : 0,
     ...(directR2 ? { uploadedParts: uploadSessionParts(session) } : {}),
     result: ["completed", "uploaded"].includes(session.status) ? session.result : null,
     expiresAt: new Date(session.expiresAt).toISOString()
   };
 }
 
+function refundAbandonedVideoQualityCharge(session, reason = "abandoned") {
+  if (!session?.videoQualityCharged || !session.fileId || db.uploads?.[session.fileId]) return;
+  const amount = Math.max(0, Number(session.videoQualityCost || 0));
+  if (amount > 0) {
+    economyGameHandlers?.refundCoins?.(session.uploader, amount, {
+      context: session.context,
+      originalName: session.originalName,
+      reason
+    });
+  }
+  session.videoQualityCharged = false;
+}
+
 app.post("/api/upload/session", uploadLimiter, requireHttpAuth, limitConcurrentUploads, async (req, res) => {
   let pendingR2Upload = null;
+  let videoQualityCharge = null;
   try {
     const uploader = req.authUser;
     const body = req.body || {};
@@ -5121,6 +5173,8 @@ app.post("/api/upload/session", uploadLimiter, requireHttpAuth, limitConcurrentU
     const clientFileType = String(body.clientFileType || "").trim().toLowerCase().slice(0, 24);
     const fileType = classifyFileType(mimeType, originalName, clientFileType);
     const storedMimeType = normalizeMediaMimeType(fileType, mimeType, originalName);
+    const videoQuality = normalizeVideoQuality(body.videoQuality, fileType);
+    const requestedVideoQualityCost = videoQualityCost(videoQuality, fileType);
     const requestedMsgId = String(body.msgId || "").trim().slice(0, 180);
     const forceServerUpload = body.forceServerUpload === true
       || String(body.forceServerUpload || "").toLowerCase() === "true";
@@ -5158,7 +5212,9 @@ app.post("/api/upload/session", uploadLimiter, requireHttpAuth, limitConcurrentU
             originalName: existingFile.originalName,
             fileType: existingFile.fileType,
             mimeType: existingFile.mimeType,
-            fileSize: existingFile.size
+            fileSize: existingFile.size,
+            videoQuality: existingFile.videoQuality || "360",
+            videoQualityCost: Number(existingFile.videoQualityCost || 0)
           };
           return res.status(200).json({
             ...uploadSessionPublicResult(recoveredSession, existingFile, existingMessage),
@@ -5179,6 +5235,19 @@ app.post("/api/upload/session", uploadLimiter, requireHttpAuth, limitConcurrentU
       return res.status(503).json({
         error: "تخزين الوسائط غير مهيأ. أضف إعدادات Cloudflare R2 أو فعّل MongoDB/GridFS ثم أعد المحاولة."
       });
+    }
+
+    if (requestedVideoQualityCost > 0) {
+      const charged = economyGameHandlers?.chargeCoinsForVideo?.(uploader, requestedVideoQualityCost, {
+        context,
+        originalName,
+        requestedQuality: videoQuality,
+        fileSize
+      });
+      if (!charged?.ok) {
+        return res.status(402).json({ error: charged?.error || "لا تملك كوينز كافية لجودة 720p", code: charged?.code || "INSUFFICIENT_COINS" });
+      }
+      videoQualityCharge = { username: uploader, amount: charged.amount, context, originalName };
     }
 
     // Browser-to-R2 multipart transfer is opt-in. The reliable default is the
@@ -5236,6 +5305,9 @@ app.post("/api/upload/session", uploadLimiter, requireHttpAuth, limitConcurrentU
       replyTo: body.replyTo && typeof body.replyTo === "object" ? body.replyTo : null,
       voiceDurationMs: Math.max(0, Math.min(60 * 60 * 1000, Number(body.voiceDurationMs || 0) || 0)),
       voiceWaveform: Array.isArray(body.voiceWaveform) ? body.voiceWaveform.slice(0, 80) : [],
+      videoQuality,
+      videoQualityCost: requestedVideoQualityCost,
+      videoQualityCharged: requestedVideoQualityCost > 0,
       status: "uploading",
       createdAt: now,
       expiresAt: Date.now() + UPLOAD_SESSION_TTL_MS,
@@ -5269,6 +5341,13 @@ app.post("/api/upload/session", uploadLimiter, requireHttpAuth, limitConcurrentU
     if (pendingR2Upload) {
       await objectStorage.abortMultipartUpload(pendingR2Upload).catch(() => {});
     }
+    if (videoQualityCharge) {
+      economyGameHandlers?.refundCoins?.(videoQualityCharge.username, videoQualityCharge.amount, {
+        context: videoQualityCharge.context,
+        originalName: videoQualityCharge.originalName
+      });
+      videoQualityCharge = null;
+    }
     console.error("Upload session creation failed:", err?.message || err);
     const status = objectStorage.isConfigured() && /R2|object|multipart/i.test(String(err?.message || "")) ? 503 : 500;
     res.status(status).json({ error: status === 503 ? "تعذر الاتصال بتخزين الملفات الخارجي، حاول بعد لحظة" : "تعذر بدء رفع الملف" });
@@ -5280,6 +5359,7 @@ app.get("/api/upload/session/:sessionId", requireHttpAuth, (req, res) => {
   if (!session || session.uploader !== req.authUser) return res.status(404).json({ error: "جلسة الرفع غير موجودة" });
   if (session.status !== "completed" && session.expiresAt <= Date.now()) {
     if (session.status !== "uploaded") queuePartialResumableUploadDelete(session);
+    refundAbandonedVideoQualityCharge(session, "session_expired");
     safeUnlink(session.tempPath);
     removePersistedResumableUpload(session);
     uploadSessions.delete(session.id);
@@ -5296,6 +5376,7 @@ app.get("/api/upload/session/:sessionId/part-url", uploadLimiter, requireHttpAut
   }
   if (session.expiresAt <= Date.now()) {
     queuePartialResumableUploadDelete(session);
+    refundAbandonedVideoQualityCharge(session, "session_expired");
     removePersistedResumableUpload(session);
     uploadSessions.delete(session.id);
     return res.status(410).json({ error: "انتهت صلاحية جلسة الرفع" });
@@ -5329,6 +5410,7 @@ app.post("/api/upload/session/:sessionId/part", uploadLimiter, requireHttpAuth, 
   }
   if (session.expiresAt <= Date.now()) {
     queuePartialResumableUploadDelete(session);
+    refundAbandonedVideoQualityCharge(session, "session_expired");
     uploadSessions.delete(session.id);
     return res.status(410).json({ error: "انتهت صلاحية جلسة الرفع" });
   }
@@ -5357,6 +5439,7 @@ app.put("/api/upload/session/:sessionId/chunk", uploadLimiter, requireHttpAuth, 
   if (!session || session.uploader !== req.authUser) return res.status(404).json({ error: "جلسة الرفع غير موجودة" });
   if (session.expiresAt <= Date.now()) {
     if (session.status !== "uploaded") queuePartialResumableUploadDelete(session);
+    refundAbandonedVideoQualityCharge(session, "session_expired");
     safeUnlink(session.tempPath);
     removePersistedResumableUpload(session);
     uploadSessions.delete(session.id);
@@ -5577,6 +5660,9 @@ app.post("/api/upload/session/:sessionId/complete", uploadLimiter, requireHttpAu
         mimeType: session.mimeType,
         fileType: sessionFileType,
         size: session.fileSize,
+        videoQuality: session.fileType === "video" ? session.videoQuality : null,
+        videoQualityCost: session.fileType === "video" ? Number(session.videoQualityCost || 0) : 0,
+        videoQualityCharged: Boolean(session.videoQualityCharged),
         uploader: session.uploader,
         roomId: session.roomId,
         context: session.context,
@@ -5688,6 +5774,7 @@ app.delete("/api/upload/session/:sessionId", requireHttpAuth, (req, res) => {
   const session = uploadSessions.get(String(req.params.sessionId || ""));
   if (!session || session.uploader !== req.authUser) return res.status(404).json({ error: "جلسة الرفع غير موجودة" });
   if (session.status !== "completed" && session.status !== "uploaded") queuePartialResumableUploadDelete(session);
+  refundAbandonedVideoQualityCharge(session, "session_deleted");
   safeUnlink(session.tempPath);
   removePersistedResumableUpload(session);
   uploadSessions.delete(session.id);
@@ -5697,6 +5784,7 @@ app.delete("/api/upload/session/:sessionId", requireHttpAuth, (req, res) => {
 // 📎 Legacy/small-file HTTP upload path. It remains available for old clients
 // and small avatars while current chat media uses the resumable route above.
 app.post("/api/upload", uploadLimiter, requireHttpAuth, limitConcurrentUploads, singleUpload, async (req, res) => {
+  let videoQualityCharge = null;
   try {
     if (!req.file) return res.status(400).json({ error: "لم يتم اختيار ملف" });
 
@@ -5728,6 +5816,8 @@ app.post("/api/upload", uploadLimiter, requireHttpAuth, limitConcurrentUploads, 
     const clientFileType = String(req.body.clientFileType || "").trim().toLowerCase();
     const fileType = classifyFileType(req.file.mimetype, req.file.originalname, clientFileType);
     const storedMimeType = normalizeMediaMimeType(fileType, req.file.mimetype, req.file.originalname);
+    const videoQuality = normalizeVideoQuality(req.body.videoQuality, fileType);
+    const requestedVideoQualityCost = videoQualityCost(videoQuality, fileType);
     if (context === "explore-video" && fileType !== "video") {
       safeUnlink(req.file.path);
       return res.status(400).json({ error: "اكسبلور يقبل ملفات الفيديو فقط هنا" });
@@ -5749,6 +5839,20 @@ app.post("/api/upload", uploadLimiter, requireHttpAuth, limitConcurrentUploads, 
     if (["background", "avatar", "frame", "voice-room-image"].includes(context) && !["image", "gif"].includes(fileType)) {
       safeUnlink(req.file.path);
       return res.status(400).json({ error: "خلفية المحادثة يجب أن تكون صورة" });
+    }
+
+    if (requestedVideoQualityCost > 0) {
+      const charged = economyGameHandlers?.chargeCoinsForVideo?.(uploader, requestedVideoQualityCost, {
+        context,
+        originalName: req.file.originalname,
+        requestedQuality: videoQuality,
+        fileSize: req.file.size
+      });
+      if (!charged?.ok) {
+        safeUnlink(req.file.path);
+        return res.status(402).json({ error: charged?.error || "لا تملك كوينز كافية لجودة 720p", code: charged?.code || "INSUFFICIENT_COINS" });
+      }
+      videoQualityCharge = { username: uploader, amount: charged.amount, context, originalName: req.file.originalname };
     }
 
     const fileId = req.generatedUploadId || path.parse(req.file.filename).name;
@@ -5802,6 +5906,9 @@ app.post("/api/upload", uploadLimiter, requireHttpAuth, limitConcurrentUploads, 
       mimeType: storedMimeType,
       fileType,
       size: req.file.size,
+      videoQuality: fileType === "video" ? videoQuality : null,
+      videoQualityCost: fileType === "video" ? requestedVideoQualityCost : 0,
+      videoQualityCharged: Boolean(requestedVideoQualityCost),
       uploader,
       roomId,
       context,
@@ -5873,9 +5980,18 @@ app.post("/api/upload", uploadLimiter, requireHttpAuth, limitConcurrentUploads, 
       playbackStatus: fileType === "video"
         ? (db.uploads[fileId].playbackStatus || (VIDEO_COMPATIBILITY_ENABLED ? "queued" : "disabled"))
         : null,
+      videoQuality: fileType === "video" ? videoQuality : null,
+      videoQualityCost: fileType === "video" ? requestedVideoQualityCost : 0,
       message: publishedMessage
     });
   } catch (err) {
+    if (videoQualityCharge) {
+      economyGameHandlers?.refundCoins?.(videoQualityCharge.username, videoQualityCharge.amount, {
+        context: videoQualityCharge.context,
+        originalName: videoQualityCharge.originalName
+      });
+      videoQualityCharge = null;
+    }
     safeUnlink(req.file?.path);
     console.error("Upload/publish failed:", err?.stack || err?.message || err);
     const statusCode = Number(err?.statusCode) >= 400 && Number(err?.statusCode) < 600
@@ -10174,6 +10290,7 @@ function cleanupExpiredRuntimeState({ aggressive = false } = {}) {
   for (const [sessionId, session] of uploadSessions.entries()) {
     if (!session || (session.status !== "completed" && Number(session.expiresAt || 0) <= now)) {
       if (session && session.status !== "uploaded") queuePartialResumableUploadDelete(session);
+      refundAbandonedVideoQualityCharge(session, "session_expired");
       safeUnlink(session?.tempPath);
       removePersistedResumableUpload(session);
       uploadSessions.delete(sessionId);

@@ -580,6 +580,7 @@
         form.append("file", file);
         form.append("context", "explore-video");
         form.append("clientFileType", "video");
+        form.append("videoQuality", $("videoQuality").value === "720" ? "720" : "360");
         const upload = await request("/api/upload", { method: "POST", body: form });
         payload = { type: "video", fileId: upload.fileId, caption: $("videoCaption").value.trim() };
       } else {

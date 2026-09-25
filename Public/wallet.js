@@ -429,14 +429,21 @@
   function renderShop() {
     const host = $('shopGrid');
     if (!shopItems.length) { host.innerHTML = '<div class="empty-box">المتجر فارغ حاليًا.</div>'; return; }
-    host.innerHTML = shopItems.map(item => `<article class="shop-item"><div class="item-visual">${itemVisual(item)}</div><div class="item-name">${escapeHtml(item.name)}</div><div class="item-description">${escapeHtml(item.description || 'عنصر من متجر TOMI')}${item.type === 'gift' ? `<br><span class="charisma-mini"><span class="charisma-mini-icon">⭐</span> +${Number(item.charismaValue || 1).toLocaleString('en-US')} كارزما للمستلم</span>` : ''}${item.itemId === 'gift_king' ? `<br><span class="gift-jackpot"><i class="fa-solid fa-box-open"></i> الصندوق المتراكم: ${Number(item.jackpotAmount || 0).toLocaleString('en-US')} كوينز</span>` : ''}</div><div class="item-footer"><span class="price"><i class="fa-solid fa-coins coin"></i> ${Number(item.price || 0).toLocaleString('en-US')}</span><button class="primary buy-btn" type="button" data-item-id="${escapeHtml(item.itemId)}">شراء</button></div></article>`).join('');
+    host.innerHTML = shopItems.map(item => `<article class="shop-item" data-item-id="${escapeHtml(item.itemId)}"><div class="item-visual">${itemVisual(item)}</div><div class="item-name">${escapeHtml(item.name)}</div><div class="item-description">${escapeHtml(item.description || 'عنصر من متجر TOMI')}${item.type === 'gift' ? `<br><span class="charisma-mini"><span class="charisma-mini-icon">⭐</span> +${Number(item.charismaValue || 1).toLocaleString('en-US')} كارزما للمستلم</span>` : ''}${item.itemId === 'gift_king' ? `<br><span class="gift-jackpot"><i class="fa-solid fa-box-open"></i> الصندوق المتراكم: ${Number(item.jackpotAmount || 0).toLocaleString('en-US')} كوينز</span>` : ''}</div><div class="shop-action-row"><label class="shop-quantity-label">العدد<input class="input shop-quantity" type="number" min="1" max="100" value="1" data-item-id="${escapeHtml(item.itemId)}" inputmode="numeric"></label><span class="price"><i class="fa-solid fa-coins coin"></i> ${Number(item.price || 0).toLocaleString('en-US')} للحبة</span></div>${item.type === 'gift' ? `<div class="shop-gift-actions"><button class="primary buy-btn" type="button" data-item-id="${escapeHtml(item.itemId)}"><i class="fa-solid fa-wallet"></i> شراء للمحفظة</button><button class="secondary send-self-btn" type="button" data-item-id="${escapeHtml(item.itemId)}"><i class="fa-solid fa-user"></i> إرسال لنفسي</button><button class="secondary send-friend-btn" type="button" data-item-id="${escapeHtml(item.itemId)}"><i class="fa-solid fa-user-plus"></i> إرسال لصديق</button></div>` : `<div class="item-footer"><button class="primary buy-btn" type="button" data-item-id="${escapeHtml(item.itemId)}">شراء</button></div>`}</article>`).join('');
   }
 
   function renderInventory() {
     const host = $('inventoryGrid');
     const items = wallet?.inventory || [];
     if (!items.length) { host.innerHTML = '<div class="empty-box">لم تشترِ أي عنصر بعد. ابدأ من المتجر.</div>'; return; }
-    host.innerHTML = items.map(item => `<article class="inventory-item"><div class="item-visual">${itemVisual(item)}</div><div class="item-name">${escapeHtml(item.name)}</div><div class="item-description">${escapeHtml(item.description || '')}<br><small>تم الشراء: ${escapeHtml(formatDate(item.purchasedAt))}</small></div><div class="item-footer">${item.type === 'frame' && item.frameId ? `<button class="primary equip-btn" type="button" data-frame-id="${escapeHtml(item.frameId)}">ارتداء الإطار</button>` : item.type === 'gift' ? `<button class="secondary send-item-btn" type="button" data-inventory-id="${escapeHtml(item.inventoryId)}">اختيار للإرسال</button>` : `<span class="muted"><i class="fa-solid ${escapeHtml(item.icon || 'fa-gift')}"></i> محفوظ</span>`}</div></article>`).join('');
+    const grouped = [];
+    const byKey = new Map();
+    items.forEach(item => {
+      const key = item.type === 'gift' ? `gift:${item.itemId || item.name}` : `item:${item.inventoryId}`;
+      if (!byKey.has(key)) { const group = { ...item, count: 0 }; byKey.set(key, group); grouped.push(group); }
+      byKey.get(key).count += 1;
+    });
+    host.innerHTML = grouped.map(item => `<article class="inventory-item"><div class="item-visual">${itemVisual(item)}</div><div class="item-name">${escapeHtml(item.name)}${item.type === 'gift' && item.count > 1 ? ` <span class="gift-count-badge">×${Number(item.count).toLocaleString('en-US')}</span>` : ''}</div><div class="item-description">${escapeHtml(item.description || '')}${item.type === 'gift' ? `<br><small>العدد في المحفظة: ${Number(item.count).toLocaleString('en-US')}</small>` : `<br><small>تم الشراء: ${escapeHtml(formatDate(item.purchasedAt))}</small>`}</div><div class="item-footer">${item.type === 'frame' && item.frameId ? `<button class="primary equip-btn" type="button" data-frame-id="${escapeHtml(item.frameId)}">ارتداء الإطار</button>` : item.type === 'gift' ? `<button class="secondary send-item-btn" type="button" data-item-id="${escapeHtml(item.itemId)}" data-quantity="${Number(item.count)}">اختيار للإرسال</button>` : `<span class="muted"><i class="fa-solid ${escapeHtml(item.icon || 'fa-gift')}"></i> محفوظ</span>`}</div></article>`).join('');
   }
 
   function renderHistory() {
@@ -449,12 +456,19 @@
   function renderGiftOptions() {
     const select = $('giftInventorySelect');
     const gifts = (wallet?.inventory || []).filter(item => item.type === 'gift' && item.transferable !== false);
-    select.innerHTML = gifts.length ? `<option value="">اختَر الهدية</option>${gifts.map(item => `<option value="${escapeHtml(item.inventoryId)}">${escapeHtml(item.name)} (+${Number(item.charismaValue || 1).toLocaleString('en-US')} كارزما) — ${escapeHtml(item.inventoryId.slice(-5))}</option>`).join('')}` : '<option value="">لا توجد هدايا قابلة للإرسال</option>';
+    const grouped = new Map();
+    gifts.forEach(item => {
+      const key = item.itemId || item.name;
+      if (!grouped.has(key)) grouped.set(key, {item, count: 0});
+      grouped.get(key).count += 1;
+    });
+    select.innerHTML = grouped.size ? `<option value="">اختَر الهدية</option>${[...grouped.values()].map(({item, count}) => `<option value="${escapeHtml(item.itemId || '')}">${escapeHtml(item.name)} ×${Number(count).toLocaleString('en-US')} (+${Number(item.charismaValue || 1).toLocaleString('en-US')} كارزما للحبة)</option>`).join('')}` : '<option value="">لا توجد هدايا قابلة للإرسال</option>';
     select.disabled = !gifts.length;
+    $('giftQuantity').disabled = !gifts.length;
     $('giftRecipientMode').disabled = !gifts.length;
     $('sendGiftBtn').disabled = !gifts.length;
     syncGiftRecipientMode(gifts.length > 0);
-    $('giftSendHint').textContent = gifts.length ? 'الهدية تُحذف من محفظتك وتُضاف إلى هدايا المستلم، وترتفع كارزما المستلم.' : 'اشترِ هدية من المتجر أولاً.';
+    $('giftSendHint').textContent = gifts.length ? 'يمكنك تحديد العدد وإرسال عدة هدايا من النوع نفسه في عملية واحدة.' : 'اشترِ هدية للمحفظة أولاً أو استخدم الإرسال المباشر من المتجر.';
   }
 
   function syncGiftRecipientMode(hasGifts = Boolean((wallet?.inventory || []).some(item => item.type === 'gift' && item.transferable !== false))) {
@@ -468,7 +482,21 @@
     const host = $('receivedGiftsList');
     const gifts = wallet?.receivedGifts || [];
     if (!gifts.length) { host.innerHTML = '<div class="empty-box">لا توجد هدايا مستلمة بعد.</div>'; return; }
-    host.innerHTML = gifts.map(gift => `<div class="received-gift"><div class="received-gift-icon">${giftVisual(gift)}</div><div class="received-gift-copy"><strong>${escapeHtml(gift.name)}</strong><small>من @${escapeHtml(gift.fromUsername || 'مستخدم')} • +${Number(gift.charismaValue || 1).toLocaleString('en-US')} كارزما</small><small>${escapeHtml(formatDate(gift.sentAt))}</small></div></div>`).join('');
+    const grouped = new Map();
+    gifts.forEach(gift => {
+      const key = gift.itemId || gift.name || 'gift';
+      if (!grouped.has(key)) grouped.set(key, {gift, count: 0, charisma: 0, senders: new Set(), latest: gift.sentAt});
+      const group = grouped.get(key);
+      group.count += 1;
+      group.charisma += Number(gift.charismaValue || 0);
+      if (gift.fromUsername) group.senders.add(gift.fromUsername);
+      if (Date.parse(gift.sentAt || 0) > Date.parse(group.latest || 0)) group.latest = gift.sentAt;
+    });
+    host.innerHTML = [...grouped.values()].map(group => {
+      const senders = [...group.senders];
+      const senderText = senders.length === 1 ? `من @${senders[0]}` : `من ${senders.length || 1} مستخدمين`;
+      return `<div class="received-gift"><div class="received-gift-icon">${giftVisual(group.gift)}</div><div class="received-gift-copy"><strong>${escapeHtml(group.gift.name)} <span class="gift-count-badge">×${Number(group.count).toLocaleString('en-US')}</span></strong><small>${senderText} • إجمالي +${Number(group.charisma).toLocaleString('en-US')} كارزما</small><small>آخر إرسال: ${escapeHtml(formatDate(group.latest))}</small></div></div>`;
+    }).join('');
   }
 
   function renderDaily() {
@@ -525,9 +553,26 @@
     catch (error) { showToast(error.message, true); }
   }
 
-  async function buy(itemId) {
-    try { const data = await request('/api/economy/shop/purchase', {method:'POST', body:JSON.stringify({itemId})}); wallet = data.wallet; if (data.shopItem) { shopItems = shopItems.map(item => item.itemId === data.shopItem.itemId ? data.shopItem : item); renderShop(); } renderWallet(); showToast(data.message || 'تم الشراء'); }
+  async function buy(itemId, quantity = 1) {
+    const safeQuantity = Math.max(1, Math.min(100, Number(quantity) || 1));
+    try { const data = await request('/api/economy/shop/purchase', {method:'POST', body:JSON.stringify({itemId, quantity:safeQuantity})}); wallet = data.wallet; if (data.shopItem) { shopItems = shopItems.map(item => item.itemId === data.shopItem.itemId ? data.shopItem : item); renderShop(); } renderWallet(); showToast(data.message || 'تم الشراء'); }
     catch (error) { showToast(error.message, true); }
+  }
+
+  async function sendDirect(itemId, recipientMode, quantity = 1, toUsername = '') {
+    const safeQuantity = Math.max(1, Math.min(100, Number(quantity) || 1));
+    try {
+      // Direct sending still records every gift as a normal purchase first;
+      // this keeps the wallet, jackpot pool, refunds, and audit history in
+      // sync with gifts bought for later use.
+      const purchase = await request('/api/economy/shop/purchase', {method:'POST', body:JSON.stringify({itemId, quantity:safeQuantity})});
+      wallet = purchase.wallet || wallet;
+      const data = await request('/api/economy/gifts/send', {method:'POST', body:JSON.stringify({itemId, quantity:safeQuantity, recipientMode, toUsername})});
+      wallet = data.wallet || wallet;
+      renderWallet();
+      showToast(data.message || 'تم إرسال الهدايا');
+      showGiftReward(data);
+    } catch (error) { showToast(error.message, true); renderWallet(); }
   }
 
   async function equip(frameId) {
@@ -535,12 +580,22 @@
     catch (error) { showToast(error.message, true); }
   }
 
-  $('shopGrid').addEventListener('click', event => { const button = event.target.closest('.buy-btn'); if (button) buy(button.dataset.itemId); });
+  $('shopGrid').addEventListener('click', event => {
+    const button = event.target.closest('.buy-btn, .send-self-btn, .send-friend-btn');
+    if (!button) return;
+    const card = button.closest('.shop-item');
+    const quantity = Math.max(1, Math.min(100, Number(card?.querySelector('.shop-quantity')?.value || 1)));
+    const itemId = button.dataset.itemId;
+    if (button.classList.contains('buy-btn')) return buy(itemId, quantity);
+    if (button.classList.contains('send-self-btn')) return sendDirect(itemId, 'self', quantity, wallet?.username || '');
+    const toUsername = window.prompt('اكتب اسم صديقك لإرسال الهدية:')?.trim();
+    if (toUsername) sendDirect(itemId, 'user', quantity, toUsername);
+  });
   $('inventoryGrid').addEventListener('click', event => {
     const equipButton = event.target.closest('.equip-btn');
     if (equipButton) return equip(equipButton.dataset.frameId);
     const sendButton = event.target.closest('.send-item-btn');
-    if (sendButton) { $('giftInventorySelect').value = sendButton.dataset.inventoryId; $('giftRecipientMode').value = 'user'; syncGiftRecipientMode(); $('giftRecipient').focus(); $('giftTransferCard')?.scrollIntoView?.({behavior:'smooth', block:'center'}); }
+    if (sendButton) { $('giftInventorySelect').value = sendButton.dataset.itemId || ''; $('giftQuantity').value = sendButton.dataset.quantity || 1; $('giftRecipientMode').value = 'user'; syncGiftRecipientMode(); $('giftRecipient').focus(); $('giftTransferCard')?.scrollIntoView?.({behavior:'smooth', block:'center'}); }
   });
   $('claimDailyBtn').addEventListener('click', claimDaily);
   $('refreshBtn').addEventListener('click', load);
@@ -552,12 +607,13 @@
 
   $('sendGiftForm').addEventListener('submit', async event => {
     event.preventDefault();
-    const inventoryId = $('giftInventorySelect').value;
+    const itemId = $('giftInventorySelect').value;
+    const quantity = Math.max(1, Math.min(100, Number($('giftQuantity').value || 1)));
     const recipientMode = $('giftRecipientMode').value;
     const toUsername = recipientMode === 'self' ? wallet?.username : $('giftRecipient').value.trim();
-    if (!inventoryId || (recipientMode === 'user' && !toUsername)) return showToast('اختَر الهدية واكتب اسم المستلم', true);
+    if (!itemId || (recipientMode === 'user' && !toUsername)) return showToast('اختَر نوع الهدية واكتب اسم المستلم', true);
     $('sendGiftBtn').disabled = true;
-    try { const data = await request('/api/economy/gifts/send', {method:'POST', body:JSON.stringify({inventoryId, recipientMode, toUsername})}); wallet = data.wallet; renderWallet(); $('giftRecipient').value = ''; showToast(data.message || 'تم إرسال الهدية'); showGiftReward(data); }
+    try { const data = await request('/api/economy/gifts/send', {method:'POST', body:JSON.stringify({itemId, quantity, recipientMode, toUsername})}); wallet = data.wallet; renderWallet(); $('giftRecipient').value = ''; $('giftQuantity').value = 1; showToast(data.message || 'تم إرسال الهدية'); showGiftReward(data); }
     catch (error) { showToast(error.message, true); }
     finally { $('sendGiftBtn').disabled = !(wallet?.inventory || []).some(item => item.type === 'gift' && item.transferable !== false); }
   });

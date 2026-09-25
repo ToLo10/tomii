@@ -179,15 +179,10 @@
 .snakes-board{gap:2px;padding:7px;border:3px solid #f1c876;border-radius:12px;background:repeating-linear-gradient(45deg,#d6a35a 0 7px,#c28b49 7px 14px);box-shadow:inset 0 0 0 3px #6a3d24,inset 0 0 19px #4b291c99}
 .snakes-cell{aspect-ratio:1;align-items:flex-start;padding:5px;border:1px solid #8b582e;border-radius:4px;background:linear-gradient(145deg,#fff0b0,#e9b861);color:#5a321d;font-weight:900;box-shadow:inset 0 0 0 1px #fff8,0 1px 2px #67391d88}
 .snakes-cell:nth-child(4n){background:linear-gradient(145deg,#f7d986,#d7964d)}
-.snakes-cell.ladder{background:linear-gradient(145deg,#b7efc0,#4aa879);color:#0b4d3b;border-color:#2c795e}
-.snakes-cell.snake{background:linear-gradient(145deg,#ffc5c0,#cf5a5e);color:#641c31;border-color:#9b3345}
-.snakes-cell.has-jump{box-shadow:inset 0 0 0 2px #fff8,0 0 0 2px #5d2c1d55,0 2px 4px #4d231988}
 .snakes-cell small{font-size:.72rem;text-shadow:0 1px #fff8}
-.jump-badge{position:absolute;right:3px;bottom:3px;display:inline-flex;align-items:center;gap:2px;padding:2px 3px;border-radius:5px;background:#fff9;color:#542716;font-size:.58rem;font-style:normal;font-weight:1000;line-height:1}
-.snakes-cell.snake .jump-badge{background:#851e3a;color:#fff}.snakes-cell.ladder .jump-badge{background:#126b52;color:#e7fff3}
 .board-token{width:24px;height:24px;border:2px solid #fff7;box-shadow:0 2px 5px #4a1c10aa, inset 0 0 0 2px #ffffff33}
 .snakes-legend{padding:7px 10px;border-radius:999px;background:#1d1720aa;border:1px solid #e0ad5c66}
-@media(max-width:600px){.snakes-board-wrap{padding:8px;border-width:5px}.snakes-board{padding:4px}.snakes-cell{padding:3px}.snakes-cell small{font-size:.52rem}.jump-badge{font-size:.44rem;padding:1px 2px}.board-token{width:18px;height:18px}.snakes-cell .board-token~.board-token{right:21px}}
+@media(max-width:600px){.snakes-board-wrap{padding:8px;border-width:5px}.snakes-board{padding:4px}.snakes-cell{padding:3px}.snakes-cell small{font-size:.52rem}.board-token{width:18px;height:18px}.snakes-cell .board-token~.board-token{right:21px}}
 
 /* Jackaroo reference-board redesign: a wood/felt 52-space perimeter, four
    colored home lanes, and a compact two-player variant that keeps only the
@@ -214,3 +209,91 @@
 .jackaroo-center-label{font-size:.62rem;font-weight:900;color:#fff0c3}.jackaroo-center small{font-size:.55rem;color:#fff1c5}.jackaroo-center .jackaroo-card{transform:scale(.78);margin:-8px 0}
 .jackaroo-zones{position:relative;z-index:2;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin:10px auto 2px;max-width:760px}.jackaroo-player-zone{display:grid;gap:2px;padding:8px 9px;border:1px solid #f5d48666;border-radius:12px;background:#1b2a32;color:#f7edcc;text-align:center;box-shadow:inset 0 0 0 1px #ffffff12}.jackaroo-player-zone strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:.76rem}.jackaroo-player-zone span{font-size:.62rem;color:#ffd478}.jackaroo-player-zone small{font-size:.58rem;color:#cbd8d4}.jackaroo-player-zone.team1{border-color:#e68cbb88}.jackaroo-player-zone.team2{border-color:#82c9f088}.jackaroo-card{z-index:8;width:74px;height:108px;border-radius:13px;background:linear-gradient(145deg,#fffef5,#f2e7cb 58%,#cba86c);box-shadow:0 9px 18px #09050aaa,inset 0 0 0 2px #fff,inset 0 0 14px #a57b3c44}.jackaroo-card:before{border-color:#c99c4f99}.jackaroo-card-center b{font-size:2.6rem}.jackaroo-card.board{width:45px;height:61px}.jackaroo-card.board .jackaroo-card-center b{font-size:1.35rem}
 @media(max-width:700px){.jackaroo-table{padding:11px;border-width:6px;border-radius:24px}.jackaroo-table .jackaroo-board{gap:2px;padding:12px;border-radius:17px}.jackaroo-cell{border-width:1px}.jackaroo-board:after{inset:27%;box-shadow:0 0 0 8px #0b4c5544,0 0 0 16px #f4d07d22}.jackaroo-lane{padding:4px;gap:3px;border-radius:12px}.jackaroo-lane.lane-north{top:10%;height:27%}.jackaroo-lane.lane-south{bottom:10%;height:27%}.jackaroo-lane.lane-east{right:10%;width:27%}.jackaroo-lane.lane-west{left:10%;width:27%}.jackaroo-lane-hole{border-width:1px}.jackaroo-zones{grid-template-columns:repeat(2,minmax(0,1fr));gap:5px}.jackaroo-player-zone{padding:6px}.jackaroo-card{width:58px;height:88px}.jackaroo-card-center b{font-size:2rem}.jackaroo-card.board{width:34px;height:47px}.jackaroo-card.board .jackaroo-card-center b{font-size:1rem}.jackaroo-center{padding:7px;border-width:3px}.jackaroo-center .jackaroo-card{transform:scale(.62);margin:-12px 0}}
+
+/* Motion layer for every game.  All effects are client-only and are driven by
+   the newest server state, so animations never alter game rules or sync. */
+.game-panel-enter{animation:game-panel-enter .48s cubic-bezier(.2,.8,.2,1) both}
+@keyframes game-panel-enter{from{opacity:.55;transform:translateY(8px) scale(.995)}to{opacity:1;transform:none}}
+
+.uno-card-arrive{animation:uno-card-arrive .85s cubic-bezier(.18,.85,.22,1) both;transform-origin:50% 65%}
+@keyframes uno-card-arrive{0%{opacity:.25;transform:translateY(-30px) rotateY(88deg) rotateZ(-8deg) scale(.72)}55%{opacity:1;transform:translateY(5px) rotateY(-8deg) rotateZ(2deg) scale(1.08)}100%{opacity:1;transform:none}}
+.uno-table.uno-action-active .uno-table-center b{animation:uno-center-pulse .8s ease-out both}
+@keyframes uno-center-pulse{0%{transform:scale(.9);box-shadow:0 0 0 0 #ffd56b00,0 7px 20px #0009}45%{transform:scale(1.08);box-shadow:0 0 0 14px #ffd56b33,0 7px 25px #000c}100%{transform:none}}
+
+.domino-tile-arrive{animation:domino-tile-arrive .78s cubic-bezier(.2,.9,.25,1) both;transform-origin:50% 50%}
+@keyframes domino-tile-arrive{0%{opacity:.2;transform:translateX(24px) rotate(12deg) scale(.72)}65%{opacity:1;transform:translateX(-3px) rotate(-2deg) scale(1.08)}100%{opacity:1;transform:none}}
+.domino-board-chain.domino-action-active{animation:domino-chain-pulse .72s ease-out both}
+@keyframes domino-chain-pulse{0%{filter:brightness(1)}45%{filter:brightness(1.25) drop-shadow(0 0 9px #ffd16688)}100%{filter:brightness(1)}}
+
+/* Tomiro marbles land with a small lift and settle.  The board cells are
+   intentionally compact so all 52 spaces stay visible in both modes. */
+.jackaroo-board.mode-2 .jackaroo-circle-cell{width:clamp(18px,5.6%,40px)}
+.jackaroo-board.mode-4 .jackaroo-cell{transform:scale(.91);transform-origin:center}
+.tomiro-marble-arrive{animation:tomiro-marble-arrive .9s cubic-bezier(.18,.9,.25,1) both;z-index:12!important}
+@keyframes tomiro-marble-arrive{0%{opacity:.2;transform:scale(.45) translateY(-16px)}48%{opacity:1;transform:scale(1.18) translateY(0)}72%{transform:scale(.92) translateY(1px)}100%{opacity:1;transform:scale(1) translateY(0)}}
+.jackaroo-board.tomiro-action-active .jackaroo-center{animation:tomiro-center-pulse .82s ease-out both}
+@keyframes tomiro-center-pulse{0%{filter:brightness(1);transform:scale(1)}45%{filter:brightness(1.22);transform:scale(1.04)}100%{filter:brightness(1);transform:scale(1)}}
+
+/* A wood board with real SVG ladders and snakes layered above the numbered
+   cells.  It remains responsive and does not intercept clicks. */
+.snakes-board{position:relative;display:block;overflow:hidden}
+.snakes-board-grid{position:relative;z-index:1;display:grid;grid-template-columns:repeat(10,minmax(0,1fr));gap:2px}
+.snakes-jumps-overlay{position:absolute;inset:7px;z-index:3;width:calc(100% - 14px);height:calc(100% - 14px);pointer-events:none;overflow:visible}
+.snakes-jump{vector-effect:non-scaling-stroke;opacity:.84;transform-box:fill-box;transform-origin:center}
+.snakes-ladder-line line{stroke:#8e3219;stroke-width:1.55;stroke-linecap:round;filter:drop-shadow(0 1px 1px #351307)}
+.snakes-ladder-line line:nth-child(n+3){stroke:#f3a24a;stroke-width:1.05}
+.snakes-snake-line .snake-body{fill:none;stroke:#23864f;stroke-width:3.2;stroke-linecap:round;filter:drop-shadow(0 1px 1px #33120e);stroke-dasharray:9 3}
+.snakes-snake-line .snake-head{fill:#31a15b;stroke:#154c35;stroke-width:1.1}
+.snakes-snake-line .snake-eye{fill:#fff7c7;stroke:#2e1c12;stroke-width:.25}
+.snakes-snake-line .snake-tongue{fill:none;stroke:#e84b3c;stroke-width:.75;stroke-linecap:round}
+.snakes-jump.active{animation:snakes-jump-glow .95s ease-in-out 2 both;opacity:1}
+@keyframes snakes-jump-glow{0%,100%{filter:brightness(1);transform:scale(1)}45%{filter:brightness(1.45) drop-shadow(0 0 5px #ffd166);transform:scale(1.035)}}
+.snakes-cell.snakes-move-from{animation:snakes-source .65s ease-out both}
+.snakes-cell.snakes-move-to{animation:snakes-destination .9s cubic-bezier(.2,.85,.25,1) both}
+@keyframes snakes-source{0%,100%{filter:none}45%{filter:brightness(1.35);box-shadow:inset 0 0 0 3px #ffe19a,0 0 11px #ffd16688}}
+@keyframes snakes-destination{0%{filter:brightness(1.6);transform:scale(.92)}55%{filter:brightness(1.2);transform:scale(1.04)}100%{filter:none;transform:none}}
+.board-token.snakes-token-arrive{animation:snakes-token-arrive .85s cubic-bezier(.2,.9,.25,1) both;z-index:9}
+@keyframes snakes-token-arrive{0%{opacity:.2;transform:scale(.45) translateY(-13px)}50%{opacity:1;transform:scale(1.2) translateY(0)}100%{opacity:1;transform:none}}
+@media(max-width:600px){.snakes-jumps-overlay{inset:4px;width:calc(100% - 8px);height:calc(100% - 8px)}.jackaroo-board.mode-4 .jackaroo-cell{transform:scale(.88)}}
+
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;scroll-behavior:auto!important;transition-duration:.01ms!important}}
+
+/* Quiz championship: compact round counter and a clear final leaderboard. */
+.quiz-final{display:grid;gap:7px;margin-top:12px;padding-top:11px;border-top:1px solid #f1c97166;color:#ffe291}
+.quiz-final-row{display:flex;align-items:center;justify-content:space-between;gap:9px;padding:7px 9px;border-radius:9px;background:#241d3d;color:#eee8ff;font-size:.78rem}
+.quiz-final-row b{display:inline-grid;place-items:center;width:21px;height:21px;margin-left:5px;border-radius:50%;background:#8b5cf6;color:#fff;font-size:.68rem}
+.quiz-final-row strong{color:#fbd38d;white-space:nowrap}
+.quiz-finished-note{padding:14px;border-radius:12px;background:linear-gradient(135deg,#35254f,#1a1830);border:1px solid #f1c97166;color:#ffe291;line-height:1.8;text-align:center}
+
+/* Long, board-spanning snakes and ladders.  The SVG paths are deliberately
+   thick and multicoloured so a jump remains visible over the wooden cells. */
+.snakes-board-wrap{background:linear-gradient(145deg,#59351f,#24151b 62%,#120e16);border-color:#f0c56e;box-shadow:inset 0 0 0 2px #5e331f,inset 0 0 0 5px #f8d883,inset 0 0 34px #1a0c08,0 18px 38px #050308aa}
+.snakes-board{background:repeating-linear-gradient(135deg,#dca961 0 8px,#c78b4b 8px 16px);border-color:#ffe09a;box-shadow:inset 0 0 0 3px #704124,inset 0 0 0 5px #f2c36a,inset 0 0 26px #4a261888,0 4px 12px #150b08aa}
+.snakes-board-grid{z-index:auto}
+.snakes-board-grid .board-token{z-index:5}
+.snakes-cell{background:linear-gradient(145deg,#fff1ba,#e8b365);border-color:#a56735;box-shadow:inset 0 0 0 1px #fff9,0 1px 3px #6b3a1c99}
+.snakes-cell:nth-child(4n){background:linear-gradient(145deg,#f7dc91,#d9984f)}
+.snakes-ladder-line line{stroke:#9a3519;stroke-width:1.8;stroke-linecap:round;filter:drop-shadow(0 1px 1px #351307)}
+.snakes-ladder-line line:nth-child(n+3){stroke:#f4b256;stroke-width:1.18}
+.snakes-snake-line .snake-body{stroke-width:4.1;stroke-dasharray:12 3;filter:drop-shadow(0 1px 1px #33120e) drop-shadow(0 0 1px #fff4)}
+.snakes-snake-line .snake-head{stroke-width:1.35}
+.snakes-snake-line.snake-variant-0 .snake-body{stroke:#d68b1e}.snakes-snake-line.snake-variant-0 .snake-head{fill:#eda82b;stroke:#87450e}
+.snakes-snake-line.snake-variant-1 .snake-body{stroke:#258bc9}.snakes-snake-line.snake-variant-1 .snake-head{fill:#4ba9df;stroke:#15517d}
+.snakes-snake-line.snake-variant-2 .snake-body{stroke:#2b955b}.snakes-snake-line.snake-variant-2 .snake-head{fill:#3bb269;stroke:#154c35}
+.snakes-snake-line.active .snake-body{animation:snake-crawl .9s ease-in-out infinite}
+.snakes-ladder-line.active line{animation:ladder-climb .8s ease-in-out 2 both}
+@keyframes snake-crawl{to{stroke-dashoffset:-30}}
+@keyframes ladder-climb{0%,100%{filter:drop-shadow(0 1px 1px #351307)}50%{filter:brightness(1.55) drop-shadow(0 0 4px #ffd166)}}
+.board-token.snakes-token-step{animation:snakes-token-step .26s cubic-bezier(.2,.9,.25,1) both;z-index:10}
+@keyframes snakes-token-step{0%{opacity:.62;transform:translateY(-5px) scale(.84)}65%{opacity:1;transform:translateY(0) scale(1.1)}100%{opacity:1;transform:none}}
+@media(prefers-reduced-motion:reduce){.snakes-snake-line.active .snake-body,.snakes-ladder-line.active line,.board-token.snakes-token-step{animation-duration:.01ms!important;animation-iteration-count:1!important}}
+
+/* Gift shop actions: one quantity can be bought, sent to self, or sent to a
+   friend. The same quantity control is reused by the direct-send buttons. */
+.shop-action-row{display:flex;align-items:end;justify-content:space-between;gap:8px;margin-top:auto}.shop-quantity-label{display:flex;align-items:center;gap:5px;color:var(--muted);font-size:11px}.shop-quantity{width:62px;padding:7px 6px;text-align:center}.shop-gift-actions{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:5px}.shop-gift-actions button{min-height:38px;padding:7px 5px!important;font-size:11px!important;line-height:1.25}.shop-gift-actions i{margin-left:3px}.gift-count-badge{display:inline-flex;align-items:center;padding:2px 7px;border-radius:999px;background:#6c45bd;color:#ffe291;font-size:.72rem;vertical-align:middle;direction:ltr}.received-gift-copy strong{white-space:normal}.gift-transfer-card .gift-send-form{grid-template-columns:1.2fr .55fr 1fr 1.2fr auto}.gift-transfer-card .gift-send-form label{min-width:0}
+@media(max-width:720px){.shop-gift-actions{grid-template-columns:1fr}.shop-action-row{align-items:center}.gift-transfer-card .gift-send-form{grid-template-columns:1fr}.shop-gift-actions button{width:100%}}
+
+/* Compatibility guard for cached markup: no coloured jump cells or target
+   badges are shown even if an older client briefly renders them. */
+.snakes-cell.ladder,.snakes-cell.snake{background:linear-gradient(145deg,#fff1ba,#e8b365)!important;color:#5a321d!important;border-color:#a56735!important}
+.snakes-cell em,.jump-badge{display:none!important}

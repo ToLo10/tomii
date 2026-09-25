@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#0b0b14">
   <title>TOMI - المحفظة والمتجر</title>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
-  <link rel="stylesheet" href="economy.css?v=20260924-roulette-space4">
+  <link rel="stylesheet" href="economy.css?v=20260925-gifts-batch-snakes">
 </head>
 <body>
   <div class="app-shell">
@@ -86,15 +86,16 @@
       </section>
 
       <section id="giftTransferCard" class="section card gift-transfer-card">
-        <div class="section-title"><div><h2><i class="fa-solid fa-gift"></i> إرسال هدية</h2><p>اختَر إرسال الهدية لنفسك مباشرة أو اكتب اسم المستخدم لإرسالها إلى شخص آخر.</p></div></div>
+        <div class="section-title"><div><h2><i class="fa-solid fa-gift"></i> إرسال هدية</h2><p>اختَر نوع الهدية والعدد، ثم أرسلها لنفسك أو لصديق. الهدايا المتشابهة تُجمع تلقائيًا.</p></div></div>
         <form id="sendGiftForm" class="gift-send-form">
-          <label>الهدية<select id="giftInventorySelect" class="select" required><option value="">لا توجد هدايا قابلة للإرسال</option></select></label>
-          <label>طريقة الإرسال<select id="giftRecipientMode" class="select"><option value="self">إرسالها لنفسي</option><option value="user">إرسالها لمستخدم آخر</option></select></label>
+          <label>نوع الهدية<select id="giftInventorySelect" class="select" required><option value="">لا توجد هدايا قابلة للإرسال</option></select></label>
+          <label>العدد<input id="giftQuantity" class="input" type="number" min="1" max="100" value="1" inputmode="numeric"></label>
+          <label>طريقة الإرسال<select id="giftRecipientMode" class="select"><option value="self">إرسالها لنفسي</option><option value="user">إرسالها لصديق</option></select></label>
           <label id="giftRecipientWrap" class="hidden">اسم المستلم<input id="giftRecipient" class="input" list="giftRecipientOptions" autocomplete="off" placeholder="اكتب username"></label>
           <datalist id="giftRecipientOptions"></datalist>
-          <button id="sendGiftBtn" class="primary" type="submit"><i class="fa-solid fa-paper-plane"></i> إرسال الهدية</button>
+          <button id="sendGiftBtn" class="primary" type="submit"><i class="fa-solid fa-paper-plane"></i> إرسال الآن</button>
         </form>
-        <div id="giftSendHint" class="muted gift-send-hint">اشترِ هدية من المتجر أولاً.</div>
+        <div id="giftSendHint" class="muted gift-send-hint">اشترِ الهدية للمحفظة أولاً، أو استخدم أزرار الإرسال المباشر داخل المتجر.</div>
       </section>
 
       <section class="section card">
@@ -182,6 +183,6 @@
     </section>
   </div>
   <script src="/socket.io/socket.io.js"></script>
-  <script src="wallet.js?v=20260924-roulette-space4"></script>
+  <script src="wallet.js?v=20260925-gifts-batch-snakes"></script>
 </body>
 </html>
