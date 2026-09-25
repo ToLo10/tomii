@@ -7036,17 +7036,16 @@
             }
         });
 
-        let mediaRecorder;
-        let audioChunks = [];
+        let mediaRecorder = null;
         let recordingStream = null;
-        let voiceRecordingShouldSend = false;
         let voiceRecordingStartedAt = 0;
         let voiceRecordingTimer = null;
-        let voiceWaveformTimer = null;
-        let voiceAudioContext = null;
-        let voiceAnalyser = null;
-        let voiceWaveformSamples = [];
-        let voiceRecordingGeneration = 0;
+        let voiceStartPending = false;
+        // Every recording owns its stream, chunks, waveform and recorder.
+        // Keeping these per-session prevents an older onstop callback from
+        // clearing the next voice note when the user records quickly twice.
+        let activeVoiceSession = null;
+        let voiceStopPending = null;
         const voiceRecordingBar = document.getElementById('voiceRecordingBar');
         const voiceRecordingTime = document.getElementById('voiceRecordingTime');
         const cancelVoiceRecordingBtn = document.getElementById('cancelVoiceRecordingBtn');
@@ -7059,43 +7058,47 @@
         }
 
         function startVoiceWaveformCapture(stream) {
-            voiceWaveformSamples = [];
+            const capture = { timer: null, analyser: null, context: null, samples: [] };
             try {
                 const Ctx = window.AudioContext || window.webkitAudioContext;
-                if (!Ctx || !stream) return;
-                voiceAudioContext = new Ctx();
-                const source = voiceAudioContext.createMediaStreamSource(stream);
-                voiceAnalyser = voiceAudioContext.createAnalyser();
-                voiceAnalyser.fftSize = 256;
-                voiceAnalyser.smoothingTimeConstant = 0.72;
-                source.connect(voiceAnalyser);
-                const buffer = new Uint8Array(voiceAnalyser.fftSize);
-                voiceWaveformTimer = setInterval(() => {
-                    if (!voiceAnalyser) return;
-                    voiceAnalyser.getByteTimeDomainData(buffer);
+                if (!Ctx || !stream) return capture;
+                capture.context = new Ctx();
+                const source = capture.context.createMediaStreamSource(stream);
+                capture.analyser = capture.context.createAnalyser();
+                capture.analyser.fftSize = 256;
+                capture.analyser.smoothingTimeConstant = 0.72;
+                source.connect(capture.analyser);
+                const buffer = new Uint8Array(capture.analyser.fftSize);
+                capture.timer = setInterval(() => {
+                    if (!capture.analyser) return;
+                    capture.analyser.getByteTimeDomainData(buffer);
                     let sum = 0;
                     for (const value of buffer) {
                         const n = (value - 128) / 128;
                         sum += n * n;
                     }
                     const rms = Math.sqrt(sum / buffer.length);
-                    voiceWaveformSamples.push(Math.max(0.08, Math.min(1, rms * 5.2)));
-                    if (voiceWaveformSamples.length > 2400) voiceWaveformSamples.shift();
+                    capture.samples.push(Math.max(0.08, Math.min(1, rms * 5.2)));
+                    if (capture.samples.length > 2400) capture.samples.shift();
                 }, 90);
-            } catch (_) {}
+            } catch (_) {
+                clearInterval(capture.timer);
+                capture.timer = null;
+            }
+            return capture;
         }
 
         async function stopVoiceWaveformCapture(capture = null) {
-            const timer = capture ? capture.timer : voiceWaveformTimer;
-            const analyser = capture ? capture.analyser : voiceAnalyser;
-            const context = capture ? capture.context : voiceAudioContext;
+            if (!capture) return;
+            const timer = capture.timer;
+            const context = capture.context;
             clearInterval(timer);
-            if (!capture || voiceWaveformTimer === timer) voiceWaveformTimer = null;
-            if (!capture || voiceAnalyser === analyser) voiceAnalyser = null;
+            capture.timer = null;
+            capture.analyser = null;
             if (context) {
                 try { await context.close(); } catch (_) {}
             }
-            if (!capture || voiceAudioContext === context) voiceAudioContext = null;
+            capture.context = null;
         }
 
         function compressVoiceWaveform(samples, target = 44) {
@@ -7114,10 +7117,24 @@
         }
 
         function finishVoiceRecording(shouldSend) {
-            if (!mediaRecorder || mediaRecorder.state === 'inactive') return;
-            voiceRecordingShouldSend = Boolean(shouldSend);
-            try { mediaRecorder.requestData?.(); } catch (_) {}
-            try { mediaRecorder.stop(); } catch (_) {}
+            const session = activeVoiceSession;
+            const recorder = session?.recorder || mediaRecorder;
+            if (!session || !recorder) return;
+            if (recorder.state === 'inactive') {
+                // The browser may flip the state before dispatching `stop`.
+                // Keep the next recording from reusing this session until the
+                // queued stop callback has detached its resources.
+                voiceStopPending = session;
+                return;
+            }
+            session.shouldSend = Boolean(shouldSend);
+            voiceStopPending = session;
+            try { recorder.requestData?.(); } catch (_) {}
+            try {
+                recorder.stop();
+            } catch (_) {
+                if (voiceStopPending === session) voiceStopPending = null;
+            }
         }
 
         recordBtn.addEventListener('click', async function() {
@@ -7126,12 +7143,30 @@
                 return;
             }
             if (!roomId) return;
+            if (voiceStartPending) {
+                sendStatus('جارٍ تشغيل الميكروفون...');
+                return;
+            }
+            // MediaRecorder fires `stop` asynchronously. Do not let a second
+            // click start a new recorder while the previous callback is still
+            // taking its final data; the next click works as soon as cleanup
+            // is complete and no page refresh is needed.
+            if (voiceStopPending) {
+                sendStatus('جارٍ تجهيز التسجيل السابق...');
+                return;
+            }
+            if (activeVoiceSession?.recorder?.state === 'inactive') {
+                voiceStopPending = activeVoiceSession;
+                sendStatus('جارٍ تجهيز التسجيل السابق...');
+                return;
+            }
             if (mediaRecorder && mediaRecorder.state !== 'inactive') {
                 // While recording, tapping the waveform simply keeps the recording active.
                 // Use the explicit Send / Cancel controls below.
                 return;
             }
 
+            voiceStartPending = true;
             try {
                 const audioCfg = clientConfig.audioRecording || {};
                 recordingStream = await navigator.mediaDevices.getUserMedia({
@@ -7147,7 +7182,7 @@
                     video: false
                 });
 
-                startVoiceWaveformCapture(recordingStream);
+                const voiceCapture = startVoiceWaveformCapture(recordingStream);
 
                 // iPhone/iPad Safari is much more reliable with MP4/AAC. Chrome,
                 // Android Chrome and Firefox are much more reliable with WebM/Opus.
@@ -7196,57 +7231,68 @@
                         mediaRecorder = new MediaRecorder(recordingStream);
                     }
                 }
-                audioChunks = [];
-                voiceRecordingShouldSend = false;
                 const recorder = mediaRecorder;
-                const generation = ++voiceRecordingGeneration;
+                const session = {
+                    recorder,
+                    stream: recordingStream,
+                    capture: voiceCapture,
+                    chunks: [],
+                    shouldSend: false,
+                    startedAt: 0
+                };
+                activeVoiceSession = session;
 
                 recorder.onerror = () => {
-                    if (generation === voiceRecordingGeneration) {
-                        voiceRecordingShouldSend = false;
+                    session.shouldSend = false;
+                    if (activeVoiceSession === session) {
+                        activeVoiceSession = null;
+                        if (mediaRecorder === recorder) mediaRecorder = null;
+                        if (recordingStream === session.stream) recordingStream = null;
+                        clearInterval(voiceRecordingTimer);
+                        voiceRecordingTimer = null;
+                        voiceRecordingStartedAt = 0;
                         sendStatus('');
+                        recordBtn.classList.remove('recording-active');
+                        recordBtn.innerHTML = '<i class="fa-solid fa-wave-square"></i>';
                         if (voiceRecordingBar) voiceRecordingBar.style.display = 'none';
                     }
+                    if (voiceStopPending === session) voiceStopPending = null;
+                    stopVoiceWaveformCapture(session.capture);
+                    session.stream?.getTracks?.().forEach(track => track.stop());
                     alert('تعذر تسجيل الصوت من المتصفح. جرّب السماح بالمايكروفون أو حدّث الصفحة.');
                 };
                 recorder.ondataavailable = event => {
-                    if (event.data && event.data.size > 0) audioChunks.push(event.data);
+                    if (event.data && event.data.size > 0) session.chunks.push(event.data);
                 };
 
                 recorder.onstop = async function() {
                     // Snapshot every recorder-specific value before the first await.
                     // A new recording may start while this one is being uploaded;
                     // it must never overwrite the previous chunks or waveform.
-                    const sendRequested = Boolean(voiceRecordingShouldSend);
-                    const startedAt = voiceRecordingStartedAt;
+                    const sendRequested = Boolean(session.shouldSend);
+                    const startedAt = session.startedAt;
                     const recordedDurationMs = startedAt ? Math.max(0, Date.now() - startedAt) : 0;
-                    const recordedWaveform = compressVoiceWaveform(voiceWaveformSamples.slice());
-                    const recordedChunks = audioChunks.slice();
-                    const capturedStream = recordingStream;
+                    const recordedWaveform = compressVoiceWaveform(session.capture?.samples?.slice() || []);
+                    const recordedChunks = session.chunks.slice();
+                    const capturedStream = session.stream;
                     const capturedMimeType = String(recorder.mimeType || selectedMime || 'audio/webm').trim().toLowerCase();
-                    const capturedWaveform = {
-                        timer: voiceWaveformTimer,
-                        analyser: voiceAnalyser,
-                        context: voiceAudioContext
-                    };
                     clearInterval(voiceRecordingTimer);
                     voiceRecordingTimer = null;
-                    voiceWaveformTimer = null;
-                    voiceAnalyser = null;
-                    voiceAudioContext = null;
-                    if (mediaRecorder === recorder) mediaRecorder = null;
-                    if (recordingStream === capturedStream) recordingStream = null;
-                    if (generation === voiceRecordingGeneration) {
+                    if (activeVoiceSession === session) {
+                        activeVoiceSession = null;
+                        if (mediaRecorder === recorder) mediaRecorder = null;
+                        if (recordingStream === capturedStream) recordingStream = null;
                         voiceRecordingStartedAt = 0;
-                        audioChunks = [];
-                        voiceWaveformSamples = [];
-                        voiceRecordingShouldSend = false;
                         sendStatus('');
                         recordBtn.classList.remove('recording-active');
                         recordBtn.innerHTML = '<i class="fa-solid fa-wave-square"></i>';
                         if (voiceRecordingBar) voiceRecordingBar.style.display = 'none';
                     }
-                    await stopVoiceWaveformCapture(capturedWaveform);
+                    // The recorder is fully stopped and its resources are
+                    // detached before another recording is allowed. The upload
+                    // itself can continue in the background.
+                    if (voiceStopPending === session) voiceStopPending = null;
+                    await stopVoiceWaveformCapture(session.capture);
 
                     const mimeBase = capturedMimeType.split(';', 1)[0].trim() || 'audio/webm';
                     const audioBlob = new Blob(recordedChunks, { type: mimeBase || capturedMimeType || 'audio/webm' });
@@ -7273,7 +7319,8 @@
                 };
 
                 mediaRecorder.start(250);
-                voiceRecordingStartedAt = Date.now();
+                session.startedAt = Date.now();
+                voiceRecordingStartedAt = session.startedAt;
                 updateVoiceRecordingTimer();
                 clearInterval(voiceRecordingTimer);
                 voiceRecordingTimer = setInterval(updateVoiceRecordingTimer, 500);
@@ -7282,7 +7329,19 @@
                 recordBtn.innerHTML = '<i class="fa-solid fa-microphone"></i>';
                 if (voiceRecordingBar) voiceRecordingBar.style.display = 'flex';
             } catch (err) {
+                if (activeVoiceSession) {
+                    activeVoiceSession.capture && stopVoiceWaveformCapture(activeVoiceSession.capture);
+                    activeVoiceSession.stream?.getTracks?.().forEach(track => track.stop());
+                    activeVoiceSession = null;
+                } else if (recordingStream) {
+                    recordingStream.getTracks().forEach(track => track.stop());
+                }
+                recordingStream = null;
+                mediaRecorder = null;
+                voiceStopPending = null;
                 alert('تعذر تشغيل المايكروفون. تأكد من منح الموقع صلاحية الميكروفون.');
+            } finally {
+                voiceStartPending = false;
             }
         });
 
