@@ -1832,8 +1832,13 @@ const MAX_UPLOAD_BYTES = Math.max(
 // Production media must not fall back to Render's ephemeral disk. When R2 is
 // missing, reject every non-empty upload with a useful configuration error
 // instead of accepting bytes that will disappear on the next restart.
+// Keep local previews usable when they do not have R2/Mongo credentials. The
+// production Render manifest sets REQUIRE_EXTERNAL_MEDIA_STORAGE=true
+// explicitly, so production still rejects ephemeral media instead of silently
+// losing uploads after a restart.
+const mediaStorageRequirementDefault = "false";
 const REQUIRE_EXTERNAL_MEDIA_STORAGE = String(
-  process.env.REQUIRE_EXTERNAL_MEDIA_STORAGE || "true"
+  process.env.REQUIRE_EXTERNAL_MEDIA_STORAGE ?? mediaStorageRequirementDefault
 ).toLowerCase() === "true";
 
 // R2 is the preferred media store, but MongoDB/GridFS is a durable fallback
@@ -1860,15 +1865,22 @@ const AUDIO_RECORDING_BITRATE = Math.min(
   Math.max(64000, Number(process.env.AUDIO_RECORDING_BITRATE || 160000) || 160000)
 );
 const VIDEO_HIGH_QUALITY_COST = 2_000;
+const HIGH_QUALITY_MEDIA_TYPES = new Set(["image", "gif", "video"]);
 const VIDEO_QUALITY_HEIGHTS = Object.freeze({ "360": 360, "720": 720 });
 
+function isQualityMediaType(fileType) {
+  return HIGH_QUALITY_MEDIA_TYPES.has(String(fileType || "").toLowerCase());
+}
+
 function normalizeVideoQuality(value, fileType) {
-  if (fileType !== "video") return "360";
+  if (!HIGH_QUALITY_MEDIA_TYPES.has(String(fileType || "").toLowerCase())) return "360";
   return String(value || "360").trim() === "720" ? "720" : "360";
 }
 
 function videoQualityCost(videoQuality, fileType = "video") {
-  return fileType === "video" && videoQuality === "720" ? VIDEO_HIGH_QUALITY_COST : 0;
+  return HIGH_QUALITY_MEDIA_TYPES.has(String(fileType || "").toLowerCase()) && videoQuality === "720"
+    ? VIDEO_HIGH_QUALITY_COST
+    : 0;
 }
 // Large media is sent in resumable pieces. Eight megabytes reduces HTTP
 // round-trip overhead for normal videos; a failed mobile request still loses
@@ -2581,6 +2593,117 @@ function runMediaCommand(command, args, { timeoutMs = VIDEO_COMPATIBILITY_TIMEOU
       finish(null, { stdout, stderr, code, signal });
     });
   });
+}
+
+// A low-quality upload is a real media transformation, not only a label sent
+// by the browser.  Keeping this conversion on the server is important because
+// the browser may upload straight to R2, so client-side metadata alone cannot
+// guarantee that the stored bytes are actually 360p.
+async function createLowQualityVideoVariant({ sourcePath, originalName = "video", fileId = "file" } = {}) {
+  if (!sourcePath) throw new Error("ملف الفيديو غير موجود للتحويل");
+  const sourceStat = await fs.promises.stat(sourcePath);
+  if (!sourceStat.isFile() || sourceStat.size < 1024) {
+    throw new Error("ملف الفيديو فارغ أو غير صالح للتحويل");
+  }
+
+  const safeId = String(fileId || "file").replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 80) || "file";
+  const outputName = `.video-360-${safeId}-${crypto.randomBytes(5).toString("hex")}.mp4`;
+  const outputPath = path.join(UPLOAD_DIR, outputName);
+  const requestedHeight = VIDEO_QUALITY_HEIGHTS["360"];
+
+  try {
+    await runMediaCommand(FFMPEG_PATH, [
+      "-hide_banner", "-loglevel", "error", "-y",
+      "-i", sourcePath,
+      "-map", "0:v:0",
+      "-map", "0:a:0?",
+      "-sn", "-dn",
+      "-vf", `scale=-2:${requestedHeight}:force_original_aspect_ratio=decrease`,
+      "-c:v", "libx264",
+      "-preset", "veryfast",
+      "-crf", "28",
+      "-maxrate", "900k",
+      "-bufsize", "1800k",
+      "-pix_fmt", "yuv420p",
+      "-profile:v", "main",
+      "-level", "3.1",
+      "-c:a", "aac",
+      "-b:a", "96k",
+      "-ar", "44100",
+      "-ac", "2",
+      "-movflags", "+faststart",
+      "-threads", "1",
+      outputPath
+    ]);
+
+    const outputStat = await fs.promises.stat(outputPath);
+    if (!outputStat.isFile() || outputStat.size < 1024) {
+      throw new Error("نسخة الفيديو الناتجة فارغة");
+    }
+
+    // If the source is already smaller than the encoded result (for example a
+    // camera file that is already 360p), retaining it is safer and avoids
+    // increasing storage while the requested quality is already satisfied.
+    if (outputStat.size >= sourceStat.size) {
+      safeUnlink(outputPath);
+      return null;
+    }
+
+    const baseName = path.basename(String(originalName || "video"))
+      .replace(/\.[^.]+$/, "")
+      .replace(/[^a-zA-Z0-9._-]+/g, "_")
+      .slice(0, 120) || "video";
+    return {
+      path: outputPath,
+      filename: outputName,
+      originalname: `${baseName}-360.mp4`,
+      mimetype: "video/mp4",
+      size: outputStat.size,
+      reduced: true
+    };
+  } catch (err) {
+    safeUnlink(outputPath);
+    const wrapped = new Error(
+      err?.code === "ENOENT"
+        ? "أداة ضغط الفيديو غير متوفرة على الخادم"
+        : String(err?.message || "تعذر ضغط الفيديو إلى 360p")
+    );
+    wrapped.code = err?.code === "ENOENT" ? "VIDEO_QUALITY_TRANSCODE_UNAVAILABLE" : "VIDEO_QUALITY_TRANSCODE_FAILED";
+    wrapped.statusCode = 503;
+    throw wrapped;
+  }
+}
+
+async function prepareLowQualityVideoVariant(session, fileId) {
+  if (!session || session.fileType !== "video" || normalizeVideoQuality(session.videoQuality, "video") !== "360") return null;
+  if (!VIDEO_COMPATIBILITY_ENABLED) {
+    const error = new Error("ضغط الفيديو بجودة 360p غير مفعّل على الخادم");
+    error.code = "VIDEO_QUALITY_TRANSCODE_DISABLED";
+    error.statusCode = 503;
+    throw error;
+  }
+
+  let sourcePath = session.tempPath;
+  let temporarySource = false;
+  if (session.mode === "r2-multipart") {
+    if (!session.r2Key || !objectStorage.isConfigured()) {
+      throw new Error("ملف الفيديو الخارجي غير متاح للتحويل حالياً");
+    }
+    const safeId = String(fileId || session.fileId || "file").replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 80) || "file";
+    sourcePath = path.join(UPLOAD_DIR, `.video-360-source-${safeId}-${crypto.randomBytes(5).toString("hex")}`);
+    await objectStorage.downloadObjectToFile({ key: session.r2Key, filePath: sourcePath });
+    temporarySource = true;
+  }
+
+  try {
+    return await createLowQualityVideoVariant({
+      sourcePath,
+      originalName: session.originalName,
+      fileId
+    });
+  } finally {
+    if (temporarySource) safeUnlink(sourcePath);
+  }
 }
 
 async function inspectVideoForBrowserCompatibility(inputPath, record) {
@@ -4983,8 +5106,8 @@ function publishStoredUploadMessage({ actor, roomIdOrCode, fileId, msgId, time, 
     fileType: file.fileType,
     mimeType: file.mimeType,
     fileSize: file.size,
-    videoQuality: file.fileType === "video" ? (file.videoQuality || "360") : null,
-    videoQualityCost: file.fileType === "video" ? Math.max(0, Number(file.videoQualityCost || 0)) : 0,
+    videoQuality: isQualityMediaType(file.fileType) ? (file.videoQuality || "360") : null,
+    videoQualityCost: isQualityMediaType(file.fileType) ? Math.max(0, Number(file.videoQualityCost || 0)) : 0,
     playbackStatus: file.fileType === "video"
       ? (file.playbackStatus || (VIDEO_COMPATIBILITY_ENABLED ? "queued" : "disabled"))
       : null,
@@ -5101,8 +5224,8 @@ function uploadSessionPublicResult(session, record, message = null, extra = {}) 
       && record.playbackMode === "compatibility"
       ? `/api/files/${encodeURIComponent(fileId)}?playback=compatible`
       : null,
-    videoQuality: record?.fileType === "video" ? (record.videoQuality || session.videoQuality || "360") : null,
-    videoQualityCost: record?.fileType === "video" ? Math.max(0, Number(record.videoQualityCost || session.videoQualityCost || 0)) : 0,
+    videoQuality: isQualityMediaType(record?.fileType) ? (record.videoQuality || session.videoQuality || "360") : null,
+    videoQualityCost: isQualityMediaType(record?.fileType) ? Math.max(0, Number(record.videoQualityCost || session.videoQualityCost || 0)) : 0,
     message,
     ...extra
   };
@@ -5132,8 +5255,8 @@ function uploadSessionState(session) {
     received: Number(session.received || 0),
     fileSize: Number(session.fileSize || 0),
     status: session.status,
-    videoQuality: session.fileType === "video" ? (session.videoQuality || "360") : null,
-    videoQualityCost: session.fileType === "video" ? Math.max(0, Number(session.videoQualityCost || 0)) : 0,
+    videoQuality: isQualityMediaType(session.fileType) ? (session.videoQuality || "360") : null,
+    videoQualityCost: isQualityMediaType(session.fileType) ? Math.max(0, Number(session.videoQualityCost || 0)) : 0,
     ...(directR2 ? { uploadedParts: uploadSessionParts(session) } : {}),
     result: ["completed", "uploaded"].includes(session.status) ? session.result : null,
     expiresAt: new Date(session.expiresAt).toISOString()
@@ -5206,7 +5329,8 @@ app.post("/api/upload/session", uploadLimiter, requireHttpAuth, limitConcurrentU
         const existingMessage = (db.roomHistory?.[scope.roomId] || [])
           .find(message => message?.msgId === requestedMsgId);
         const existingFile = existingMessage?.fileId ? db.uploads?.[existingMessage.fileId] : null;
-        if (existingFile && existingFile.uploader === uploader && Number(existingFile.size) === fileSize) {
+        if (existingFile && existingFile.uploader === uploader
+          && Number(existingFile.sourceSize ?? existingFile.size) === fileSize) {
           const recoveredSession = {
             fileId: existingFile.fileId,
             originalName: existingFile.originalName,
@@ -5241,6 +5365,7 @@ app.post("/api/upload/session", uploadLimiter, requireHttpAuth, limitConcurrentU
       const charged = economyGameHandlers?.chargeCoinsForVideo?.(uploader, requestedVideoQualityCost, {
         context,
         originalName,
+        fileType,
         requestedQuality: videoQuality,
         fileSize
       });
@@ -5546,6 +5671,7 @@ app.post("/api/upload/session/:sessionId/complete", uploadLimiter, requireHttpAu
   }
   if (session.expiresAt <= Date.now()) {
     if (session.status !== "uploaded") queuePartialResumableUploadDelete(session);
+    refundAbandonedVideoQualityCharge(session, "session_expired");
     safeUnlink(session.tempPath);
     removePersistedResumableUpload(session);
     uploadSessions.delete(session.id);
@@ -5572,6 +5698,10 @@ app.post("/api/upload/session/:sessionId/complete", uploadLimiter, requireHttpAu
         throw error;
       }
 
+      // Convert a requested low-quality video before creating its durable
+      // upload record. This makes the stored object itself 360p instead of
+      // merely tagging the original bytes as "360".
+      let lowQualityVideo = null;
       let cloudFile;
       if (session.mode === "r2-multipart") {
         const totalParts = Math.max(1, Math.ceil(session.fileSize / objectStorage.getPartSize()));
@@ -5615,17 +5745,35 @@ app.post("/api/upload/session/:sessionId/complete", uploadLimiter, requireHttpAu
         // partial upload if a later chat-publish retry takes a moment.
         session.r2UploadId = null;
         persistResumableUploadSession(session);
-        cloudFile = {
-          storage: "r2",
-          storedName: null,
-          cacheStoredName: null,
-          cacheExpiresAt: null,
-          gridFsId: null,
-          r2Key: session.r2Key,
-          size: session.fileSize,
-          cloudPending: false
-        };
+        // The multipart object must be completed before the transcoder can
+        // download it from R2.
+        lowQualityVideo = sessionFileType === "video" && session.fileSize >= 1024
+          ? await prepareLowQualityVideoVariant(session, fileId)
+          : null;
+        const lowQualityVideoId = lowQualityVideo ? `${fileId}_360` : fileId;
+        if (lowQualityVideo) {
+          cloudFile = await persistUploadedFileToCloud(lowQualityVideo, lowQualityVideoId, {
+            keepLocalCache,
+            context: session.context,
+            roomId: session.roomId || ""
+          });
+        } else {
+          cloudFile = {
+            storage: "r2",
+            storedName: null,
+            cacheStoredName: null,
+            cacheExpiresAt: null,
+            gridFsId: null,
+            r2Key: session.r2Key,
+            size: session.fileSize,
+            cloudPending: false
+          };
+        }
       } else {
+        lowQualityVideo = sessionFileType === "video" && session.fileSize >= 1024
+          ? await prepareLowQualityVideoVariant(session, fileId)
+          : null;
+        const lowQualityVideoId = lowQualityVideo ? `${fileId}_360` : fileId;
         const reqFile = {
           path: session.tempPath,
           filename: session.tempName,
@@ -5640,13 +5788,20 @@ app.post("/api/upload/session/:sessionId/complete", uploadLimiter, requireHttpAu
         const localFirstChatMedia = session.context === "chat"
           && ["image", "gif", "video", "audio"].includes(sessionFileType)
           && !objectStorage.isConfigured();
-        cloudFile = localFirstChatMedia
+        cloudFile = lowQualityVideo
+          ? await persistUploadedFileToCloud(lowQualityVideo, lowQualityVideoId, {
+            keepLocalCache,
+            context: session.context,
+            roomId: session.roomId || ""
+          })
+          : localFirstChatMedia
           ? localFirstVideoFile(session, fileId, keepLocalCache)
           : await persistUploadedFileToCloud(reqFile, fileId, {
             keepLocalCache,
             context: session.context,
             roomId: session.roomId || ""
           });
+        if (lowQualityVideo) safeUnlink(session.tempPath);
       }
       record = {
         fileId,
@@ -5657,18 +5812,26 @@ app.post("/api/upload/session/:sessionId/complete", uploadLimiter, requireHttpAu
         r2Key: cloudFile.r2Key || null,
         storage: cloudFile.storage,
         originalName: session.originalName,
-        mimeType: session.mimeType,
+        mimeType: lowQualityVideo ? "video/mp4" : session.mimeType,
         fileType: sessionFileType,
-        size: session.fileSize,
-        videoQuality: session.fileType === "video" ? session.videoQuality : null,
-        videoQualityCost: session.fileType === "video" ? Number(session.videoQualityCost || 0) : 0,
+        size: Number(cloudFile.size || session.fileSize || 0),
+        sourceSize: Number(session.fileSize || 0),
+        videoQuality: isQualityMediaType(session.fileType) ? session.videoQuality : null,
+        videoQualityCost: isQualityMediaType(session.fileType) ? Number(session.videoQualityCost || 0) : 0,
         videoQualityCharged: Boolean(session.videoQualityCharged),
         uploader: session.uploader,
         roomId: session.roomId,
         context: session.context,
         createdAt: new Date().toISOString(),
         cloudPending: Boolean(cloudFile.cloudPending),
-        cloudLastErrorAt: null
+        cloudLastErrorAt: null,
+        ...(lowQualityVideo ? {
+          playbackStatus: "ready",
+          playbackMode: "original",
+          playbackQuality: "360",
+          videoQualityTranscoded: true,
+          playbackReadyAt: new Date().toISOString()
+        } : {})
       };
       db.uploads[fileId] = record;
       session.fileId = fileId;
@@ -5678,6 +5841,14 @@ app.post("/api/upload/session/:sessionId/complete", uploadLimiter, requireHttpAu
         db.users[session.uploader].avatarFileId = fileId;
       }
       saveDB(db);
+      // Remove the original R2 object only after the compressed record is in
+      // the database. If the process restarts between these operations, the
+      // original remains available and the resumable session can be retried.
+      if (lowQualityVideo && session.mode === "r2-multipart" && session.r2Key) {
+        await objectStorage.deleteObject({ key: session.r2Key }).catch(err => {
+          console.warn("Original low-quality video cleanup failed:", err?.message || err);
+        });
+      }
     } else {
       session.fileId = fileId;
     }
@@ -5763,7 +5934,9 @@ app.post("/api/upload/session/:sessionId/complete", uploadLimiter, requireHttpAu
     });
     console.error("Resumable upload completion failed:", err?.stack || err?.message || err);
     return res.status(statusCode).json({
-      error: statusCode === 400 ? err.message : "تعذر حفظ أو إرسال الملف، ويمكن إعادة المحاولة"
+      error: String(err?.code || "").startsWith("VIDEO_QUALITY") || statusCode === 400
+        ? (err?.message || "تعذر تجهيز جودة الفيديو")
+        : "تعذر حفظ أو إرسال الملف، ويمكن إعادة المحاولة"
     });
   } finally {
     if (session.completionPromise === completionPromise) session.completionPromise = null;
@@ -5785,6 +5958,7 @@ app.delete("/api/upload/session/:sessionId", requireHttpAuth, (req, res) => {
 // and small avatars while current chat media uses the resumable route above.
 app.post("/api/upload", uploadLimiter, requireHttpAuth, limitConcurrentUploads, singleUpload, async (req, res) => {
   let videoQualityCharge = null;
+  let lowQualityVideo = null;
   try {
     if (!req.file) return res.status(400).json({ error: "لم يتم اختيار ملف" });
 
@@ -5845,6 +6019,7 @@ app.post("/api/upload", uploadLimiter, requireHttpAuth, limitConcurrentUploads, 
       const charged = economyGameHandlers?.chargeCoinsForVideo?.(uploader, requestedVideoQualityCost, {
         context,
         originalName: req.file.originalname,
+        fileType,
         requestedQuality: videoQuality,
         fileSize: req.file.size
       });
@@ -5856,6 +6031,14 @@ app.post("/api/upload", uploadLimiter, requireHttpAuth, limitConcurrentUploads, 
     }
 
     const fileId = req.generatedUploadId || path.parse(req.file.filename).name;
+    if (fileType === "video" && videoQuality === "360" && Number(req.file.size || 0) >= 1024) {
+      lowQualityVideo = await createLowQualityVideoVariant({
+        sourcePath: req.file.path,
+        originalName: req.file.originalname,
+        fileId
+      });
+    }
+    const storedFileId = lowQualityVideo ? `${fileId}_360` : fileId;
     const keepLocalCache = ["image", "gif", "video", "audio"].includes(fileType)
       && Number(req.file.size || 0) <= MEDIA_LOCAL_CACHE_MAX_FILE_BYTES;
     analyticsService?.track("upload_started", {
@@ -5874,7 +6057,7 @@ app.post("/api/upload", uploadLimiter, requireHttpAuth, limitConcurrentUploads, 
       tempName: req.file.filename,
       tempPath: req.file.path,
       originalName: String(req.file.originalname || "file").slice(0, 180),
-      mimeType: storedMimeType,
+      mimeType: lowQualityVideo ? "video/mp4" : storedMimeType,
       fileSize: Number(req.file.size || 0),
       roomId,
       context,
@@ -5887,7 +6070,13 @@ app.post("/api/upload", uploadLimiter, requireHttpAuth, limitConcurrentUploads, 
       gridFsId: null,
       gridFsError: null
     } : null;
-    const cloudFile = localFirstSession
+    const cloudFile = lowQualityVideo
+      ? await persistUploadedFileToCloud(lowQualityVideo, storedFileId, {
+        keepLocalCache,
+        context,
+        roomId: roomId || ""
+      })
+      : localFirstSession
       ? localFirstVideoFile(localFirstSession, fileId, keepLocalCache)
       : await persistUploadedFileToCloud(req.file, fileId, {
         keepLocalCache,
@@ -5905,16 +6094,25 @@ app.post("/api/upload", uploadLimiter, requireHttpAuth, limitConcurrentUploads, 
       originalName: String(req.file.originalname || "file").slice(0, 180),
       mimeType: storedMimeType,
       fileType,
-      size: req.file.size,
-      videoQuality: fileType === "video" ? videoQuality : null,
-      videoQualityCost: fileType === "video" ? requestedVideoQualityCost : 0,
+      size: Number(cloudFile.size || req.file.size || 0),
+      sourceSize: Number(req.file.size || 0),
+      videoQuality: isQualityMediaType(fileType) ? videoQuality : null,
+      videoQualityCost: isQualityMediaType(fileType) ? requestedVideoQualityCost : 0,
       videoQualityCharged: Boolean(requestedVideoQualityCost),
       uploader,
       roomId,
       context,
       createdAt: new Date().toISOString(),
-      cloudPending: Boolean(cloudFile.cloudPending)
+      cloudPending: Boolean(cloudFile.cloudPending),
+      ...(lowQualityVideo ? {
+        playbackStatus: "ready",
+        playbackMode: "original",
+        playbackQuality: "360",
+        videoQualityTranscoded: true,
+        playbackReadyAt: new Date().toISOString()
+      } : {})
     };
+    if (lowQualityVideo) safeUnlink(req.file.path);
 
     if (context === "avatar" && db.users[uploader]) {
       db.users[uploader].avatar = `/api/files/${encodeURIComponent(fileId)}`;
@@ -5975,13 +6173,13 @@ app.post("/api/upload", uploadLimiter, requireHttpAuth, limitConcurrentUploads, 
       fileName: db.uploads[fileId].originalName,
       fileType,
       mimeType: db.uploads[fileId].mimeType,
-      size: req.file.size,
+      size: Number(db.uploads[fileId].size || req.file.size || 0),
       url: `/api/files/${encodeURIComponent(fileId)}`,
       playbackStatus: fileType === "video"
         ? (db.uploads[fileId].playbackStatus || (VIDEO_COMPATIBILITY_ENABLED ? "queued" : "disabled"))
         : null,
-      videoQuality: fileType === "video" ? videoQuality : null,
-      videoQualityCost: fileType === "video" ? requestedVideoQualityCost : 0,
+      videoQuality: isQualityMediaType(fileType) ? videoQuality : null,
+      videoQualityCost: isQualityMediaType(fileType) ? requestedVideoQualityCost : 0,
       message: publishedMessage
     });
   } catch (err) {
@@ -5993,6 +6191,7 @@ app.post("/api/upload", uploadLimiter, requireHttpAuth, limitConcurrentUploads, 
       videoQualityCharge = null;
     }
     safeUnlink(req.file?.path);
+    safeUnlink(lowQualityVideo?.path);
     console.error("Upload/publish failed:", err?.stack || err?.message || err);
     const statusCode = Number(err?.statusCode) >= 400 && Number(err?.statusCode) < 600
       ? Number(err.statusCode)
@@ -6016,6 +6215,8 @@ app.post("/api/upload", uploadLimiter, requireHttpAuth, limitConcurrentUploads, 
     res.status(statusCode).json({
       error: err?.code === "EXTERNAL_MEDIA_STORAGE_REQUIRED"
         ? err.message
+        : String(err?.code || "").startsWith("VIDEO_QUALITY")
+          ? (err?.message || "تعذر تجهيز جودة الفيديو")
         : "تعذر حفظ أو إرسال الملف"
     });
   }

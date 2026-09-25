@@ -52,16 +52,30 @@ function createObjectStorage() {
     process.env.R2_ACCOUNT_ID || process.env.CLOUDFLARE_R2_ACCOUNT_ID || ""
   ).trim();
   const accessKeyId = String(
-    process.env.R2_ACCESS_KEY_ID || process.env.CLOUDFLARE_R2_ACCESS_KEY_ID || ""
+    process.env.R2_ACCESS_KEY_ID
+      || process.env.R2_ACCESS_KEY
+      || process.env.CLOUDFLARE_R2_ACCESS_KEY_ID
+      || ""
   ).trim();
   const secretAccessKey = String(
-    process.env.R2_SECRET_ACCESS_KEY || process.env.CLOUDFLARE_R2_SECRET_ACCESS_KEY || ""
+    process.env.R2_SECRET_ACCESS_KEY
+      || process.env.R2_SECRET_KEY
+      || process.env.CLOUDFLARE_R2_SECRET_ACCESS_KEY
+      || ""
   ).trim();
-  const bucket = String(process.env.R2_BUCKET || "").trim();
-  const endpoint = String(
-    process.env.R2_ENDPOINT || (accountId ? `https://${accountId}.r2.cloudflarestorage.com` : "")
+  const bucket = String(
+    process.env.R2_BUCKET
+      || process.env.R2_BUCKET_NAME
+      || process.env.CLOUDFLARE_R2_BUCKET
+      || ""
   ).trim();
-  const configured = Boolean(accountId && accessKeyId && secretAccessKey && bucket && endpoint);
+  const configuredEndpoint = String(process.env.R2_ENDPOINT || "").trim();
+  const endpoint = configuredEndpoint || (accountId ? `https://${accountId}.r2.cloudflarestorage.com` : "");
+  // A custom S3-compatible endpoint is sufficient even when the account id is
+  // not provided. Requiring both values made valid R2 deployments look like
+  // "storage not configured" and caused every image, video and voice upload
+  // to fail before the first byte was accepted.
+  const configured = Boolean((accountId || configuredEndpoint) && accessKeyId && secretAccessKey && bucket && endpoint);
   const partSize = boundedInteger(
     process.env.R2_PART_SIZE_BYTES,
     8 * 1024 * 1024,

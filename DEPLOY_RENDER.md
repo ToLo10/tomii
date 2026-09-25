@@ -94,12 +94,14 @@ ETag, so sending several videos does not create complete local copies or a
 second GridFS copy. The same R2 multipart session is restored from MongoDB after
 a process restart.
 
-Video compatibility transcoding is disabled by default in this stability build:
-it would require downloading a complete R2 object and creating another local
-file on Render. If it is deliberately enabled with
-`VIDEO_COMPATIBILITY_ENABLED=true` **and**
-`VIDEO_COMPATIBILITY_ALLOW_SERVER_WORKER=true`, it consumes server CPU/disk and
-should be used only on a larger instance.
+Video compatibility transcoding is enabled in the supplied Render manifest:
+`VIDEO_COMPATIBILITY_ENABLED=true` and
+`VIDEO_COMPATIBILITY_ALLOW_SERVER_WORKER=true`. A video selected as low quality
+is converted to 360p before its durable upload record is created, then the
+temporary source/output files are removed. High-quality uploads keep the
+original bytes (and may receive a browser-compatible copy when needed). The
+conversion still uses temporary CPU/disk space while the request is finishing,
+so keep the upload queue bounded on small instances.
 
 When MongoDB is configured, the local JSON backup is disabled by default to
 avoid synchronous full-state serialization on every message. Production also

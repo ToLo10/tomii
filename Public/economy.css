@@ -210,6 +210,18 @@
 .jackaroo-zones{position:relative;z-index:2;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin:10px auto 2px;max-width:760px}.jackaroo-player-zone{display:grid;gap:2px;padding:8px 9px;border:1px solid #f5d48666;border-radius:12px;background:#1b2a32;color:#f7edcc;text-align:center;box-shadow:inset 0 0 0 1px #ffffff12}.jackaroo-player-zone strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:.76rem}.jackaroo-player-zone span{font-size:.62rem;color:#ffd478}.jackaroo-player-zone small{font-size:.58rem;color:#cbd8d4}.jackaroo-player-zone.team1{border-color:#e68cbb88}.jackaroo-player-zone.team2{border-color:#82c9f088}.jackaroo-card{z-index:8;width:74px;height:108px;border-radius:13px;background:linear-gradient(145deg,#fffef5,#f2e7cb 58%,#cba86c);box-shadow:0 9px 18px #09050aaa,inset 0 0 0 2px #fff,inset 0 0 14px #a57b3c44}.jackaroo-card:before{border-color:#c99c4f99}.jackaroo-card-center b{font-size:2.6rem}.jackaroo-card.board{width:45px;height:61px}.jackaroo-card.board .jackaroo-card-center b{font-size:1.35rem}
 @media(max-width:700px){.jackaroo-table{padding:11px;border-width:6px;border-radius:24px}.jackaroo-table .jackaroo-board{gap:2px;padding:12px;border-radius:17px}.jackaroo-cell{border-width:1px}.jackaroo-board:after{inset:27%;box-shadow:0 0 0 8px #0b4c5544,0 0 0 16px #f4d07d22}.jackaroo-lane{padding:4px;gap:3px;border-radius:12px}.jackaroo-lane.lane-north{top:10%;height:27%}.jackaroo-lane.lane-south{bottom:10%;height:27%}.jackaroo-lane.lane-east{right:10%;width:27%}.jackaroo-lane.lane-west{left:10%;width:27%}.jackaroo-lane-hole{border-width:1px}.jackaroo-zones{grid-template-columns:repeat(2,minmax(0,1fr));gap:5px}.jackaroo-player-zone{padding:6px}.jackaroo-card{width:58px;height:88px}.jackaroo-card-center b{font-size:2rem}.jackaroo-card.board{width:34px;height:47px}.jackaroo-card.board .jackaroo-card-center b{font-size:1rem}.jackaroo-center{padding:7px;border-width:3px}.jackaroo-center .jackaroo-card{transform:scale(.62);margin:-12px 0}}
 
+/* Keep the large orbit wheel visually centered on narrow cards.  The extra
+   inset also prevents the outer slot cards from being clipped by the card
+   padding or the mobile scrollbar. */
+.roulette-stage{width:min(680px,calc(100% - 24px));margin-inline:auto!important;}
+@media(max-width:500px){.roulette-stage{width:min(620px,calc(100% - 18px));margin-inline:auto!important;}}
+
+/* The card is RTL and can be narrower than the viewport on phones. Keep the
+   orbit itself centered in the card's content box instead of letting an
+   inherited offset or horizontal overflow pull it toward the left edge. */
+.roulette-card .roulette-stage{box-sizing:border-box;max-width:100%;margin-left:auto!important;margin-right:auto!important;inset-inline:auto;left:auto;right:auto;transform:none!important;}
+.roulette-card .roulette-wheel{margin-left:0;margin-right:0;}
+
 /* Motion layer for every game.  All effects are client-only and are driven by
    the newest server state, so animations never alter game rules or sync. */
 .game-panel-enter{animation:game-panel-enter .48s cubic-bezier(.2,.8,.2,1) both}

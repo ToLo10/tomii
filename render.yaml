@@ -89,9 +89,9 @@ services:
       - key: MEDIA_LOCAL_CACHE_MAX_FILE_BYTES
         value: "134217728"
       - key: VIDEO_COMPATIBILITY_ENABLED
-        value: "false"
+        value: "true"
       - key: VIDEO_COMPATIBILITY_ALLOW_SERVER_WORKER
-        value: "false"
+        value: "true"
       - key: VIDEO_COMPATIBILITY_MAX_BYTES
         value: "536870912"
       - key: VIDEO_COMPATIBILITY_MAX_QUEUE

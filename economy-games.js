@@ -820,14 +820,21 @@ function registerEconomyGames({
     if (!user) return { ok: false, error: "المستخدم غير موجود" };
     ensureEconomyUser(user);
     if (integer(user.coins, 0) < cost) {
-      return { ok: false, error: `تحتاج ${cost.toLocaleString("en-US")} كوينز لرفع الفيديو بهذه الجودة`, code: "INSUFFICIENT_COINS" };
+      return {
+        ok: false,
+        error: `ما عندك كوينز كافية. تحتاج ${cost.toLocaleString("en-US")} كوينز للجودة العالية`,
+        code: "INSUFFICIENT_COINS"
+      };
     }
     if (cost > 0) {
       user.coins -= cost;
+      const mediaLabel = String(metadata?.fileType || '').toLowerCase() === 'image'
+        ? 'الصورة'
+        : (String(metadata?.fileType || '').toLowerCase() === 'gif' ? 'الصورة المتحركة' : 'الفيديو');
       createTransaction(user, {
         delta: -cost,
         type: "video_quality_fee",
-        reason: "رفع فيديو بجودة 720p",
+        reason: `رفع ${mediaLabel} بجودة عالية`,
         metadata: { ...metadata, cost }
       });
     }
