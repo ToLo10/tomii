@@ -2973,14 +2973,19 @@ async function processVideoCompatibilityJob(fileId) {
     });
   } catch (err) {
     const missingTool = err?.code === "ENOENT" || /not found|spawn ff/i.test(String(err?.message || ""));
-    record.playbackStatus = missingTool ? "unavailable" : "failed";
+    // The original upload is already durable and remains playable. A
+    // compatibility/quality worker failure must therefore be non-fatal: keep
+    // serving the original instead of turning a successfully sent video into
+    // a red "failed" media bubble.
+    record.playbackStatus = "ready";
     record.playbackMode = "original";
+    record.playbackQuality = record.videoQuality || "360";
     record.playbackError = missingTool
       ? "أداة تجهيز الفيديو غير متوفرة على الخادم"
       : String(err?.message || "تعذر تجهيز نسخة متوافقة").slice(0, 500);
     saveDB(db);
-    console.warn(`Video compatibility ${record.playbackStatus} (${fileId}):`, record.playbackError);
-    emitVideoCompatibilityStatus(record, record.playbackStatus, { message: record.playbackError });
+    console.warn(`Video compatibility fallback to original (${fileId}):`, record.playbackError);
+    emitVideoCompatibilityStatus(record, "ready", { message: record.playbackError, original: true, fallback: true });
   } finally {
     if (input?.temporary) safeUnlink(input.path);
     if (outputPath && !outputOwnedByRecord) safeUnlink(outputPath);
@@ -5429,7 +5434,9 @@ app.post("/api/upload/session", uploadLimiter, requireHttpAuth, limitConcurrentU
       roomId: scope.roomId,
       context,
       originalName,
-      mimeType: lowQualityVideo ? "video/mp4" : storedMimeType,
+      // The session stores the incoming MIME type. A low-quality playback
+      // variant, when requested, is prepared later by the background worker.
+      mimeType: storedMimeType,
       clientFileType,
       fileType,
       fileSize,
@@ -5763,12 +5770,12 @@ app.post("/api/upload/session/:sessionId/complete", uploadLimiter, requireHttpAu
         // partial upload if a later chat-publish retry takes a moment.
         session.r2UploadId = null;
         persistResumableUploadSession(session);
-        // The multipart object must be completed before the transcoder can
-        // download it from R2.
-        if (sessionFileType === "video" && session.fileSize >= 1024) {
-          const lowQualityResult = await tryPrepareLowQualityVideoVariant(session, fileId);
-          lowQualityVideo = lowQualityResult.variant;
-          lowQualityVideoWarning = lowQualityResult.warning;
+        // Do not transcode inside the completion request. The original object
+        // is published immediately, then queueVideoCompatibilityJob() prepares
+        // the requested 360p playback copy in the background. This prevents a
+        // large/unsupported camera file from making the whole chat upload fail.
+        if (sessionFileType === "video" && session.videoQuality === "360") {
+          lowQualityVideoWarning = "سيتم تجهيز نسخة 360p بعد اكتمال الرفع";
         }
         const lowQualityVideoId = lowQualityVideo ? `${fileId}_360` : fileId;
         if (lowQualityVideo) {
@@ -5790,10 +5797,8 @@ app.post("/api/upload/session/:sessionId/complete", uploadLimiter, requireHttpAu
           };
         }
       } else {
-        if (sessionFileType === "video" && session.fileSize >= 1024) {
-          const lowQualityResult = await tryPrepareLowQualityVideoVariant(session, fileId);
-          lowQualityVideo = lowQualityResult.variant;
-          lowQualityVideoWarning = lowQualityResult.warning;
+        if (sessionFileType === "video" && session.videoQuality === "360") {
+          lowQualityVideoWarning = "سيتم تجهيز نسخة 360p بعد اكتمال الرفع";
         }
         const lowQualityVideoId = lowQualityVideo ? `${fileId}_360` : fileId;
         const reqFile = {
@@ -6057,16 +6062,11 @@ app.post("/api/upload", uploadLimiter, requireHttpAuth, limitConcurrentUploads, 
     }
 
     const fileId = req.generatedUploadId || path.parse(req.file.filename).name;
-    if (fileType === "video" && videoQuality === "360" && Number(req.file.size || 0) >= 1024) {
-      const lowQualityResult = await tryPrepareLowQualityVideoVariant({
-        fileType,
-        videoQuality,
-        mode: "legacy",
-        tempPath: req.file.path,
-        originalName: req.file.originalname
-      }, fileId);
-      lowQualityVideo = lowQualityResult.variant;
-      lowQualityVideoWarning = lowQualityResult.warning;
+    // Keep the legacy endpoint just as reliable as the resumable endpoint:
+    // store the uploaded bytes first and let the compatibility worker prepare
+    // the 360p playback copy asynchronously.
+    if (fileType === "video" && videoQuality === "360") {
+      lowQualityVideoWarning = "سيتم تجهيز نسخة 360p بعد اكتمال الرفع";
     }
     const storedFileId = lowQualityVideo ? `${fileId}_360` : fileId;
     const keepLocalCache = ["image", "gif", "video", "audio"].includes(fileType)

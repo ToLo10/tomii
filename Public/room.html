@@ -6445,7 +6445,7 @@
                 if (revokeUrl) URL.revokeObjectURL(revokeUrl);
                 return file;
             }
-            const maxDimension = 1280;
+            const maxDimension = 1024;
             const scale = Math.min(1, maxDimension / Math.max(width, height));
             const canvas = document.createElement('canvas');
             canvas.width = Math.max(1, Math.round(width * scale));
@@ -6461,7 +6461,15 @@
             const outputMime = originalMime === 'image/png' ? 'image/png'
                 : (originalMime === 'image/webp' ? 'image/webp' : 'image/jpeg');
             const qualityValue = outputMime === 'image/png' ? undefined : .74;
-            const blob = await new Promise(resolve => canvas.toBlob(resolve, outputMime, qualityValue));
+            let blob = null;
+            try {
+                blob = await new Promise(resolve => canvas.toBlob(resolve, outputMime, qualityValue));
+            } catch (_) {
+                // Some mobile browsers reject canvas encoding for an unusual
+                // image MIME. Keep the original file rather than aborting the
+                // entire message upload.
+                blob = null;
+            }
             drawable.close?.();
             if (revokeUrl) URL.revokeObjectURL(revokeUrl);
             if (!blob || !blob.size) return file;
@@ -7142,7 +7150,15 @@
                 ? requestedVideoQuality
                 : await chooseMediaQuality(fileType, file?.name || '');
             if (!videoQuality) return false;
-            const uploadFile = await prepareMediaForUpload(file, fileType, videoQuality);
+            let uploadFile = file;
+            try {
+                uploadFile = await prepareMediaForUpload(file, fileType, videoQuality);
+            } catch (_) {
+                // An unsupported browser encoder must not block the original
+                // image from being sent. The server still receives a valid
+                // file and the user can retry conversion on another device.
+                uploadFile = file;
+            }
             return new Promise((resolve, reject) => {
                 chatUploadQueue.push({
                     file: uploadFile,
