@@ -808,7 +808,6 @@ function publicShopItem(item, db, { includeAdmin = false } = {}) {
       const range = ensureKingMysteryState(item) || { min: 151, max: 300 };
       // Only the range is public; the exact server-side number stays secret.
       result.mysteryRange = { min: range.min, max: range.max };
-      result.mysteryChancePercent = 10;
     }
   }
   if (includeAdmin && item.itemId === KING_GIFT_ITEM_ID) {
@@ -2086,6 +2085,9 @@ function registerEconomyGames({
           reward.message = jackpotAmount > 0
             ? `تطابق الرقم الغامض! ربحت ${jackpotAmount.toLocaleString("en-US")} كوينز من الصندوق المتراكم.`
             : "تطابق الرقم الغامض، لكن الصندوق المتراكم فارغ حاليًا.";
+          // The mystery number and its public round range stay fixed while
+          // the round is active. They rotate only after the number is hit.
+          rotateKingMystery(item);
         } else {
           reward.message = refundAmount > 0
             ? (targetKey === senderKey
@@ -2095,9 +2097,6 @@ function registerEconomyGames({
               ? "ماكو مردود لهذه الهدية، والرقم الغامض لم يتطابق."
               : `ماكو مردود للمستلم ${targetKey}، والرقم الغامض لم يتطابق.`);
         }
-        // Rotate after every King Gift attempt, including each item in a bulk
-        // send. The next shopper therefore sees a fresh public range.
-        rotateKingMystery(item);
       }
 
       recipient.receivedGifts.unshift(gift);
