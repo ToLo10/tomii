@@ -2706,6 +2706,23 @@ async function prepareLowQualityVideoVariant(session, fileId) {
   }
 }
 
+// A compression failure must never discard an otherwise complete upload. The
+// resumable and legacy clients can still store the original bytes, while the
+// compatibility worker gets a later chance to prepare a browser-friendly
+// playback variant. Returning a soft fallback here also prevents the UI from
+// showing a false "فشل" state after the file itself was uploaded correctly.
+async function tryPrepareLowQualityVideoVariant(session, fileId) {
+  try {
+    return { variant: await prepareLowQualityVideoVariant(session, fileId), warning: null };
+  } catch (error) {
+    console.warn("Low-quality video conversion skipped; keeping original upload:", error?.message || error);
+    return {
+      variant: null,
+      warning: String(error?.message || "تعذر تحويل الفيديو إلى 360p").slice(0, 240)
+    };
+  }
+}
+
 async function inspectVideoForBrowserCompatibility(inputPath, record) {
   const result = await runMediaCommand(FFPROBE_PATH, [
     "-v", "error",
@@ -5412,7 +5429,7 @@ app.post("/api/upload/session", uploadLimiter, requireHttpAuth, limitConcurrentU
       roomId: scope.roomId,
       context,
       originalName,
-      mimeType: storedMimeType,
+      mimeType: lowQualityVideo ? "video/mp4" : storedMimeType,
       clientFileType,
       fileType,
       fileSize,
@@ -5702,6 +5719,7 @@ app.post("/api/upload/session/:sessionId/complete", uploadLimiter, requireHttpAu
       // upload record. This makes the stored object itself 360p instead of
       // merely tagging the original bytes as "360".
       let lowQualityVideo = null;
+      let lowQualityVideoWarning = null;
       let cloudFile;
       if (session.mode === "r2-multipart") {
         const totalParts = Math.max(1, Math.ceil(session.fileSize / objectStorage.getPartSize()));
@@ -5747,9 +5765,11 @@ app.post("/api/upload/session/:sessionId/complete", uploadLimiter, requireHttpAu
         persistResumableUploadSession(session);
         // The multipart object must be completed before the transcoder can
         // download it from R2.
-        lowQualityVideo = sessionFileType === "video" && session.fileSize >= 1024
-          ? await prepareLowQualityVideoVariant(session, fileId)
-          : null;
+        if (sessionFileType === "video" && session.fileSize >= 1024) {
+          const lowQualityResult = await tryPrepareLowQualityVideoVariant(session, fileId);
+          lowQualityVideo = lowQualityResult.variant;
+          lowQualityVideoWarning = lowQualityResult.warning;
+        }
         const lowQualityVideoId = lowQualityVideo ? `${fileId}_360` : fileId;
         if (lowQualityVideo) {
           cloudFile = await persistUploadedFileToCloud(lowQualityVideo, lowQualityVideoId, {
@@ -5770,9 +5790,11 @@ app.post("/api/upload/session/:sessionId/complete", uploadLimiter, requireHttpAu
           };
         }
       } else {
-        lowQualityVideo = sessionFileType === "video" && session.fileSize >= 1024
-          ? await prepareLowQualityVideoVariant(session, fileId)
-          : null;
+        if (sessionFileType === "video" && session.fileSize >= 1024) {
+          const lowQualityResult = await tryPrepareLowQualityVideoVariant(session, fileId);
+          lowQualityVideo = lowQualityResult.variant;
+          lowQualityVideoWarning = lowQualityResult.warning;
+        }
         const lowQualityVideoId = lowQualityVideo ? `${fileId}_360` : fileId;
         const reqFile = {
           path: session.tempPath,
@@ -5831,6 +5853,9 @@ app.post("/api/upload/session/:sessionId/complete", uploadLimiter, requireHttpAu
           playbackQuality: "360",
           videoQualityTranscoded: true,
           playbackReadyAt: new Date().toISOString()
+        } : lowQualityVideoWarning ? {
+          videoQualityTranscoded: false,
+          videoQualityWarning: lowQualityVideoWarning
         } : {})
       };
       db.uploads[fileId] = record;
@@ -5959,6 +5984,7 @@ app.delete("/api/upload/session/:sessionId", requireHttpAuth, (req, res) => {
 app.post("/api/upload", uploadLimiter, requireHttpAuth, limitConcurrentUploads, singleUpload, async (req, res) => {
   let videoQualityCharge = null;
   let lowQualityVideo = null;
+  let lowQualityVideoWarning = null;
   try {
     if (!req.file) return res.status(400).json({ error: "لم يتم اختيار ملف" });
 
@@ -6032,11 +6058,15 @@ app.post("/api/upload", uploadLimiter, requireHttpAuth, limitConcurrentUploads, 
 
     const fileId = req.generatedUploadId || path.parse(req.file.filename).name;
     if (fileType === "video" && videoQuality === "360" && Number(req.file.size || 0) >= 1024) {
-      lowQualityVideo = await createLowQualityVideoVariant({
-        sourcePath: req.file.path,
-        originalName: req.file.originalname,
-        fileId
-      });
+      const lowQualityResult = await tryPrepareLowQualityVideoVariant({
+        fileType,
+        videoQuality,
+        mode: "legacy",
+        tempPath: req.file.path,
+        originalName: req.file.originalname
+      }, fileId);
+      lowQualityVideo = lowQualityResult.variant;
+      lowQualityVideoWarning = lowQualityResult.warning;
     }
     const storedFileId = lowQualityVideo ? `${fileId}_360` : fileId;
     const keepLocalCache = ["image", "gif", "video", "audio"].includes(fileType)
@@ -6110,6 +6140,9 @@ app.post("/api/upload", uploadLimiter, requireHttpAuth, limitConcurrentUploads, 
         playbackQuality: "360",
         videoQualityTranscoded: true,
         playbackReadyAt: new Date().toISOString()
+      } : lowQualityVideoWarning ? {
+        videoQualityTranscoded: false,
+        videoQualityWarning: lowQualityVideoWarning
       } : {})
     };
     if (lowQualityVideo) safeUnlink(req.file.path);

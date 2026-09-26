@@ -309,3 +309,15 @@
    badges are shown even if an older client briefly renders them. */
 .snakes-cell.ladder,.snakes-cell.snake{background:linear-gradient(145deg,#fff1ba,#e8b365)!important;color:#5a321d!important;border-color:#a56735!important}
 .snakes-cell em,.jump-badge{display:none!important}
+
+/* Roulette balance pass: the orbit remains centered while the compact cards
+   sit farther apart, leaving the bet badges readable above each slot. */
+.roulette-card .roulette-stage{overflow:visible;justify-self:center;align-self:center}
+.roulette-card .roulette-wheel{overflow:visible}
+.roulette-wheel .roulette-slot-badges{top:-25px;min-width:44px}
+.roulette-wheel .roulette-slot-own-bet{min-width:44px;padding:2px 5px;font-size:9px}
+@media(max-width:500px){
+  .roulette-card .roulette-stage{width:min(96vw,620px);margin-inline:auto!important}
+  .roulette-wheel .roulette-slot-badges{top:-22px}
+  .roulette-wheel .roulette-slot-own-bet{font-size:8px;padding:2px 4px}
+}

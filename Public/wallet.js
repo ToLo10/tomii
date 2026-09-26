@@ -142,11 +142,14 @@
     // Compact physical cards leave a clear angular gap between neighbouring
     // slots. They sit slightly outside the inner rim so the pointer and the
     // result remain readable even on a phone-sized wheel.
-    const cardWidth = Math.max(58, Math.min(112, wheelSize * 0.17));
-    const cardHeight = Math.max(72, Math.min(116, wheelSize * 0.17));
-    const frameHeight = Math.max(34, cardHeight * 0.46);
-    const iconSize = Math.max(28, Math.min(44, wheelSize * 0.075));
-    const radius = Math.max(82, wheelSize / 2 - cardHeight / 2 - 14);
+    // Keep the physical cards compact. A smaller angular footprint leaves a
+    // visible gap between every neighbouring slot while the larger orbit
+    // radius keeps the cards balanced around the centre and under the pointer.
+    const cardWidth = Math.max(56, Math.min(94, wheelSize * 0.135));
+    const cardHeight = Math.max(70, Math.min(104, wheelSize * 0.15));
+    const frameHeight = Math.max(31, cardHeight * 0.44);
+    const iconSize = Math.max(26, Math.min(40, wheelSize * 0.067));
+    const radius = Math.max(82, wheelSize / 2 - cardHeight / 2 - 8);
     host.innerHTML = definitions.map((item, position) => {
       const slotId = Number(item.slot);
       const bet = rouletteBetFor(slotId);
@@ -359,7 +362,11 @@
       pendingRouletteBets = 0;
       rouletteSocket.emit('roulette:subscribe');
     });
-    ['roulette:state', 'roulette:round-started', 'roulette:spin-started', 'roulette:results-started', 'roulette:control-updated'].forEach(eventName => rouletteSocket.on(eventName, state => applyRouletteState(state, {authoritativeOwnBets:eventName === 'roulette:state'})));
+    // roulette:state is also broadcast to the whole room without private
+    // bets. Never let that privacy-safe snapshot erase the local user's
+    // visible chips; the bet-result/API response remains authoritative for
+    // the bettor and the next round naturally clears them.
+    ['roulette:state', 'roulette:round-started', 'roulette:spin-started', 'roulette:results-started', 'roulette:control-updated'].forEach(eventName => rouletteSocket.on(eventName, state => applyRouletteState(state, {authoritativeOwnBets:false})));
     rouletteSocket.on('roulette:bet-result', result => {
       if (!result?.success) {
         pendingRouletteBets = 0;
