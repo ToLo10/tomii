@@ -33,6 +33,76 @@ const KING_GIFT_LUCKY_REWARD_ID = "gift_king_lucky_reward";
 const GAME_ENTRY_FEES = Object.freeze([80, 100, 200]);
 const GAME_PLATFORM_COMMISSION = 20;
 
+// Gift returns are rolled independently for every gift, including gifts sent
+// in one batch. The last band is the only band eligible to match King Gift's
+// mystery number (10% of attempts).
+const GIFT_RETURN_BANDS = Object.freeze([
+  { min: 1, max: 100, probability: 0.60 },
+  { min: 101, max: 150, probability: 0.30 },
+  { min: 151, max: 300, probability: 0.10 }
+]);
+
+function giftMysteryEligibleMin(price) {
+  const cappedPrice = Math.max(1, Math.min(300, integer(price, 300)));
+  return Math.min(cappedPrice, Math.max(1, Math.floor(cappedPrice / 2) + 1));
+}
+
+function randomKingMysteryRange(item) {
+  const price = Math.max(1, Math.min(300, integer(item?.price, 300)));
+  const minAllowed = giftMysteryEligibleMin(price);
+  const span = Math.max(0, price - minAllowed);
+  if (span === 0) return { min: price, max: price };
+  // Keep the public window useful but never reveal a value outside the 10%
+  // eligible high-return band.
+  const width = Math.min(span, Math.max(1, Math.min(80, Math.floor(price / 3))));
+  const min = crypto.randomInt(minAllowed, price - width + 2);
+  const minMax = Math.min(price, min + Math.max(1, Math.floor(width / 2)));
+  const max = crypto.randomInt(minMax, price + 1);
+  return { min, max };
+}
+
+function rotateKingMystery(item) {
+  if (!item || item.itemId !== KING_GIFT_ITEM_ID) return null;
+  const range = randomKingMysteryRange(item);
+  item.kingMysteryRangeMin = range.min;
+  item.kingMysteryRangeMax = range.max;
+  item.kingSecretNumber = crypto.randomInt(range.min, range.max + 1);
+  item.updatedAt = isoNow();
+  return range;
+}
+
+function ensureKingMysteryState(item) {
+  if (!item || item.itemId !== KING_GIFT_ITEM_ID) return null;
+  const price = Math.max(1, Math.min(300, integer(item.price, 300)));
+  let min = integer(item.kingMysteryRangeMin, 0);
+  let max = integer(item.kingMysteryRangeMax, 0);
+  const eligibleMin = giftMysteryEligibleMin(price);
+  if (min < eligibleMin || max < min || max > price) {
+    const range = randomKingMysteryRange(item);
+    min = range.min;
+    max = range.max;
+    item.kingMysteryRangeMin = min;
+    item.kingMysteryRangeMax = max;
+  }
+  const secret = integer(item.kingSecretNumber, 0);
+  if (secret < min || secret > max) item.kingSecretNumber = crypto.randomInt(min, max + 1);
+  return { min, max };
+}
+
+function rollGiftReturn(price) {
+  const cappedPrice = Math.max(0, integer(price, 0));
+  if (!cappedPrice) return { amount: 0, highBand: false, band: null };
+  const draw = crypto.randomInt(0, 10_000) / 10_000;
+  const band = draw < 0.60 ? GIFT_RETURN_BANDS[0] : draw < 0.90 ? GIFT_RETURN_BANDS[1] : GIFT_RETURN_BANDS[2];
+  const min = Math.min(band.min, cappedPrice);
+  const max = Math.min(band.max, cappedPrice);
+  return {
+    amount: crypto.randomInt(min, max + 1),
+    highBand: band === GIFT_RETURN_BANDS[2],
+    band: { min, max, probability: band.probability }
+  };
+}
+
 function randomRouletteSaladDelayMs() {
   return crypto.randomInt(ROULETTE_SALAD_MIN_DELAY_MS, ROULETTE_SALAD_MAX_DELAY_MS + 1);
 }
@@ -734,6 +804,12 @@ function publicShopItem(item, db, { includeAdmin = false } = {}) {
     result.jackpotPurchases = Math.max(0, integer(stats.purchases, 0));
     result.jackpotUpdatedAt = stats.updatedAt || null;
     result.jackpotLastWonAt = stats.lastWonAt || null;
+    if (item.itemId === KING_GIFT_ITEM_ID) {
+      const range = ensureKingMysteryState(item) || { min: 151, max: 300 };
+      // Only the range is public; the exact server-side number stays secret.
+      result.mysteryRange = { min: range.min, max: range.max };
+      result.mysteryChancePercent = 10;
+    }
   }
   if (includeAdmin && item.itemId === KING_GIFT_ITEM_ID) {
     // This field is sent only from the owner-only admin endpoint.
@@ -1817,13 +1893,10 @@ function registerEconomyGames({
         changed = true;
       }
       if (item.itemId === KING_GIFT_ITEM_ID) {
-        const price = Math.max(1, integer(item.price, 300));
-        const currentSecret = integer(item.kingSecretNumber, 0);
-        if (currentSecret < 1 || currentSecret > price) {
-          item.kingSecretNumber = crypto.randomInt(1, price + 1);
-          item.updatedAt = isoNow();
-          changed = true;
-        }
+        const before = `${item.kingMysteryRangeMin || 0}:${item.kingMysteryRangeMax || 0}:${item.kingSecretNumber || 0}`;
+        ensureKingMysteryState(item);
+        const after = `${item.kingMysteryRangeMin || 0}:${item.kingMysteryRangeMax || 0}:${item.kingSecretNumber || 0}`;
+        if (before !== after) { item.updatedAt = isoNow(); changed = true; }
       }
       if (!db.giftStats[item.itemId] || typeof db.giftStats[item.itemId] !== "object") {
         const seedTotal = Math.max(0, integer(item.sold, 0) * Math.max(0, integer(item.price, 0)));
@@ -1912,7 +1985,8 @@ function registerEconomyGames({
     for (const entry of entries) {
       const item = db.shopItems?.[entry.itemId] || null;
       const giftPrice = Math.max(0, integer(entry.price ?? item?.price, 0));
-      const refundAmount = giftPrice > 0 ? crypto.randomInt(1, giftPrice + 1) : 0;
+      const refundRoll = rollGiftReturn(giftPrice);
+      const refundAmount = refundRoll.amount;
       totalPrice += giftPrice;
       totalRefund += refundAmount;
       const refundOwner = targetKey === senderKey ? sender : recipient;
@@ -1962,6 +2036,7 @@ function registerEconomyGames({
         jackpotPool: 0,
         mysteryOpened: false,
         mysteryAmount: 0,
+        mysteryRange: null,
         rewardItem: null,
         refundRecipient: refundOwnerKey,
         message: refundAmount > 0
@@ -1973,8 +2048,14 @@ function registerEconomyGames({
       if (entry.itemId === KING_GIFT_ITEM_ID || item?.metadata?.giftKind === "king") {
         // The owner's number never leaves the server. Only the match result is
         // returned, even when several King Gifts are sent in one batch.
+        const mysteryRange = ensureKingMysteryState(item) || { min: 151, max: 300 };
         const secretNumber = Math.max(0, integer(item?.kingSecretNumber, 0));
-        const secretMatched = secretNumber > 0 && refundAmount === secretNumber;
+        // A match is possible only for the 10% high-return band.
+        const secretMatched = refundRoll.highBand
+          && secretNumber >= mysteryRange.min
+          && secretNumber <= mysteryRange.max
+          && refundAmount === secretNumber;
+        reward.mysteryRange = { ...mysteryRange };
         reward.secretMatched = secretMatched;
         reward.lucky = secretMatched;
         const stats = db.giftStats?.[KING_GIFT_ITEM_ID] && typeof db.giftStats[KING_GIFT_ITEM_ID] === "object"
@@ -2014,6 +2095,9 @@ function registerEconomyGames({
               ? "ماكو مردود لهذه الهدية، والرقم الغامض لم يتطابق."
               : `ماكو مردود للمستلم ${targetKey}، والرقم الغامض لم يتطابق.`);
         }
+        // Rotate after every King Gift attempt, including each item in a bulk
+        // send. The next shopper therefore sees a fresh public range.
+        rotateKingMystery(item);
       }
 
       recipient.receivedGifts.unshift(gift);
@@ -2583,6 +2667,7 @@ function registerEconomyGames({
         jackpotPool: rewards[rewards.length - 1]?.jackpotPool || 0,
         mysteryOpened: false,
         mysteryAmount: 0,
+        mysteryRange: rewards[rewards.length - 1]?.mysteryRange || null,
         rewardItem: null,
         message: `تم إرسال ${result.gifts.length} هدايا. مجموع المردود: ${result.totalRefund.toLocaleString("en-US")} كوينز.`
       };
@@ -2933,7 +3018,14 @@ function registerEconomyGames({
     if (req.body.imageUrl !== undefined) item.imageUrl = clampText(req.body.imageUrl, 500);
     if (req.body.animated !== undefined) item.animated = Boolean(req.body.animated);
     item.price = nextPrice;
-    if (item.itemId === KING_GIFT_ITEM_ID) item.kingSecretNumber = nextSecret;
+    if (item.itemId === KING_GIFT_ITEM_ID) {
+      item.kingSecretNumber = nextSecret;
+      const eligibleMin = giftMysteryEligibleMin(nextPrice);
+      const rangeMin = Math.max(eligibleMin, nextSecret - 20);
+      const rangeMax = Math.min(Math.max(1, Math.min(300, nextPrice)), nextSecret + 20);
+      item.kingMysteryRangeMin = Math.min(rangeMin, rangeMax);
+      item.kingMysteryRangeMax = Math.max(item.kingMysteryRangeMin, rangeMax);
+    }
     if (req.body.charismaValue !== undefined && item.type === "gift") item.charismaValue = Math.max(1, Math.min(1_000_000, integer(req.body.charismaValue, item.charismaValue || 1)));
     if (req.body.active !== undefined) item.active = Boolean(req.body.active);
     if (req.body.stock !== undefined) item.stock = req.body.stock === null || req.body.stock === "" ? null : Math.max(0, integer(req.body.stock));
