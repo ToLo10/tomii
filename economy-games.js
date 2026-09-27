@@ -2854,6 +2854,24 @@ function registerEconomyGames({
     res.json({ success: true, username: targetUser, granted: actual, wallet: walletPayload(targetUser) });
   });
 
+  app.get("/api/economy/admin/balance", requireHttpAuth, (req, res) => {
+    if (!onlyOwner(req, res)) return;
+    const db = dbState();
+    const username = String(req.query?.username || "").trim();
+    if (!username) return res.status(400).json({ error: "اكتب اسم المستخدم" });
+    const targetUser = findUserKey(db, username);
+    const user = db.users?.[targetUser];
+    if (!user) return res.status(404).json({ error: "المستخدم غير موجود" });
+    ensureEconomyUser(user);
+    res.json({
+      success: true,
+      username: targetUser,
+      displayName: user.displayName || targetUser,
+      coins: Math.max(0, integer(user.coins, 0)),
+      charisma: publicCharisma(user)
+    });
+  });
+
   app.post("/api/economy/admin/grant-charisma", requireHttpAuth, (req, res) => {
     if (!onlyOwner(req, res)) return;
     const db = dbState();

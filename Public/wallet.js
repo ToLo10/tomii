@@ -223,7 +223,7 @@
     }
     if (winnersHost) {
       const rows = state.recentWinners || [];
-      winnersHost.innerHTML = rows.length ? rows.slice(0, 12).map(row => `<div class="roulette-history-row"><span class="roulette-history-icon">🏆</span><div><strong>@${escapeHtml(row.username || row.displayName || '')}</strong><small>${escapeHtml(row.result?.label || 'فوز')} • ${escapeHtml(formatDate(row.createdAt))}</small></div><b class="win-text">+${Number(row.payout || 0).toLocaleString('en-US')}</b></div>`).join('') : '<div class="empty-box">لم يفز أحد بعد.</div>';
+      winnersHost.innerHTML = rows.length ? rows.map(row => `<div class="roulette-history-row"><span class="roulette-history-icon">🏆</span><div><strong>@${escapeHtml(row.username || row.displayName || '')}</strong><small>${escapeHtml(row.result?.label || 'فوز')} • ${escapeHtml(formatDate(row.createdAt))}</small></div><b class="win-text">+${Number(row.payout || 0).toLocaleString('en-US')}</b></div>`).join('') : '<div class="empty-box">لم يفز أحد بعد.</div>';
     }
     const personalHost = $('roulettePersonalHistory');
     if (personalHost) {
@@ -311,7 +311,7 @@
     $('rouletteRoundResultsPayout').textContent = Number(summary.totalPayout || 0).toLocaleString('en-US');
     $('rouletteRoundResultsBet').textContent = Number(summary.totalBet || 0).toLocaleString('en-US');
     const winnersHost = $('rouletteRoundResultsWinners');
-    const winners = Array.isArray(summary.winners) ? summary.winners.slice(0, 3) : [];
+    const winners = Array.isArray(summary.winners) ? summary.winners.slice(0, 30) : [];
     winnersHost.innerHTML = winners.length ? winners.map((row, index) => {
       const name = row.displayName || row.username || 'مستخدم';
       const avatar = row.avatar
@@ -645,6 +645,20 @@
     event.preventDefault();
     try { const data = await request('/api/economy/admin/grant', {method:'POST', body:JSON.stringify({username:$('grantUser').value.trim(), amount:Number($('grantAmount').value), reason:$('grantReason').value.trim()})}); showToast(`تم إرسال ${data.granted} كوينز إلى ${data.username}`); }
     catch (error) { showToast(error.message, true); }
+  });
+  $('balanceLookupForm').addEventListener('submit', async event => {
+    event.preventDefault();
+    const username = $('balanceLookupUser').value.trim();
+    const result = $('balanceLookupResult');
+    if (!username) return;
+    result.textContent = 'جاري البحث...';
+    try {
+      const data = await request('/api/economy/admin/balance?username=' + encodeURIComponent(username));
+      const charisma = data.charisma || {};
+      result.innerHTML = `<strong>${escapeHtml(data.displayName || data.username)}</strong><br><span>🪙 ${Number(data.coins || 0).toLocaleString('en-US')} TOMI</span><br><span>⭐ ${Number(charisma.points || 0).toLocaleString('en-US')} كارزما</span>`;
+    } catch (error) {
+      result.textContent = error.message || 'تعذر جلب الرصيد';
+    }
   });
   $('grantCharismaForm').addEventListener('submit', async event => {
     event.preventDefault();

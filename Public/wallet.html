@@ -118,6 +118,12 @@
             <label>السبب<input id="grantReason" class="input" value="هدية من مالك TOMI"></label>
             <button class="primary" type="submit">إرسال الكوينز</button>
           </form>
+          <form id="balanceLookupForm" class="form-stack">
+            <h3>استعلام رصيد مستخدم</h3>
+            <label>اسم المستخدم<input id="balanceLookupUser" class="input" required placeholder="اكتب اليوزر"></label>
+            <button class="secondary" type="submit"><i class="fa-solid fa-magnifying-glass"></i> عرض الرصيد</button>
+            <div id="balanceLookupResult" class="balance-lookup-result" aria-live="polite">اكتب اسم المستخدم لعرض الكوينز والكارزما.</div>
+          </form>
           <form id="grantCharismaForm" class="form-stack">
             <h3>إهداء كارزما</h3>
             <label>اسم المستخدم<input id="grantCharismaUser" class="input" required></label>
