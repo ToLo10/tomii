@@ -1876,7 +1876,13 @@ function isQualityMediaType(fileType) {
 }
 
 function normalizeVideoQuality(value, fileType) {
-  if (!HIGH_QUALITY_MEDIA_TYPES.has(String(fileType || "").toLowerCase())) return "360";
+  const type = String(fileType || "").toLowerCase();
+  // Videos are always published through the automatic low-quality pipeline.
+  // This protects the server and guarantees that a 4K upload is transcoded
+  // before it becomes visible in chat/explore. Images/GIFs keep their existing
+  // quality selection behavior.
+  if (type === "video") return "144";
+  if (!HIGH_QUALITY_MEDIA_TYPES.has(type)) return "360";
   return String(value || "144").trim() === "720" ? "720" : "144";
 }
 

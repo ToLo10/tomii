@@ -6342,6 +6342,9 @@
         function chooseMediaQuality(fileType, fileName = '') {
             const type = String(fileType || '').toLowerCase();
             if (!['image', 'video', 'gif'].includes(type)) return Promise.resolve('360');
+            // Video uploads are automatically transcoded to 144p on the
+            // server before publishing; no quality prompt is needed.
+            if (type === 'video') return Promise.resolve('144');
 
             // Several files can be selected at once. Queue the dialogs so one
             // choice never replaces another dialog on a phone-sized screen.
