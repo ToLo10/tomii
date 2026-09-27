@@ -2684,8 +2684,7 @@ async function createLowQualityVideoVariant({ sourcePath, originalName = "video"
 
 async function prepareLowQualityVideoVariant(session, fileId) {
   if (!session || session.fileType !== "video" || normalizeVideoQuality(session.videoQuality, "video") !== "144") return null;
-  const mustReduceTo144 = normalizeVideoQuality(record.videoQuality, "video") === "144";
-  if (!VIDEO_COMPATIBILITY_ENABLED && !mustReduceTo144) {
+  if (!VIDEO_COMPATIBILITY_ENABLED) {
     const error = new Error("ضغط الفيديو بجودة 144p غير مفعّل على الخادم");
     error.code = "VIDEO_QUALITY_TRANSCODE_DISABLED";
     error.statusCode = 503;
@@ -2857,7 +2856,11 @@ function emitVideoCompatibilityStatus(record, status, extra = {}) {
 async function processVideoCompatibilityJob(fileId) {
   const record = db.uploads?.[fileId];
   if (!record || record.fileType !== "video") return;
-  if (!VIDEO_COMPATIBILITY_ENABLED) {
+  // A low-quality upload is always a hard 144p conversion. It must not be
+  // allowed to fall through to the original file, even when the compatibility
+  // worker is disabled for ordinary/high-quality uploads.
+  const mustReduceTo144 = normalizeVideoQuality(record.videoQuality, "video") === "144";
+  if (!VIDEO_COMPATIBILITY_ENABLED && !mustReduceTo144) {
     record.playbackStatus = "disabled";
     record.playbackMode = "original";
     record.playbackQuality = record.videoQuality || "144";
