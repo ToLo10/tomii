@@ -1866,7 +1866,10 @@ const AUDIO_RECORDING_BITRATE = Math.min(
 );
 const VIDEO_HIGH_QUALITY_COST = 2_000;
 const HIGH_QUALITY_MEDIA_TYPES = new Set(["image", "gif", "video"]);
-const VIDEO_QUALITY_HEIGHTS = Object.freeze({ "144": 144, "360": 360, "720": 720 });
+// 720 is kept as the wire value for the paid/high option for compatibility
+// with existing clients, but it intentionally has no target height: high
+// quality must preserve the original resolution, including 4K.
+const VIDEO_QUALITY_HEIGHTS = Object.freeze({ "144": 144, "360": 360 });
 
 function isQualityMediaType(fileType) {
   return HIGH_QUALITY_MEDIA_TYPES.has(String(fileType || "").toLowerCase());
@@ -1996,7 +1999,7 @@ function restorePersistedR2UploadSessions() {
           r2DeleteQueued: false
         });
       }
-      // A 720p fee is reserved when the session is created.  If the process
+      // A high-quality fee is reserved when the session is created. If the process
       // restarts before the client can call DELETE, return that reservation
       // while removing the expired persisted session.
       refundAbandonedVideoQualityCharge(record, "session_expired");
@@ -2901,15 +2904,16 @@ async function processVideoCompatibilityJob(fileId) {
     const variantName = `${String(fileId).replace(/[^a-zA-Z0-9_-]/g, "_")}.compat.mp4`;
     outputPath = path.join(UPLOAD_DIR, variantName);
     safeUnlink(outputPath);
+    const videoFilterArgs = requestedHeight
+      ? ["-vf", `scale=-2:${requestedHeight}:force_original_aspect_ratio=decrease`]
+      : [];
     await runMediaCommand(FFMPEG_PATH, [
       "-hide_banner", "-loglevel", "error", "-y",
       "-i", input.path,
       "-map", "0:v:0",
       "-map", "0:a:0?",
       "-sn", "-dn",
-      "-vf", requestedHeight
-        ? `scale=-2:${requestedHeight}:force_original_aspect_ratio=decrease`
-        : "scale=w='min(1920,iw)':h=-2:flags=lanczos",
+      ...videoFilterArgs,
       "-c:v", "libx264",
       "-preset", "veryfast",
       "-crf", "23",
