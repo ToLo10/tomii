@@ -6342,9 +6342,9 @@
         function chooseMediaQuality(fileType, fileName = '') {
             const type = String(fileType || '').toLowerCase();
             if (!['image', 'video', 'gif'].includes(type)) return Promise.resolve('360');
-            // Video uploads are automatically transcoded to 144p on the
-            // server before publishing; no quality prompt is needed.
-            if (type === 'video') return Promise.resolve('144');
+            // The low/high picker was removed. Media uploads always retain
+            // their original quality and use the paid TOMI media tier.
+            return Promise.resolve('720');
 
             // Several files can be selected at once. Queue the dialogs so one
             // choice never replaces another dialog on a phone-sized screen.
@@ -6638,7 +6638,7 @@
                 fileSize: Number(file.size || 0),
                 mimeType: file.type || 'application/octet-stream',
                 clientFileType,
-                videoQuality: options.videoQuality || '144',
+                videoQuality: options.videoQuality || '720',
                 forceServerUpload: Boolean(options.forceServerUpload),
                 ...uploadMessageMetadata(messageMeta)
             };
@@ -6851,7 +6851,7 @@
                 form.append('file', file, file.name || ('file-' + Date.now()));
                 form.append('context', context);
                 if (clientFileType) form.append('clientFileType', clientFileType);
-                if (['image', 'gif', 'video'].includes(uploadType)) form.append('videoQuality', options.videoQuality || '144');
+                if (['image', 'gif', 'video'].includes(uploadType)) form.append('videoQuality', options.videoQuality || '720');
                 if (targetRoomId) form.append('roomId', targetRoomId);
                 if (context === 'chat' && targetRoomId && messageMeta) {
                     form.append('publishToChat', '1');
@@ -7004,7 +7004,7 @@
             throw lastError || new Error('تعذر رفع الملف');
         }
 
-        async function uploadAndSendChatFile(file, replySnapshot = null, pickerKind = 'file', extraMessageMeta = null, detectedFileType = '', videoQuality = '144') {
+        async function uploadAndSendChatFile(file, replySnapshot = null, pickerKind = 'file', extraMessageMeta = null, detectedFileType = '', videoQuality = '720') {
             if (chatRestriction) {
                 showChatRestrictionNotice();
                 return;
