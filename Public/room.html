@@ -6356,19 +6356,20 @@
                 const title = document.createElement('h3');
                 title.textContent = type === 'video' ? 'اختر جودة الفيديو' : 'اختر جودة الصورة';
                 const description = document.createElement('p');
+                const highQualityPricing = 'رسوم الجودة العالية حسب الرصيد: أقل من 10,000 = 2,000؛ من 10,000 إلى مليون = 4,000؛ أكثر من مليون إلى أقل من 50 مليون = مليون؛ من 50 إلى 200 مليون = 30 مليون؛ من 201 مليون إلى أقل من مليار = 100 مليون؛ مليار وفوك = 400 مليون.';
                 description.textContent = fileName
-                    ? `${fileName} — الجودة المنخفضة مجانية، والجودة العالية تكلف 2,000 كوينز TOMI.`
-                    : 'الجودة المنخفضة مجانية، والجودة العالية تكلف 2,000 كوينز TOMI.';
+                    ? `${fileName} — الجودة المنخفضة مجانية بدقة 144p، والجودة العالية: ${highQualityPricing}`
+                    : `الجودة المنخفضة مجانية بدقة 144p، والجودة العالية: ${highQualityPricing}`;
                 const options = document.createElement('div');
                 options.className = 'media-quality-options';
                 const low = document.createElement('button');
                 low.type = 'button';
                 low.className = 'media-quality-option';
-                low.innerHTML = '<i class="fa-solid fa-gauge-high"></i><span><strong>جودة منخفضة — مجانية</strong><small>' + (type === "video" ? "تحويل فعلي إلى 360p وحجم أقل" : "رفع أسرع وحجم أقل") + '</small></span>';
+                low.innerHTML = '<i class="fa-solid fa-gauge-high"></i><span><strong>جودة منخفضة — مجانية</strong><small>' + (type === "video" ? "تحويل فعلي إلى 144p وحجم أقل" : "خفض دقة الصورة وحجمها") + '</small></span>';
                 const high = document.createElement('button');
                 high.type = 'button';
                 high.className = 'media-quality-option high';
-                high.innerHTML = '<i class="fa-solid fa-gem"></i><span><strong>جودة عالية — 2,000 كوينز</strong><small>720p للفيديو أو الصورة الأصلية</small></span>';
+                high.innerHTML = '<i class="fa-solid fa-gem"></i><span><strong>جودة عالية — رسوم حسب الرصيد</strong><small>720p للفيديو أو الصورة الأصلية</small></span>';
                 const cancel = document.createElement('button');
                 cancel.type = 'button';
                 cancel.className = 'media-quality-cancel';
@@ -6389,7 +6390,7 @@
                 const onKeyDown = event => {
                     if (event.key === 'Escape') finish(null);
                 };
-                low.addEventListener('click', () => finish('360'));
+                low.addEventListener('click', () => finish('144'));
                 high.addEventListener('click', () => finish('720'));
                 cancel.addEventListener('click', () => finish(null));
                 overlay.addEventListener('click', event => {
@@ -6408,7 +6409,7 @@
         // bytes in the browser. High-quality images stay untouched and are
         // charged only after the server validates the upload session.
         async function prepareMediaForUpload(file, fileType, quality) {
-            if (!file || quality !== '360' || String(fileType || '').toLowerCase() !== 'image') return file;
+            if (!file || quality !== '144' || String(fileType || '').toLowerCase() !== 'image') return file;
             if (typeof document === 'undefined') return file;
             let drawable = null;
             let width = 0;
@@ -6475,7 +6476,7 @@
             if (!blob || !blob.size) return file;
             const baseName = String(file.name || 'image').replace(/\.[^.]+$/, '') || 'image';
             const extension = outputMime === 'image/png' ? 'png' : (outputMime === 'image/webp' ? 'webp' : 'jpg');
-            return new File([blob], `${baseName}-360.${extension}`, { type: outputMime, lastModified: Date.now() });
+            return new File([blob], `${baseName}-144.${extension}`, { type: outputMime, lastModified: Date.now() });
         }
 
         function getUploadSessionStatus(sessionId) {
@@ -6634,7 +6635,7 @@
                 fileSize: Number(file.size || 0),
                 mimeType: file.type || 'application/octet-stream',
                 clientFileType,
-                videoQuality: options.videoQuality || '360',
+                videoQuality: options.videoQuality || '144',
                 forceServerUpload: Boolean(options.forceServerUpload),
                 ...uploadMessageMetadata(messageMeta)
             };
@@ -6847,7 +6848,7 @@
                 form.append('file', file, file.name || ('file-' + Date.now()));
                 form.append('context', context);
                 if (clientFileType) form.append('clientFileType', clientFileType);
-                if (['image', 'gif', 'video'].includes(uploadType)) form.append('videoQuality', options.videoQuality || '360');
+                if (['image', 'gif', 'video'].includes(uploadType)) form.append('videoQuality', options.videoQuality || '144');
                 if (targetRoomId) form.append('roomId', targetRoomId);
                 if (context === 'chat' && targetRoomId && messageMeta) {
                     form.append('publishToChat', '1');
@@ -6978,7 +6979,7 @@
                     // a misleading "فشل" card on mobile and delays the real
                     // explanation returned by the server.
                     const permanentUploadError = status === 402
-                        || /كوينز كافية|تخزين الوسائط|Cloudflare R2|MongoDB\/GridFS|لم يتم حفظ الملف|الجودة العالية|ضغط الفيديو|360p|جودة 360/i.test(message);
+                        || /كوينز كافية|تخزين الوسائط|Cloudflare R2|MongoDB\/GridFS|لم يتم حفظ الملف|الجودة العالية|ضغط الفيديو|144p|جودة 144/i.test(message);
                     if (permanentUploadError) throw error;
                     const looksTemporary = [408, 425, 429, 500, 502, 503, 504].includes(status)
                         || /انقطع|مؤقت|يمكن إعادة المحاولة|network|failed to fetch|تعذر الاتصال|timeout/i.test(message);
@@ -7000,7 +7001,7 @@
             throw lastError || new Error('تعذر رفع الملف');
         }
 
-        async function uploadAndSendChatFile(file, replySnapshot = null, pickerKind = 'file', extraMessageMeta = null, detectedFileType = '', videoQuality = '360') {
+        async function uploadAndSendChatFile(file, replySnapshot = null, pickerKind = 'file', extraMessageMeta = null, detectedFileType = '', videoQuality = '144') {
             if (chatRestriction) {
                 showChatRestrictionNotice();
                 return;
@@ -7146,7 +7147,7 @@
 
         async function queueChatUpload(file, replySnapshot = null, pickerKind = 'file', extraMessageMeta = null, requestedVideoQuality = '') {
             const fileType = await detectClientUploadType(file, pickerKind);
-            const videoQuality = requestedVideoQuality === '720' || requestedVideoQuality === '360'
+            const videoQuality = requestedVideoQuality === '720' || requestedVideoQuality === '144'
                 ? requestedVideoQuality
                 : await chooseMediaQuality(fileType, file?.name || '');
             if (!videoQuality) return false;
