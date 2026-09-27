@@ -2626,11 +2626,10 @@ async function createLowQualityVideoVariant({ sourcePath, originalName = "video"
   const requestedHeight = VIDEO_QUALITY_HEIGHTS["144"];
 
   try {
-    await runMediaCommand(FFMPEG_PATH, [
+    const baseArgs = [
       "-hide_banner", "-loglevel", "error", "-y",
       "-i", sourcePath,
       "-map", "0:v:0",
-      "-map", "0:a:0?",
       "-sn", "-dn",
       "-vf", `scale=-2:${requestedHeight}:force_original_aspect_ratio=decrease`,
       "-c:v", "libx264",
@@ -2641,26 +2640,28 @@ async function createLowQualityVideoVariant({ sourcePath, originalName = "video"
       "-pix_fmt", "yuv420p",
       "-profile:v", "main",
       "-level", "3.1",
-      "-c:a", "aac",
-      "-b:a", "96k",
-      "-ar", "44100",
-      "-ac", "2",
       "-movflags", "+faststart",
       "-threads", "1",
       outputPath
-    ]);
+    ];
+    try {
+      // First try to retain a compatible audio track.
+      await runMediaCommand(FFMPEG_PATH, [
+        ...baseArgs.slice(0, -1),
+        "-map", "0:a:0?",
+        "-c:a", "aac", "-b:a", "96k", "-ar", "44100", "-ac", "2",
+        outputPath
+      ]);
+    } catch (firstError) {
+      // Some phone recordings contain an unsupported/ damaged audio stream.
+      // Retry as video-only so the requested 144p video still reaches chat.
+      safeUnlink(outputPath);
+      await runMediaCommand(FFMPEG_PATH, baseArgs);
+    }
 
     const outputStat = await fs.promises.stat(outputPath);
     if (!outputStat.isFile() || outputStat.size < 1024) {
       throw new Error("نسخة الفيديو الناتجة فارغة");
-    }
-
-    // If the source is already smaller than the encoded result (for example a
-    // camera file that is already 144p), retaining it is safer and avoids
-    // increasing storage while the requested quality is already satisfied.
-    if (outputStat.size >= sourceStat.size) {
-      safeUnlink(outputPath);
-      return null;
     }
 
     const baseName = path.basename(String(originalName || "video"))
