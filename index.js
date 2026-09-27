@@ -5785,7 +5785,7 @@ app.post("/api/upload/session/:sessionId/complete", uploadLimiter, requireHttpAu
         // the requested 144p playback copy in the background. This prevents a
         // large/unsupported camera file from making the whole chat upload fail.
         if (sessionFileType === "video" && session.videoQuality === "144") {
-          lowQualityVideoWarning = "سيتم تجهيز نسخة 144p بعد اكتمال الرفع";
+          lowQualityVideoWarning = "جارٍ ضغط الفيديو إلى 144p";
         }
         const lowQualityVideoId = lowQualityVideo ? `${fileId}_144` : fileId;
         if (lowQualityVideo) {
@@ -5808,7 +5808,7 @@ app.post("/api/upload/session/:sessionId/complete", uploadLimiter, requireHttpAu
         }
       } else {
         if (sessionFileType === "video" && session.videoQuality === "144") {
-          lowQualityVideoWarning = "سيتم تجهيز نسخة 144p بعد اكتمال الرفع";
+          lowQualityVideoWarning = "جارٍ ضغط الفيديو إلى 144p";
         }
         const lowQualityVideoId = lowQualityVideo ? `${fileId}_144` : fileId;
         const reqFile = {
@@ -6079,7 +6079,7 @@ app.post("/api/upload", uploadLimiter, requireHttpAuth, limitConcurrentUploads, 
     // store the uploaded bytes first and let the compatibility worker prepare
     // the 144p playback copy asynchronously.
     if (fileType === "video" && videoQuality === "144") {
-      lowQualityVideoWarning = "سيتم تجهيز نسخة 144p بعد اكتمال الرفع";
+      lowQualityVideoWarning = "جارٍ ضغط الفيديو إلى 144p";
     }
     const storedFileId = lowQualityVideo ? `${fileId}_144` : fileId;
     const keepLocalCache = ["image", "gif", "video", "audio"].includes(fileType)

@@ -7877,8 +7877,8 @@
                 const state = document.createElement('div');
                 state.className = 'chat-video-state';
                 state.textContent = ['queued', 'checking', 'processing'].includes(String(data.playbackStatus || '').toLowerCase())
-                    ? 'جاري تجهيز نسخة تشغيل متوافقة...'
-                    : 'جاري تجهيز الفيديو...';
+                    ? 'جارٍ ضغط الفيديو...'
+                    : 'جارٍ تجهيز الفيديو...';
                 videoWrap.appendChild(video);
                 videoWrap.appendChild(state);
 
@@ -7921,7 +7921,7 @@
                     }
                     const pendingCompatibility = ['queued', 'checking', 'processing'].includes(String(data.playbackStatus || '').toLowerCase());
                     state.textContent = pendingCompatibility
-                        ? 'جاري تجهيز نسخة متوافقة للابتوب...'
+                        ? 'جارٍ ضغط الفيديو...'
                         : 'تعذر تشغيل ترميز الفيديو على هذا المتصفح';
                     state.classList.remove('hidden');
                     if (!videoWrap.querySelector('.media-fallback-link')) {
@@ -8018,7 +8018,7 @@
 
                 if (['queued', 'checking', 'processing'].includes(String(payload.status || ''))) {
                     if (state) {
-                        state.textContent = 'جاري تجهيز نسخة تشغيل متوافقة للابتوب...';
+                        state.textContent = 'جارٍ ضغط الفيديو...';
                         state.classList.remove('hidden');
                     }
                     return;
