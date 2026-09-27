@@ -2681,7 +2681,8 @@ async function createLowQualityVideoVariant({ sourcePath, originalName = "video"
 
 async function prepareLowQualityVideoVariant(session, fileId) {
   if (!session || session.fileType !== "video" || normalizeVideoQuality(session.videoQuality, "video") !== "144") return null;
-  if (!VIDEO_COMPATIBILITY_ENABLED) {
+  const mustReduceTo144 = normalizeVideoQuality(record.videoQuality, "video") === "144";
+  if (!VIDEO_COMPATIBILITY_ENABLED && !mustReduceTo144) {
     const error = new Error("ضغط الفيديو بجودة 144p غير مفعّل على الخادم");
     error.code = "VIDEO_QUALITY_TRANSCODE_DISABLED";
     error.statusCode = 503;
@@ -2859,7 +2860,7 @@ async function processVideoCompatibilityJob(fileId) {
     record.playbackQuality = record.videoQuality || "144";
     return;
   }
-  if (Number(record.size || 0) > VIDEO_COMPATIBILITY_MAX_BYTES) {
+  if (!mustReduceTo144 && Number(record.size || 0) > VIDEO_COMPATIBILITY_MAX_BYTES) {
     record.playbackStatus = "skipped";
     record.playbackMode = "original";
     record.playbackError = "حجم الملف أكبر من حد تجهيز نسخة التشغيل";
@@ -5892,7 +5893,10 @@ app.post("/api/upload/session/:sessionId/complete", uploadLimiter, requireHttpAu
       && record.storage === "local" && record.cloudPending) {
       queueResumableVideoCloudPersistence(session, fileId, record, { keepLocalCache });
     }
-    if (sessionFileType === "video") queueVideoCompatibilityJob(fileId);
+    if (sessionFileType === "video") {
+      if (session.videoQuality === "144") await processVideoCompatibilityJob(fileId);
+      else queueVideoCompatibilityJob(fileId);
+    }
 
     let publishedMessage = null;
     if (session.context === "chat" && session.roomId) {
@@ -6161,7 +6165,10 @@ app.post("/api/upload", uploadLimiter, requireHttpAuth, limitConcurrentUploads, 
     if (localFirstSession && db.uploads[fileId].storage === "local" && db.uploads[fileId].cloudPending) {
       queueResumableVideoCloudPersistence(localFirstSession, fileId, db.uploads[fileId], { keepLocalCache });
     }
-    if (fileType === "video") queueVideoCompatibilityJob(fileId);
+    if (fileType === "video") {
+      if (videoQuality === "144") await processVideoCompatibilityJob(fileId);
+      else queueVideoCompatibilityJob(fileId);
+    }
     analyticsService?.track("upload_complete", {
       userId: uploader,
       bytes: Number(req.file.size || 0),
