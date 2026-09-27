@@ -2684,12 +2684,6 @@ async function createLowQualityVideoVariant({ sourcePath, originalName = "video"
 
 async function prepareLowQualityVideoVariant(session, fileId) {
   if (!session || session.fileType !== "video" || normalizeVideoQuality(session.videoQuality, "video") !== "144") return null;
-  if (!VIDEO_COMPATIBILITY_ENABLED) {
-    const error = new Error("ضغط الفيديو بجودة 144p غير مفعّل على الخادم");
-    error.code = "VIDEO_QUALITY_TRANSCODE_DISABLED";
-    error.statusCode = 503;
-    throw error;
-  }
 
   let sourcePath = session.tempPath;
   let temporarySource = false;
@@ -5385,7 +5379,10 @@ app.post("/api/upload/session", uploadLimiter, requireHttpAuth, limitConcurrentU
     const originalName = String(body.originalName || "file").trim().slice(0, 180) || "file";
     const mimeType = String(body.mimeType || "application/octet-stream").trim().slice(0, 160) || "application/octet-stream";
     const clientFileType = String(body.clientFileType || "").trim().toLowerCase().slice(0, 24);
-    const fileType = classifyFileType(mimeType, originalName, clientFileType);
+    let fileType = classifyFileType(mimeType, originalName, clientFileType);
+    // The media picker is authoritative for extensionless/Android gallery
+    // videos whose browser MIME is reported as application/octet-stream.
+    if (clientFileType === "video") fileType = "video";
     const storedMimeType = normalizeMediaMimeType(fileType, mimeType, originalName);
     const videoQuality = normalizeVideoQuality(body.videoQuality, fileType);
     const requestedVideoQualityCost = videoQualityCost(videoQuality, fileType, uploader);
@@ -5839,12 +5836,11 @@ app.post("/api/upload/session/:sessionId/complete", uploadLimiter, requireHttpAu
         // partial upload if a later chat-publish retry takes a moment.
         session.r2UploadId = null;
         persistResumableUploadSession(session);
-        // Do not transcode inside the completion request. The original object
-        // is published immediately, then queueVideoCompatibilityJob() prepares
-        // the requested 144p playback copy in the background. This prevents a
-        // large/unsupported camera file from making the whole chat upload fail.
         if (sessionFileType === "video" && session.videoQuality === "144") {
-          lowQualityVideoWarning = "جارٍ ضغط الفيديو إلى 144p";
+          // Convert before creating the upload record or publishing the chat
+          // message. This guarantees that a low-quality selection can never
+          // publish the untouched 4K/original object.
+          lowQualityVideo = await prepareLowQualityVideoVariant(session, fileId);
         }
         const lowQualityVideoId = lowQualityVideo ? `${fileId}_144` : fileId;
         if (lowQualityVideo) {
@@ -5867,7 +5863,7 @@ app.post("/api/upload/session/:sessionId/complete", uploadLimiter, requireHttpAu
         }
       } else {
         if (sessionFileType === "video" && session.videoQuality === "144") {
-          lowQualityVideoWarning = "جارٍ ضغط الفيديو إلى 144p";
+          lowQualityVideo = await prepareLowQualityVideoVariant(session, fileId);
         }
         const lowQualityVideoId = lowQualityVideo ? `${fileId}_144` : fileId;
         const reqFile = {
@@ -6091,7 +6087,8 @@ app.post("/api/upload", uploadLimiter, requireHttpAuth, limitConcurrentUploads, 
     }
 
     const clientFileType = String(req.body.clientFileType || "").trim().toLowerCase();
-    const fileType = classifyFileType(req.file.mimetype, req.file.originalname, clientFileType);
+    let fileType = classifyFileType(req.file.mimetype, req.file.originalname, clientFileType);
+    if (clientFileType === "video") fileType = "video";
     const storedMimeType = normalizeMediaMimeType(fileType, req.file.mimetype, req.file.originalname);
     const videoQuality = normalizeVideoQuality(req.body.videoQuality, fileType);
     const requestedVideoQualityCost = videoQualityCost(videoQuality, fileType, uploader);
@@ -6134,11 +6131,15 @@ app.post("/api/upload", uploadLimiter, requireHttpAuth, limitConcurrentUploads, 
     }
 
     const fileId = req.generatedUploadId || path.parse(req.file.filename).name;
-    // Keep the legacy endpoint just as reliable as the resumable endpoint:
-    // store the uploaded bytes first and let the compatibility worker prepare
-    // the 144p playback copy asynchronously.
     if (fileType === "video" && videoQuality === "144") {
-      lowQualityVideoWarning = "جارٍ ضغط الفيديو إلى 144p";
+      // The legacy endpoint must enforce the same rule as resumable uploads:
+      // transcode the temporary upload first, then persist and publish only
+      // the actual 144p file.
+      lowQualityVideo = await createLowQualityVideoVariant({
+        sourcePath: req.file.path,
+        originalName: req.file.originalname,
+        fileId
+      });
     }
     const storedFileId = lowQualityVideo ? `${fileId}_144` : fileId;
     const keepLocalCache = ["image", "gif", "video", "audio"].includes(fileType)
