@@ -2957,6 +2957,51 @@ async function processVideoCompatibilityJob(fileId) {
       return;
     }
 
+    if (mustReduceTo144) {
+      // Low quality is an enforced storage choice, not only a playback hint.
+      // Replace the primary record with the 144p object so every client and
+      // every endpoint receives the reduced file, even without a playback
+      // query parameter.
+      const originalUpload = {
+        storage: record.storage,
+        r2Key: record.r2Key,
+        storedName: record.storedName,
+        cacheStoredName: record.cacheStoredName,
+        gridFsId: record.gridFsId
+      };
+      record.storage = cloudFile.storage;
+      record.r2Key = cloudFile.r2Key || null;
+      record.storedName = cloudFile.storedName || null;
+      record.cacheStoredName = cloudFile.cacheStoredName || null;
+      record.cacheExpiresAt = cloudFile.cacheExpiresAt || null;
+      record.gridFsId = cloudFile.gridFsId || null;
+      record.mimeType = "video/mp4";
+      record.size = outputStat.size;
+      record.playbackStatus = "ready";
+      record.playbackMode = "original";
+      record.playbackQuality = "144";
+      record.videoQualityTranscoded = true;
+      record.videoQualityWarning = null;
+      record.playbackError = null;
+      record.playbackReadyAt = new Date().toISOString();
+      record.playbackR2Key = null;
+      record.playbackStoredName = null;
+      record.playbackCacheStoredName = null;
+      record.playbackGridFsId = null;
+      record.playbackSize = outputStat.size;
+      outputOwnedByRecord = cloudFile.storage === "local" || Boolean(cloudFile.cacheStoredName);
+      saveDB(db);
+      queuePhysicalUploadDelete(originalUpload);
+      emitVideoCompatibilityStatus(record, "ready", {
+        url: `/api/files/${encodeURIComponent(fileId)}?v=${encodeURIComponent(record.playbackReadyAt)}`,
+        mimeType: "video/mp4",
+        size: outputStat.size,
+        original: false,
+        reduced: true
+      });
+      return;
+    }
+
     record.playbackStatus = "ready";
     record.playbackMode = "compatibility";
     record.playbackStorage = cloudFile.storage;
@@ -2983,6 +3028,17 @@ async function processVideoCompatibilityJob(fileId) {
     });
   } catch (err) {
     const missingTool = err?.code === "ENOENT" || /not found|spawn ff/i.test(String(err?.message || ""));
+    if (mustReduceTo144) {
+      record.playbackStatus = "failed";
+      record.playbackMode = "original";
+      record.playbackQuality = "144";
+      record.playbackError = missingTool
+        ? "أداة ضغط الفيديو 144p غير متوفرة على الخادم"
+        : String(err?.message || "تعذر ضغط الفيديو إلى 144p").slice(0, 500);
+      saveDB(db);
+      emitVideoCompatibilityStatus(record, "failed", { message: record.playbackError, original: false, reduced: false });
+      throw err;
+    }
     // The original upload is already durable and remains playable. A
     // compatibility/quality worker failure must therefore be non-fatal: keep
     // serving the original instead of turning a successfully sent video into
